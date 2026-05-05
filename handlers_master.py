@@ -896,8 +896,20 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             logger.error("导出Bot数据失败: %s", e, exc_info=True)
         return
 
-    # 以下是原有导出格式
-    export_format = args[0] if args else 'json'
+    # 无参数或 help 显示帮助
+    export_format = args[0] if args else 'help'
+
+    if export_format == 'help':
+        await update.message.reply_text(
+            "📤 <b>数据导出命令</b>\n\n"
+            "可用格式:\n"
+            "• <code>/export json</code> — 完整 JSON 数据\n"
+            "• <code>/export csv</code> — 全部文件列表 CSV\n"
+            "• <code>/export bots</code> — Bot 列表 CSV\n"
+            "• <code>/export @bot_username</code> — 指定Bot文件代码 CSV",
+            parse_mode="HTML"
+        )
+        return
 
     status_msg = await update.message.reply_text("⏳ 正在准备导出数据...")
 
