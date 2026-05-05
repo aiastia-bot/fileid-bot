@@ -174,56 +174,71 @@ class BotManager:
 
         return application
 
-    async def start_bot(self, bot_record: dict) -> bool:
-        """创建并启动一个用户Bot"""
+    async def start_bot(self, bot_record: dict, max_retries: int = 2) -> bool:
+        """创建并启动一个用户Bot（网络错误时自动重试）"""
         bot_db_id = bot_record['id']
         if bot_db_id in self._apps:
             logger.info("Bot @%s 已在运行，跳过", bot_record.get('bot_username', 'unknown'))
             return True
 
-        try:
-            app = self._create_user_bot_app(bot_record['bot_token'])
-            app.bot_data['bot_record'] = bot_record
+        name = bot_record.get('bot_username', 'unknown')
+        last_error = None
 
-            await app.initialize()
-            await app.start()
-
-            # 手动注册Bot命令（post_init 在手动启动时不会自动触发）
-            commands = [
-                ("start", "开始使用 / 查看帮助"),
-                ("help", "查看帮助"),
-                ("create", "创建集合 create 名称"),
-                ("done", "完成集合"),
-                ("cancel", "取消当前操作"),
-                ("getid", "回复消息获取文件ID"),
-                ("mycol", "查看我的集合"),
-                ("delcol", "删除集合 delcol 代码"),
-            ]
+        for attempt in range(max_retries + 1):
             try:
-                await app.bot.set_my_commands(commands)
-                logger.info("用户Bot @%s 已注册 %d 个命令", app.bot.username, len(commands))
-            except Exception as cmd_err:
-                logger.warning("用户Bot @%s 注册命令失败: %s", app.bot.username, cmd_err)
+                app = self._create_user_bot_app(bot_record['bot_token'])
+                app.bot_data['bot_record'] = bot_record
 
-            await app.updater.start_polling(
-                drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES
-            )
+                await app.initialize()
+                await app.start()
 
-            self._apps[bot_db_id] = app
-            logger.info("用户Bot @%s 启动成功 (db_id=%s)", bot_record.get('bot_username'), bot_db_id)
-            return True
+                # 手动注册Bot命令（post_init 在手动启动时不会自动触发）
+                commands = [
+                    ("start", "开始使用 / 查看帮助"),
+                    ("help", "查看帮助"),
+                    ("create", "创建集合 create 名称"),
+                    ("done", "完成集合"),
+                    ("cancel", "取消当前操作"),
+                    ("getid", "回复消息获取文件ID"),
+                    ("mycol", "查看我的集合"),
+                    ("delcol", "删除集合 delcol 代码"),
+                ]
+                try:
+                    await app.bot.set_my_commands(commands)
+                    logger.info("用户Bot @%s 已注册 %d 个命令", app.bot.username, len(commands))
+                except Exception as cmd_err:
+                    logger.warning("用户Bot @%s 注册命令失败: %s", app.bot.username, cmd_err)
 
-        except Exception as e:
-            # 检测 Token 无效（被撤销/删除）
-            error_str = str(e)
-            if "InvalidToken" in type(e).__name__ or "token" in error_str.lower() and "rejected" in error_str.lower():
-                logger.warning("用户Bot @%s Token 无效，自动标记为 revoked", bot_record.get('bot_username', 'unknown'))
-                from database import update_user_bot_status
-                update_user_bot_status(bot_db_id, 'revoked')
-            else:
-                logger.error("启动用户Bot失败: %s", e, exc_info=True)
-            return False
+                await app.updater.start_polling(
+                    drop_pending_updates=True,
+                    allowed_updates=Update.ALL_TYPES
+                )
+
+                self._apps[bot_db_id] = app
+                logger.info("用户Bot @%s 启动成功 (db_id=%s)", name, bot_db_id)
+                return True
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
+
+                # Token 无效，不重试，直接标记 revoked
+                if "InvalidToken" in type(e).__name__ or ("token" in error_str.lower() and "rejected" in error_str.lower()):
+                    logger.warning("用户Bot @%s Token 无效，标记为 revoked", name)
+                    from database import update_user_bot_status
+                    update_user_bot_status(bot_db_id, 'revoked')
+                    return False
+
+                # 网络错误，可重试
+                if attempt < max_retries:
+                    delay = 3 * (2 ** attempt)  # 3s, 6s
+                    logger.warning("用户Bot @%s 启动失败 (第%d次)，%.1f秒后重试: %s",
+                                   name, attempt + 1, delay, error_str[:100])
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error("用户Bot @%s 启动失败（已重试%d次）: %s", name, max_retries, error_str)
+
+        return False
 
     async def stop_bot(self, bot_db_id: int) -> bool:
         """停止一个用户Bot"""
