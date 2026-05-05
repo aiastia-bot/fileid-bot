@@ -24,7 +24,8 @@ async def send_file_group(
         logger.warning("send_file_group: files 为空")
         return 0
 
-    logger.info("send_file_group: 准备发送 %d 个文件到 chat_id=%s", len(files), chat_id)
+    bot_name = getattr(context.bot, 'username', 'unknown')
+    logger.info("send_file_group: @%s 准备发送 %d 个文件到 chat_id=%s", bot_name, len(files), chat_id)
 
     # 按类型分组
     photo_video = []
