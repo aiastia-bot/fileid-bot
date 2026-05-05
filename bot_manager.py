@@ -80,7 +80,7 @@ class BotManager:
         from handlers_commands import (
             start_command, create_collection_cmd, done_collection_cmd,
             cancel_collection_cmd, get_id_command, my_collections_cmd,
-            delete_collection_cmd, stats_command, export_command
+            delete_collection_cmd
         )
         from handlers_messages import (
             handle_attachment, handle_text, handle_forward,
@@ -88,27 +88,7 @@ class BotManager:
         )
         from handlers_callbacks import button_callback
 
-        async def user_bot_post_init(application):
-            """用户Bot初始化后注册命令"""
-            commands = [
-                ("start", "开始使用 / 查看帮助"),
-                ("help", "查看帮助"),
-                ("create", "创建集合 create 名称"),
-                ("done", "完成集合"),
-                ("cancel", "取消当前操作"),
-                ("getid", "回复消息获取文件ID"),
-                ("mycol", "查看我的集合"),
-                ("delcol", "删除集合 delcol 代码"),
-                ("stats", "统计信息"),
-                ("export", "导出数据"),
-            ]
-            try:
-                await application.bot.set_my_commands(commands)
-                logger.info("用户Bot @%s 已注册 %d 个命令", application.bot.username, len(commands))
-            except Exception as e:
-                logger.warning("用户Bot注册命令失败: %s", e)
-
-        application = ApplicationBuilder().token(token).post_init(user_bot_post_init).build()
+        application = ApplicationBuilder().token(token).build()
 
         # 注册命令处理器
         application.add_handler(CommandHandler("start", start_command))
@@ -119,8 +99,6 @@ class BotManager:
         application.add_handler(CommandHandler("getid", get_id_command))
         application.add_handler(CommandHandler("mycol", my_collections_cmd))
         application.add_handler(CommandHandler("delcol", delete_collection_cmd))
-        application.add_handler(CommandHandler("stats", stats_command))
-        application.add_handler(CommandHandler("export", export_command))
 
         # 转发的图片消息
         application.add_handler(MessageHandler(
@@ -196,6 +174,24 @@ class BotManager:
 
             await app.initialize()
             await app.start()
+
+            # 手动注册Bot命令（post_init 在手动启动时不会自动触发）
+            commands = [
+                ("start", "开始使用 / 查看帮助"),
+                ("help", "查看帮助"),
+                ("create", "创建集合 create 名称"),
+                ("done", "完成集合"),
+                ("cancel", "取消当前操作"),
+                ("getid", "回复消息获取文件ID"),
+                ("mycol", "查看我的集合"),
+                ("delcol", "删除集合 delcol 代码"),
+            ]
+            try:
+                await app.bot.set_my_commands(commands)
+                logger.info("用户Bot @%s 已注册 %d 个命令", app.bot.username, len(commands))
+            except Exception as cmd_err:
+                logger.warning("用户Bot @%s 注册命令失败: %s", app.bot.username, cmd_err)
+
             await app.updater.start_polling(
                 drop_pending_updates=True,
                 allowed_updates=Update.ALL_TYPES

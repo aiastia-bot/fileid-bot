@@ -575,6 +575,21 @@ def set_platform_setting(key: str, value: str) -> bool:
         conn.close()
 
 
+# ==================== 按 Bot 导出文件代码 ====================
+
+def get_files_by_bot_username(bot_username: str) -> List[Dict]:
+    """根据 bot_username 导出该 Bot 的所有文件代码"""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT code, file_type, file_size, user_id, created_at FROM file_mappings WHERE bot_username = ? ORDER BY created_at DESC",
+            (bot_username,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 # ==================== 平台数据导出 ====================
 
 def get_platform_export_data() -> Dict:

@@ -19,6 +19,7 @@ from database import (
     delete_user_bot as db_delete_user_bot,
     update_user_bot_status, get_platform_stats,
     get_platform_bot_details, get_platform_export_data,
+    get_files_by_bot_username,
     add_to_blacklist, remove_from_blacklist, is_user_blacklisted,
     get_blacklist, get_blacklist_count,
     get_user_bots_by_owner as get_all_owner_bots,
@@ -853,7 +854,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # ==================== 导出功能 ====================
 
 async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/export 管理员导出平台数据"""
+    """/export 管理员导出数据 - 支持指定Bot导出CSV文件代码"""
     from config import ADMIN_IDS
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
@@ -861,6 +862,41 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     args = context.args or []
+
+    # /export <bot_username> — 导出指定Bot的文件代码CSV
+    if args and args[0] not in ('json', 'csv', 'bots', 'code'):
+        bot_username = args[0].strip().lstrip('@')
+        status_msg = await update.message.reply_text(f"⏳ 正在导出 @{escape(bot_username)} 的文件代码...")
+
+        try:
+            files = get_files_by_bot_username(bot_username)
+            if not files:
+                await status_msg.edit_text(f"📭 Bot @{escape(bot_username)} 没有文件记录。")
+                return
+
+            # 生成CSV（逗号分隔）
+            output = io.StringIO()
+            output.write("code,file_type,file_size,user_id,created_at\n")
+            for f in files:
+                output.write(f"{f['code']},{f['file_type']},{f['file_size']},{f['user_id']},{f['created_at']}\n")
+            export_text = output.getvalue()
+            filename = f"{bot_username}_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+            bytes_io = io.BytesIO(export_text.encode('utf-8'))
+            await context.bot.send_document(
+                chat_id=update.message.chat_id,
+                document=bytes_io,
+                filename=filename,
+                caption=f"📁 @{escape(bot_username)} 文件代码导出，共 {len(files)} 条记录。",
+            )
+            await status_msg.delete()
+            logger.info("管理员 %s 导出了 Bot @%s 的文件代码 (%d 条)", user_id, bot_username, len(files))
+        except Exception as e:
+            await status_msg.edit_text(f"❌ 导出失败: {escape(str(e))}")
+            logger.error("导出Bot数据失败: %s", e, exc_info=True)
+        return
+
+    # 以下是原有导出格式
     export_format = args[0] if args else 'json'
 
     status_msg = await update.message.reply_text("⏳ 正在准备导出数据...")
@@ -869,7 +905,6 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         data = get_platform_export_data()
 
         if export_format in ('json', 'code'):
-            # JSON 格式导出
             export_text = json.dumps(data, ensure_ascii=False, indent=2)
             filename = f"platform_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             caption = (
@@ -880,50 +915,45 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"🚫 黑名单: {len(data['blacklist'])} 人"
             )
         elif export_format == 'csv':
-            # CSV 格式导出（简化版，只导出文件）
             output = io.StringIO()
-            output.write("code\tbot_username\tfile_type\tfile_size\tuser_id\tcreated_at\n")
+            output.write("code,bot_username,file_type,file_size,user_id,created_at\n")
             for f in data['files']:
-                output.write(f"{f['code']}\t{f.get('bot_username', '')}\t{f['file_type']}\t{f['file_size']}\t{f['user_id']}\t{f['created_at']}\n")
+                output.write(f"{f['code']},{f.get('bot_username', '')},{f['file_type']},{f['file_size']},{f['user_id']},{f['created_at']}\n")
             export_text = output.getvalue()
-            filename = f"files_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tsv"
+            filename = f"files_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             caption = f"📁 文件数据导出，共 {len(data['files'])} 条记录。"
         elif export_format == 'bots':
-            # 导出 Bot 列表
             output = io.StringIO()
-            output.write("id\towner_id\tbot_id\tbot_username\tbot_firstname\tstatus\tcreated_at\n")
+            output.write("id,owner_id,bot_id,bot_username,bot_firstname,status,created_at\n")
             for b in data['bots']:
-                output.write(f"{b['id']}\t{b['owner_id']}\t{b['bot_id']}\t{b['bot_username']}\t{b['bot_firstname']}\t{b['status']}\t{b['created_at']}\n")
+                output.write(f"{b['id']},{b['owner_id']},{b['bot_id']},{b['bot_username']},{b['bot_firstname']},{b['status']},{b['created_at']}\n")
             export_text = output.getvalue()
-            filename = f"bots_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tsv"
+            filename = f"bots_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             caption = f"🤖 Bot 列表导出，共 {len(data['bots'])} 条记录。"
         else:
             await status_msg.edit_text(
                 "❓ 未知格式。\n\n"
                 "可用格式:\n"
                 "• <code>/export json</code> — 完整 JSON 数据（默认）\n"
-                "• <code>/export csv</code> — 文件列表 TSV\n"
-                "• <code>/export bots</code> — Bot 列表 TSV",
+                "• <code>/export csv</code> — 全部文件列表 CSV\n"
+                "• <code>/export bots</code> — Bot 列表 CSV\n"
+                "• <code>/export @bot_username</code> — 指定Bot文件代码 CSV",
                 parse_mode="HTML"
             )
             return
 
         bytes_io = io.BytesIO(export_text.encode('utf-8'))
-
         await context.bot.send_document(
             chat_id=update.message.chat_id,
             document=bytes_io,
             filename=filename,
             caption=caption,
         )
-
         await status_msg.delete()
         logger.info("管理员 %s 导出了平台数据 (格式: %s)", user_id, export_format)
-
     except Exception as e:
         await status_msg.edit_text(f"❌ 导出失败: {escape(str(e))}")
         logger.error("导出数据失败: %s", e, exc_info=True)
-
 
 # ==================== 黑名单检查 ====================
 
