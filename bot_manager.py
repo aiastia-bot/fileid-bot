@@ -203,7 +203,34 @@ class BotManager:
             return True
 
         except Exception as e:
-            logger.error("启动用户Bot失败: %s", e, exc_info=True)
+            # 检测 Token 无效（被撤销/删除）
+            error_str = str(e)
+            if "InvalidToken" in type(e).__name__ or "token" in error_str.lower() and "rejected" in error_str.lower():
+                logger.warning("用户Bot @%s Token 无效，自动标记为 revoked", bot_record.get('bot_username', 'unknown'))
+                from database import update_user_bot_status
+                update_user_bot_status(bot_db_id, 'revoked')
+                # 尝试通知用户
+                try:
+                    from config import BOT_TOKEN
+                    import httpx
+                    async with httpx.AsyncClient() as client:
+                        await client.post(
+                            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                            json={
+                                "chat_id": bot_record.get('owner_id'),
+                                "text": (
+                                    f"⚠️ <b>Bot 已失效</b>\n\n"
+                                    f"🤖 @{bot_record.get('bot_username', 'unknown')} 的 Token 已被撤销或 Bot 已被删除。\n"
+                                    f"系统已自动标记该 Bot。\n\n"
+                                    f"如需重新使用，请先 /delbot 删除后重新创建。"
+                                ),
+                                "parse_mode": "HTML"
+                            }
+                        )
+                except Exception:
+                    pass
+            else:
+                logger.error("启动用户Bot失败: %s", e, exc_info=True)
             return False
 
     async def stop_bot(self, bot_db_id: int) -> bool:
