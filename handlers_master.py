@@ -15,6 +15,7 @@ from telegram.ext import (
 
 from database import (
     add_user_bot, get_user_bots_by_owner, get_user_bot_by_id,
+    get_all_owner_ids,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
     delete_user_bot as db_delete_user_bot,
     update_user_bot_status, get_platform_stats,
@@ -968,6 +969,39 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error("导出数据失败: %s", e, exc_info=True)
 
 # ==================== 黑名单检查 ====================
+
+async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/broadcast 管理员广播消息给所有Bot所有者"""
+    from config import ADMIN_IDS
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ 此命令仅限管理员使用。")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "📢 <b>广播命令</b>\n\n"
+            "用法：<code>/broadcast 消息内容</code>\n\n"
+            "消息将发送给所有 Bot 所有者。",
+            parse_mode="HTML"
+        )
+        return
+
+    text = " ".join(context.args)
+    owner_ids = get_all_owner_ids()
+    status_msg = await update.message.reply_text(f"⏳ 正在广播给 {len(owner_ids)} 位用户...")
+
+    success = 0
+    fail = 0
+    for oid in owner_ids:
+        try:
+            await context.bot.send_message(chat_id=oid, text=text, parse_mode="HTML")
+            success += 1
+        except Exception:
+            fail += 1
+
+    await status_msg.edit_text(f"✅ 广播完成：成功 {success}/{len(owner_ids)}，失败 {fail}")
+
 
 async def blacklist_check_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """黑名单检查中间件 - 在所有命令之前检查用户是否被封禁"""

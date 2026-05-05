@@ -372,6 +372,16 @@ def get_all_active_user_bots() -> List[Dict]:
         conn.close()
 
 
+def get_all_owner_ids() -> List[int]:
+    """获取所有Bot所有者ID（去重）"""
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT DISTINCT owner_id FROM user_bots WHERE status != 'deleted'").fetchall()
+        return [r['owner_id'] for r in rows]
+    finally:
+        conn.close()
+
+
 def get_user_bots_by_owner(owner_id: int) -> List[Dict]:
     """获取用户的所有Bot"""
     conn = get_db()

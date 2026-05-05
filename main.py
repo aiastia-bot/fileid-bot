@@ -89,6 +89,7 @@ def main():
         new_bot_input_username, new_bot_input_name, new_bot_input_token,
         new_bot_cancel, my_bots_cmd, delete_bot_cmd, bot_status_cmd,
         platform_stats_cmd, blacklist_cmd, export_data_cmd,
+    broadcast_cmd,
         blacklist_check_handler,
         INPUT_BOT_USERNAME, INPUT_BOT_NAME, INPUT_BOT_TOKEN
     )
@@ -131,6 +132,7 @@ def main():
     application.add_handler(CommandHandler("platform", platform_stats_cmd))
     application.add_handler(CommandHandler("blacklist", blacklist_cmd))
     application.add_handler(CommandHandler("export", export_data_cmd))
+    application.add_handler(CommandHandler("broadcast", broadcast_cmd))
     application.add_error_handler(error_handler)
 
     # 全局引用（供 handlers_master 获取 bot_manager）
