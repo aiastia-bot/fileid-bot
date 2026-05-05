@@ -158,20 +158,37 @@ class BotManager:
         # 错误处理（含 Token 撤销检测）
         async def user_bot_error_handler(update: object, context):
             error_str = str(context.error)
-            logger.error("用户Bot @%s 错误: %s", context.bot.username, error_str, exc_info=True)
+            error_type = type(context.error).__name__
+
+            # 可忽略的错误：权限不足、消息未修改、消息删除等
+            silent_errors = (
+                "Not enough rights",           # Bot 在群组中没有发言权限
+                "message is not modified",      # 消息内容未变化
+                "message to delete not found",  # 消息已删除
+                "Bad Request: chat not found",  # 聊天不存在
+                "have no rights to send",       # 无发送权限
+            )
+            if any(err in error_str for err in silent_errors):
+                logger.info("用户Bot @%s 权限/状态错误（已忽略）: %s", context.bot.username, error_str[:100])
+                return
 
             # 检测 Token 被撤销 / Bot 被删除
             if "Unauthorized" in error_str or "401" in error_str or "bot was blocked" in error_str.lower():
                 logger.warning("用户Bot @%s Token 已失效，自动停止", context.bot.username)
-                # 延迟停止，避免在错误处理中直接操作
-                import asyncio
                 asyncio.create_task(_auto_stop_revoked_bot(context.bot.username, context.bot_data))
+                return
 
+            # 其他错误：记录日志
+            logger.error("用户Bot @%s 错误: %s", context.bot.username, error_str, exc_info=True)
+
+            # 尝试通知用户（仅私聊中）
             if update and hasattr(update, 'effective_message') and update.effective_message:
-                try:
-                    await update.effective_message.reply_text("❌ 处理请求时发生内部错误，请稍后重试。")
-                except Exception:
-                    pass
+                chat_type = update.effective_message.chat.type if update.effective_message.chat else ""
+                if chat_type == "private":
+                    try:
+                        await update.effective_message.reply_text("❌ 处理请求时发生内部错误，请稍后重试。")
+                    except Exception:
+                        pass
 
         application.add_error_handler(user_bot_error_handler)
 
