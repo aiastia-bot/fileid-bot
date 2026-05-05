@@ -16,7 +16,8 @@ from telegram.ext import (
 from database import get_all_active_user_bots
 from config import (
     API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT,
-    BOT_MODE, WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET
+    BOT_MODE, WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET,
+    ALLOW_GROUP
 )
 
 # 启动并发数限制，避免同时发起过多 Telegram API 请求
@@ -106,49 +107,52 @@ class BotManager:
             .build()
         )
 
+        # 聊天类型过滤：默认仅私聊，ALLOW_GROUP=True 时允许群组
+        chat_filter = filters.ChatType.PRIVATE if not ALLOW_GROUP else filters.ALL
+
         # 注册命令处理器
-        application.add_handler(CommandHandler("start", start_command))
-        application.add_handler(CommandHandler("help", start_command))
-        application.add_handler(CommandHandler("create", create_collection_cmd))
-        application.add_handler(CommandHandler("done", done_collection_cmd))
-        application.add_handler(CommandHandler("cancel", cancel_collection_cmd))
-        application.add_handler(CommandHandler("getid", get_id_command))
-        application.add_handler(CommandHandler("mycol", my_collections_cmd))
-        application.add_handler(CommandHandler("delcol", delete_collection_cmd))
+        application.add_handler(CommandHandler("start", start_command, filters=chat_filter))
+        application.add_handler(CommandHandler("help", start_command, filters=chat_filter))
+        application.add_handler(CommandHandler("create", create_collection_cmd, filters=chat_filter))
+        application.add_handler(CommandHandler("done", done_collection_cmd, filters=chat_filter))
+        application.add_handler(CommandHandler("cancel", cancel_collection_cmd, filters=chat_filter))
+        application.add_handler(CommandHandler("getid", get_id_command, filters=chat_filter))
+        application.add_handler(CommandHandler("mycol", my_collections_cmd, filters=chat_filter))
+        application.add_handler(CommandHandler("delcol", delete_collection_cmd, filters=chat_filter))
 
         # 转发的图片消息
         application.add_handler(MessageHandler(
-            filters.FORWARDED & filters.PHOTO,
+            chat_filter & filters.FORWARDED & filters.PHOTO,
             handle_forwarded_media
         ))
 
         # 转发的其他媒体消息
         application.add_handler(MessageHandler(
-            filters.FORWARDED & (filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE),
+            chat_filter & filters.FORWARDED & (filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE),
             handle_forwarded_media
         ))
 
         # 转发的非媒体消息
         application.add_handler(MessageHandler(
-            filters.FORWARDED & filters.TEXT & ~filters.COMMAND,
+            chat_filter & filters.FORWARDED & filters.TEXT & ~filters.COMMAND,
             handle_forward
         ))
 
         # 图片处理
         application.add_handler(MessageHandler(
-            filters.PHOTO,
+            chat_filter & filters.PHOTO,
             handle_group_media
         ))
 
         # 其他媒体处理
         application.add_handler(MessageHandler(
-            filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE,
+            chat_filter & (filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE),
             handle_group_media
         ))
 
         # 文本消息
         application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            chat_filter & filters.TEXT & ~filters.COMMAND,
             handle_text
         ))
 
