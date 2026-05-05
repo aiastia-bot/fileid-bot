@@ -10,7 +10,7 @@ import sys
 from telegram import Update
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler, ContextTypes,
-    ConversationHandler, MessageHandler, TypeHandler, filters
+    ConversationHandler, MessageHandler, CallbackQueryHandler, TypeHandler, filters
 )
 
 from config import BOT_TOKEN, ADMIN_IDS, MAX_BOTS_PER_USER, API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT
@@ -93,7 +93,9 @@ def main():
         new_bot_input_username, new_bot_input_name, new_bot_input_token,
         new_bot_cancel, my_bots_cmd, delete_bot_cmd, bot_status_cmd,
         platform_stats_cmd, blacklist_cmd, export_data_cmd,
-    broadcast_cmd,
+        broadcast_cmd,
+        restart_bot_callback,
+        update_token_callback, update_token_cmd,
         blacklist_check_handler,
         INPUT_BOT_USERNAME, INPUT_BOT_NAME, INPUT_BOT_TOKEN
     )
@@ -137,6 +139,11 @@ def main():
     application.add_handler(CommandHandler("blacklist", blacklist_cmd))
     application.add_handler(CommandHandler("export", export_data_cmd))
     application.add_handler(CommandHandler("broadcast", broadcast_cmd))
+    # 重启Bot回调按钮
+    application.add_handler(CallbackQueryHandler(restart_bot_callback, pattern=r'^restart_bot\|'))
+    # 更新Token回调和命令
+    application.add_handler(CallbackQueryHandler(update_token_callback, pattern=r'^update_token\|'))
+    application.add_handler(CommandHandler("updatetoken", update_token_cmd))
     application.add_error_handler(error_handler)
 
     # 全局引用（供 handlers_master 获取 bot_manager）

@@ -470,6 +470,33 @@ def update_user_bot_status(bot_db_id: int, status: str) -> bool:
         conn.close()
 
 
+def update_user_bot_token(bot_db_id: int, new_token: str, new_bot_id: int = None) -> bool:
+    """更新用户Bot的Token（用于Token失效后重新绑定）"""
+    conn = get_db()
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if new_bot_id is not None:
+            conn.execute(
+                "UPDATE user_bots SET bot_token = ?, bot_id = ?, status = 'active', updated_at = ? WHERE id = ?",
+                (new_token, new_bot_id, now, bot_db_id)
+            )
+        else:
+            conn.execute(
+                "UPDATE user_bots SET bot_token = ?, status = 'active', updated_at = ? WHERE id = ?",
+                (new_token, now, bot_db_id)
+            )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        logger.error("更新Token失败：Token已存在")
+        return False
+    except Exception as e:
+        logger.error("更新Bot Token失败: %s", e)
+        return False
+    finally:
+        conn.close()
+
+
 def delete_user_bot(bot_db_id: int) -> bool:
     """软删除用户Bot"""
     return update_user_bot_status(bot_db_id, 'deleted')
