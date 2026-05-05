@@ -6,9 +6,14 @@ from telegram.ext import ContextTypes
 from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio
 
 from config import GROUP_SEND_SIZE
+from database import mark_file_invalid
 
 logger = logging.getLogger(__name__)
 
+
+def _is_invalid_file_error(e):
+    msg=str(e).lower()
+    return 'media_file_invalid' in msg or 'wrong_file_id' in msg
 
 async def send_file_group(
     context: ContextTypes.DEFAULT_TYPE,
@@ -60,6 +65,7 @@ async def send_file_group(
                 sent_count += 1
             except Exception as e:
                 logger.error("发送单个媒体失败: %s", e, exc_info=True)
+                if _is_invalid_file_error(e): mark_file_invalid(f.get("code",""))
         else:
             media_list = []
             for idx, f in enumerate(batch):
@@ -87,6 +93,7 @@ async def send_file_group(
                             sent_count += 1
                         except Exception as e2:
                             logger.error("降级发送失败: %s", e2)
+                            if _is_invalid_file_error(e2): mark_file_invalid(f.get("code",""))
 
     # 2. 发送文档
     for i in range(0, len(documents), GROUP_SEND_SIZE):

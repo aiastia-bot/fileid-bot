@@ -88,8 +88,29 @@ def init_db():
                 value TEXT NOT NULL
             );
         ''')
+        # 迁移：添加 is_valid 字段
+        try:
+            conn.execute("ALTER TABLE file_mappings ADD COLUMN is_valid INTEGER DEFAULT 1")
+        except Exception:
+            pass
+
         conn.commit()
         logger.info("数据库初始化完成")
+    finally:
+        conn.close()
+
+
+
+def mark_file_invalid(code: str) -> bool:
+    """标记文件为无效（file_id 失效）"""
+    conn = get_db()
+    try:
+        cursor = conn.execute(
+            "UPDATE file_mappings SET is_valid = 0 WHERE code = ?",
+            (code,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()
 
