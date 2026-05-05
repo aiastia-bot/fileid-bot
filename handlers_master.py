@@ -1239,6 +1239,103 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 # ==================== 黑名单检查 ====================
 
+async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/startbot 管理员启动指定Bot（支持 revoked 状态的Bot重新尝试启动）"""
+    from config import ADMIN_IDS
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ 此命令仅限管理员使用。")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "🚀 <b>启动指定 Bot</b>\n\n"
+            "用法：<code>/startbot @用户名</code> 或 <code>/startbot 数据库ID</code>\n\n"
+            "可用于启动已停止或 revoked 状态的 Bot。\n"
+            "使用 /platform bots 查看所有 Bot。",
+            parse_mode="HTML"
+        )
+        return
+
+    arg = context.args[0].strip()
+    bot_record = None
+
+    # 按数据库ID查找
+    try:
+        bot_db_id = int(arg)
+        bot_record = get_user_bot_by_id(bot_db_id)
+    except ValueError:
+        pass
+
+    # 按用户名查找
+    if not bot_record:
+        username = arg.lstrip('@')
+        from database import get_db
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT * FROM user_bots WHERE bot_username = ? AND status != 'deleted'",
+                (username,)
+            ).fetchone()
+            bot_record = dict(row) if row else None
+        finally:
+            conn.close()
+
+    if not bot_record:
+        await update.message.reply_text(f"❌ 未找到 Bot：{escape(arg)}")
+        return
+
+    # 检查是否已在运行
+    mgr = get_bot_manager()
+    if mgr and bot_record['id'] in mgr.get_all_apps():
+        await update.message.reply_text(
+            f"ℹ️ Bot @{escape(bot_record['bot_username'])} 已在运行中，无需启动。"
+        )
+        return
+
+    # 检查是否被封禁
+    if bot_record['status'] == 'banned':
+        await update.message.reply_text(
+            f"🚫 Bot @{escape(bot_record['bot_username'])} 已被封禁，无法启动。\n"
+            f"使用 /blacklist del {bot_record['owner_id']} 解除封禁。"
+        )
+        return
+
+    status_msg = await update.message.reply_text(
+        f"⏳ 正在启动 @{escape(bot_record['bot_username'])}..."
+    )
+
+    # 更新数据库状态为 active
+    update_user_bot_status(bot_record['id'], 'active')
+
+    # 先停止旧实例（如果存在）
+    if mgr:
+        await mgr.stop_bot(bot_record['id'])
+
+    # 重新获取记录并启动
+    bot_record = get_user_bot_by_id(bot_record['id'])
+    success = await mgr.start_bot(bot_record) if mgr else False
+
+    if success:
+        await status_msg.edit_text(
+            f"✅ <b>Bot 启动成功！</b>\n\n"
+            f"🤖 @{escape(bot_record['bot_username'])}\n"
+            f"🆔 Bot ID：<code>{bot_record['bot_id']}</code>\n"
+            f"👤 所有者：<code>{bot_record['owner_id']}</code>",
+            parse_mode="HTML"
+        )
+        logger.info("管理员 %s 启动了 Bot @%s", user_id, bot_record['bot_username'])
+    else:
+        await status_msg.edit_text(
+            f"❌ <b>启动失败</b>\n\n"
+            f"Bot @{escape(bot_record['bot_username'])} 启动失败。\n"
+            f"可能原因：Token 已失效。\n\n"
+            f"💡 让用户使用 /updatetoken 更新 Token，\n"
+            f"或使用 /delbot 删除后重建。",
+            parse_mode="HTML"
+        )
+
+
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/broadcast 管理员广播消息给所有Bot所有者"""
     from config import ADMIN_IDS

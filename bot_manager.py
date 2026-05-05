@@ -239,18 +239,21 @@ class BotManager:
             return False
 
     async def load_all(self) -> int:
-        """从数据库加载所有活跃的用户Bot"""
+        """从数据库加载所有活跃的用户Bot（并发启动）"""
         bots = get_all_active_user_bots()
-        logger.info("从数据库加载 %d 个用户Bot", len(bots))
+        logger.info("从数据库加载 %d 个用户Bot（并发启动）", len(bots))
 
-        loaded = 0
-        for bot in bots:
+        async def _start_one(bot):
             success = await self.start_bot(bot)
+            name = bot.get('bot_username', 'unknown')
             if success:
-                loaded += 1
-                logger.info("  ✅ @%s 已加载", bot.get('bot_username', 'unknown'))
+                logger.info("  ✅ @%s 已加载", name)
             else:
-                logger.error("  ❌ @%s 加载失败", bot.get('bot_username', 'unknown'))
+                logger.error("  ❌ @%s 加载失败", name)
+            return success
+
+        results = await asyncio.gather(*[_start_one(bot) for bot in bots])
+        loaded = sum(1 for r in results if r)
 
         return loaded
 
