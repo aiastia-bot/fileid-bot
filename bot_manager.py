@@ -16,6 +16,9 @@ from telegram.ext import (
 from database import get_all_active_user_bots
 from config import API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT
 
+# 启动并发数限制，避免同时发起过多 Telegram API 请求
+MAX_CONCURRENT_STARTS = 5
+
 logger = logging.getLogger(__name__)
 
 
@@ -239,12 +242,15 @@ class BotManager:
             return False
 
     async def load_all(self) -> int:
-        """从数据库加载所有活跃的用户Bot（并发启动）"""
+        """从数据库加载所有活跃的用户Bot（限制并发数启动）"""
         bots = get_all_active_user_bots()
-        logger.info("从数据库加载 %d 个用户Bot（并发启动）", len(bots))
+        logger.info("从数据库加载 %d 个用户Bot（最大并发 %d）", len(bots), MAX_CONCURRENT_STARTS)
+
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_STARTS)
 
         async def _start_one(bot):
-            success = await self.start_bot(bot)
+            async with semaphore:
+                success = await self.start_bot(bot)
             name = bot.get('bot_username', 'unknown')
             if success:
                 logger.info("  ✅ @%s 已加载", name)
