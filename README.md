@@ -59,6 +59,115 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## 🌐 Webhook 模式（可选）
+
+默认使用 **Polling 模式**（长轮询），无需额外配置。如果需要更低延迟和更好的稳定性，可以切换到 **Webhook 模式**。
+
+### 架构说明
+
+```
+Telegram服务器
+    ↓ HTTPS POST
+你的反代（Nginx/Caddy等，处理SSL）
+    ↓ HTTP 转发
+FileID Bot 容器（aiohttp 监听 8080）
+    ├── POST /webhook/master    → 主Bot
+    ├── POST /webhook/1         → 用户Bot #1
+    ├── POST /webhook/2         → 用户Bot #2
+    └── GET  /health            → 健康检查
+```
+
+### 配置步骤
+
+**1. 准备域名和反代**
+
+你需要一个域名（如 `bots.example.com`）并将其反向代理到容器的 8080 端口。反代负责 SSL 终止。
+
+Nginx 配置示例：
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name bots.example.com;
+
+    ssl_certificate     /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location /webhook/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location /health {
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
+```
+
+Caddy 配置示例（自动HTTPS）：
+
+```
+bots.example.com {
+    reverse_proxy localhost:8080
+}
+```
+
+**2. 配置环境变量**
+
+在 `.env` 文件中添加：
+
+```env
+# 切换到 webhook 模式
+BOT_MODE=webhook
+
+# 你的外部域名（不含 https://）
+WEBHOOK_HOST=bots.example.com
+
+# 本地监听端口（默认8080）
+WEBHOOK_PORT=8080
+
+# Webhook URL 基路径（默认 /webhook）
+WEBHOOK_PATH=/webhook
+
+# 可选：验证请求来源的密钥
+WEBHOOK_SECRET=your_random_secret_here
+```
+
+**3. 启动服务**
+
+```bash
+docker compose up -d
+```
+
+**4. 验证**
+
+```bash
+# 健康检查
+curl http://localhost:8080/health
+
+# 返回示例
+# {"status":"ok","mode":"webhook","bots":3}
+```
+
+### 模式对比
+
+| 特性 | Polling 模式 | Webhook 模式 |
+|------|-------------|-------------|
+| 延迟 | 较高（轮询间隔） | 低（实时推送） |
+| 资源占用 | 较高（持续轮询） | 较低（事件驱动） |
+| 配置难度 | 零配置 | 需要域名+反代 |
+| 网络要求 | 出站连接 | 入站连接（公网可达） |
+| 多Bot性能 | 每个 Bot 独立轮询 | 共享一个 HTTP 服务器 |
+| 适用场景 | 开发测试、少量Bot | 生产环境、大量Bot |
+
+### 注意事项
+
+- Webhook 模式要求服务器**公网可达**，Telegram 需要能访问到你的域名
+- 必须使用 **HTTPS**（通过反代实现，程序本身只监听 HTTP）
+- 切换模式后需要**重启服务**
+- `WEBHOOK_SECRET` 建议设置，防止非法请求伪造更新
+
 ## 📱 使用方法
 
 ### 平台用户流程
@@ -116,8 +225,13 @@ python main.py
 |----------|------|--------|------|
 | `BOT_TOKEN` | ✅ | - | 主Bot Token |
 | `ADMIN_IDS` | ❌ | - | 管理员Telegram ID |
-| `MAX_BOTS_PER_USER` | ❌ | 5 | 每用户最大Bot数 |
+| `MAX_BOTS_PER_USER` | ❌ | 1 | 每用户最大Bot数 |
 | `CODE_PREFIX` | ❌ | Bot用户名 | 文件代码前缀 |
+| `BOT_MODE` | ❌ | `polling` | 运行模式：`polling` 或 `webhook` |
+| `WEBHOOK_HOST` | webhook时必填 | - | 外部域名（不含 https://） |
+| `WEBHOOK_PORT` | ❌ | `8080` | 本地监听端口 |
+| `WEBHOOK_PATH` | ❌ | `/webhook` | Webhook URL 基路径 |
+| `WEBHOOK_SECRET` | ❌ | - | 验证请求来源的密钥 |
 
 ##  License
 
