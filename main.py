@@ -51,6 +51,9 @@ async def post_init(application: Application) -> None:
     except Exception as e:
         logger.warning("主Bot注册命令失败: %s", e)
 
+    # 设置主Bot用户名，供用户Bot引用
+    application.bot_data['bot_manager'].master_bot_username = application.bot.username
+
     # 加载所有用户Bot
     loaded = await application.bot_data['bot_manager'].load_all()
     logger.info("✅ 主Bot启动完成，共加载 %d 个用户Bot", loaded)

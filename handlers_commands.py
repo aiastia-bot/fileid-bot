@@ -20,6 +20,17 @@ logger = logging.getLogger(__name__)
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/start 和 /help 命令"""
     bot_username = context.bot.username
+
+    # 获取主Bot用户名
+    master_info = ""
+    try:
+        import __main__
+        mgr = getattr(__main__, 'bot_manager', None)
+        if mgr and mgr.master_bot_username:
+            master_info = f"\n\n🏗 创建自 @{mgr.master_bot_username}"
+    except Exception:
+        pass
+
     help_text = f"""🤖 *FileID Bot* — 文件ID互转工具
 
 📌 *核心功能：*
@@ -44,7 +55,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 • `{bot_username}_d:xxx` — 文档/音频
 • `{bot_username}_col:xxx` — 集合
 
-将代码直接发送给 bot 即可获取文件！"""
+将代码直接发送给 bot 即可获取文件！{master_info}"""
 
     await update.message.reply_text(help_text, parse_mode="Markdown", disable_web_page_preview=True)
 

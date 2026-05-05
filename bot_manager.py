@@ -74,6 +74,7 @@ class BotManager:
 
     def __init__(self):
         self._apps: Dict[int, Application] = {}  # bot_db_id -> Application
+        self.master_bot_username: str = ""  # 主Bot用户名，由 main.py 设置
 
     def _create_user_bot_app(self, token: str) -> Application:
         """为用户Bot创建 Application 实例，注册所有 FileID 处理器"""
