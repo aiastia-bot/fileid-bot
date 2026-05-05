@@ -6,10 +6,17 @@ services:
     volumes:
       - ./data:/app/data/
     restart: unless-stopped
+    ports:
+      - "${WEBHOOK_PORT:-8080}:8080"
     environment:
       - TZ=Asia/Shanghai
       - BOT_TOKEN=${BOT_TOKEN}
       - ADMIN_IDS=${ADMIN_IDS:-}
+      - BOT_MODE=${BOT_MODE:-polling}
+      - WEBHOOK_HOST=${WEBHOOK_HOST:-}
+      - WEBHOOK_PORT=${WEBHOOK_PORT:-8080}
+      - WEBHOOK_PATH=${WEBHOOK_PATH:-/webhook}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
     logging:
       options:
         max-size: "10m"

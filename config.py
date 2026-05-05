@@ -31,6 +31,13 @@ API_READ_TIMEOUT = float(os.environ.get('API_READ_TIMEOUT', '60.0'))   # Telegra
 API_WRITE_TIMEOUT = float(os.environ.get('API_WRITE_TIMEOUT', '60.0')) # Telegram API 写入超时（秒）
 API_CONNECT_TIMEOUT = float(os.environ.get('API_CONNECT_TIMEOUT', '30.0'))  # Telegram API 连接超时（秒）
 
+# ===== Webhook 模式配置 =====
+BOT_MODE = os.environ.get('BOT_MODE', 'polling')  # 'polling' 或 'webhook'
+WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', '')  # 外部域名，如 'bots.example.com'（不含 https://）
+WEBHOOK_PORT = int(os.environ.get('WEBHOOK_PORT', '8080'))  # 本地监听端口
+WEBHOOK_PATH = os.environ.get('WEBHOOK_PATH', '/webhook')  # URL 基路径
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', '')  # 可选的 webhook secret token
+
 FILE_TYPE_MAP = {
     'photo': '🖼 图片',
     'video': '🎬 视频',

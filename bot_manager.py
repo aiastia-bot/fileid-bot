@@ -14,7 +14,10 @@ from telegram.ext import (
 )
 
 from database import get_all_active_user_bots
-from config import API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT
+from config import (
+    API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT,
+    BOT_MODE, WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET
+)
 
 # 启动并发数限制，避免同时发起过多 Telegram API 请求
 MAX_CONCURRENT_STARTS = 5
@@ -174,8 +177,16 @@ class BotManager:
 
         return application
 
+    def _get_webhook_url(self, bot_db_id: int) -> str:
+        """生成 Bot 的 webhook URL"""
+        return f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}/{bot_db_id}"
+
+    def _get_webhook_url_for_master(self) -> str:
+        """生成主 Bot 的 webhook URL"""
+        return f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}/master"
+
     async def start_bot(self, bot_record: dict, max_retries: int = 2) -> bool:
-        """创建并启动一个用户Bot（网络错误时自动重试）"""
+        """创建并启动一个用户Bot（网络错误时自动重试，支持 polling/webhook 模式）"""
         bot_db_id = bot_record['id']
         if bot_db_id in self._apps:
             logger.info("Bot @%s 已在运行，跳过", bot_record.get('bot_username', 'unknown'))
@@ -209,13 +220,25 @@ class BotManager:
                 except Exception as cmd_err:
                     logger.warning("用户Bot @%s 注册命令失败: %s", app.bot.username, cmd_err)
 
-                await app.updater.start_polling(
-                    drop_pending_updates=True,
-                    allowed_updates=Update.ALL_TYPES
-                )
+                if BOT_MODE == 'webhook':
+                    # Webhook 模式：注册 webhook URL，不启动 polling
+                    webhook_url = self._get_webhook_url(bot_db_id)
+                    await app.bot.set_webhook(
+                        url=webhook_url,
+                        secret_token=WEBHOOK_SECRET or None,
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True,
+                    )
+                    logger.info("用户Bot @%s webhook 已设置: %s", name, webhook_url)
+                else:
+                    # Polling 模式
+                    await app.updater.start_polling(
+                        drop_pending_updates=True,
+                        allowed_updates=Update.ALL_TYPES
+                    )
 
                 self._apps[bot_db_id] = app
-                logger.info("用户Bot @%s 启动成功 (db_id=%s)", name, bot_db_id)
+                logger.info("用户Bot @%s 启动成功 (db_id=%s, mode=%s)", name, bot_db_id, BOT_MODE)
                 return True
 
             except Exception as e:
@@ -247,13 +270,35 @@ class BotManager:
             return False
 
         try:
-            await app.updater.stop()
+            if BOT_MODE == 'webhook':
+                # Webhook 模式：删除 webhook 再关闭
+                try:
+                    await app.bot.delete_webhook()
+                except Exception:
+                    pass
+            else:
+                await app.updater.stop()
             await app.stop()
             await app.shutdown()
             logger.info("用户Bot (db_id=%s) 已停止", bot_db_id)
             return True
         except Exception as e:
             logger.error("停止用户Bot失败: %s", e)
+            return False
+
+    async def handle_webhook_update(self, bot_db_id: int, update_data: dict) -> bool:
+        """处理收到的 webhook 更新，分发给对应的 Bot"""
+        app = self._apps.get(bot_db_id)
+        if not app:
+            logger.warning("收到未知 bot_db_id=%s 的 webhook 更新", bot_db_id)
+            return False
+
+        try:
+            update = Update.de_json(update_data, app.bot)
+            await app.process_update(update)
+            return True
+        except Exception as e:
+            logger.error("处理 webhook 更新失败 (bot_db_id=%s): %s", bot_db_id, e)
             return False
 
     async def load_all(self) -> int:
