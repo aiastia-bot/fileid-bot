@@ -8,7 +8,7 @@ from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from config import MAX_COLLECTION_FILES, GROUP_SEND_SIZE, FILE_TYPE_MAP, SEND_INDIVIDUAL_DELAY
+from config import MAX_COLLECTION_FILES, GROUP_SEND_SIZE, FILE_TYPE_MAP, SEND_INDIVIDUAL_DELAY, SEND_BATCH_DELAY
 from database import save_file, get_file, get_collection, get_collection_files, create_collection, add_file_to_collection
 from utils import get_code_prefix, escape_markdown, generate_raw_code, parse_file_code, parse_collection_code
 from senders import send_file_group, _retry_send
@@ -73,7 +73,11 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理文本消息，解析代码并发送文件"""
+    """处理文本消息，解析代码并发送文件。
+    
+    当 Telegram 将用户的长消息切割成多条时，
+    会自动收集同一用户短时间内连续发送的代码消息，合并后统一处理。
+    """
     message = update.message
     if not message or not message.text:
         return
@@ -94,29 +98,166 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     chat_id = message.chat_id
+    user_id = message.from_user.id if message.from_user else 0
+
+    # ===== 消息合并缓冲：收集同一用户短时间内连续发送的代码 =====
+    # 当代码数量较多时，Telegram 可能会将一条消息切割成多条
+    # 等待 2 秒，收集同一用户的所有代码消息后统一处理
+    has_sendable_codes = bool(file_codes) or bool(legacy_file_ids)
+    if has_sendable_codes:
+        if 'pending_code_buffer' not in context.bot_data:
+            context.bot_data['pending_code_buffer'] = {}
+
+        buffer_key = f"{chat_id}_{user_id}"
+        if buffer_key not in context.bot_data['pending_code_buffer']:
+            context.bot_data['pending_code_buffer'][buffer_key] = {
+                'file_codes': [],
+                'legacy_file_ids': [],
+                'timer': None,
+                'first_message': message,
+            }
+
+        buf = context.bot_data['pending_code_buffer'][buffer_key]
+        buf['file_codes'].extend(file_codes)
+        buf['legacy_file_ids'].extend(legacy_file_ids)
+
+        # 重置计时器
+        if buf['timer']:
+            buf['timer'].cancel()
+
+        async def process_buffered_codes():
+            """处理合并后的所有代码"""
+            try:
+                await asyncio.sleep(2)  # 等待2秒收集可能的后续消息
+
+                buf = context.bot_data.get('pending_code_buffer', {}).pop(buffer_key, None)
+                if not buf:
+                    return
+
+                all_file_codes = buf['file_codes']
+                all_legacy = buf['legacy_file_ids']
+                ref_message = buf['first_message']
+
+                logger.info("合并处理: %d 个文件代码, %d 个旧格式代码 (来自用户 %s)",
+                            len(all_file_codes), len(all_legacy), user_id)
+
+                await _process_file_codes(context, chat_id, ref_message, all_file_codes)
+
+                # 处理旧格式
+                if all_legacy:
+                    await _process_legacy_codes(context, chat_id, all_legacy)
+
+            except Exception as e:
+                logger.error("process_buffered_codes 失败: %s", e, exc_info=True)
+                # 清理
+                context.bot_data.get('pending_code_buffer', {}).pop(buffer_key, None)
+
+        buf['timer'] = asyncio.create_task(process_buffered_codes())
+
+        # 集合代码不需要缓冲，立即处理
+        if collection_codes:
+            await _process_collection_codes(context, chat_id, message, collection_codes)
+
+        return  # 文件代码已缓冲，等待后续消息
+
+    # ===== 无文件代码，只有集合代码，直接处理 =====
+    if collection_codes:
+        await _process_collection_codes(context, chat_id, message, collection_codes)
+
+
+async def _process_file_codes(context, chat_id, message, file_codes: list) -> None:
+    """处理文件代码发送（带分批+进度反馈）"""
+    if not file_codes:
+        return
+
+    files, not_found = [], []
+    for code in file_codes:
+        f = get_file(code)
+        if f:
+            files.append(f)
+        else:
+            not_found.append(code)
+
     total_sent = 0
+    if files:
+        total_files = len(files)
+        # 文件数较多时，按类型分类后分批发送并显示进度
+        if total_files > GROUP_SEND_SIZE:
+            # 先按类型分类（与 send_file_group 内部逻辑一致）
+            pv_files = [f for f in files if f['file_type'] in ('photo', 'video')]
+            doc_files = [f for f in files if f['file_type'] == 'document']
+            audio_files = [f for f in files if f['file_type'] in ('audio', 'voice')]
+            type_summary = []
+            if pv_files:
+                type_summary.append(f"🖼🎬 {len(pv_files)}个图片/视频")
+            if doc_files:
+                type_summary.append(f"📄 {len(doc_files)}个文档")
+            if audio_files:
+                type_summary.append(f"🎵 {len(audio_files)}个音频")
 
-    # 发送单个文件
-    if file_codes:
-        files, not_found = [], []
-        for code in file_codes:
-            f = get_file(code)
-            if f:
-                files.append(f)
-            else:
-                not_found.append(code)
+            status_msg = await message.reply_text(
+                f"📤 准备发送 {total_files} 个文件\n📋 {', '.join(type_summary)}\n\n⏳ 正在发送... (0/{total_files})"
+            )
+            batch_num = 0
 
-        if files:
+            # 按类型依次分批发送（同类型可合并为相册/组）
+            for type_label, type_files in [("图片/视频", pv_files), ("文档", doc_files), ("音频", audio_files)]:
+                if not type_files:
+                    continue
+                for i in range(0, len(type_files), GROUP_SEND_SIZE):
+                    batch = type_files[i:i + GROUP_SEND_SIZE]
+                    try:
+                        sent = await send_file_group(context, chat_id, batch)
+                        total_sent += sent
+                        batch_num += 1
+                    except Exception as e:
+                        logger.error("发送%s失败 (batch %d): %s", type_label, batch_num, e, exc_info=True)
+
+                    # 更新进度
+                    is_last_batch = (type_files is audio_files and i + GROUP_SEND_SIZE >= len(type_files)) or \
+                                    (not audio_files and type_files is doc_files and i + GROUP_SEND_SIZE >= len(type_files)) or \
+                                    (not audio_files and not doc_files and i + GROUP_SEND_SIZE >= len(type_files))
+                    if is_last_batch or batch_num % 2 == 0:
+                        try:
+                            await context.bot.edit_message_text(
+                                chat_id=chat_id,
+                                message_id=status_msg.message_id,
+                                text=f"📤 正在发送{type_label}... ({total_sent}/{total_files})"
+                            )
+                        except Exception:
+                            pass
+
+                    # 批间延迟
+                    await asyncio.sleep(SEND_BATCH_DELAY)
+
+            # 发送完成，更新最终状态
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg.message_id,
+                    text=f"✅ 发送完成！成功 {total_sent}/{total_files}"
+                )
+            except Exception:
+                pass
+        else:
+            # 文件数少，直接发送
             try:
                 total_sent += await send_file_group(context, chat_id, files)
             except Exception as e:
                 logger.error("发送文件失败: %s", e)
                 await message.reply_text(f"❌ 发送文件时出错: {e}")
 
-        if not_found:
-            await message.reply_text("⚠️ 以下代码未找到:\n" + "\n".join(f"• `{c}`" for c in not_found), parse_mode="Markdown")
+    if not_found:
+        max_show = 20
+        shown = not_found[:max_show]
+        not_found_text = "\n".join(f"• `{c}`" for c in shown)
+        if len(not_found) > max_show:
+            not_found_text += f"\n... 等 {len(not_found)} 个"
+        await message.reply_text(f"⚠️ 以下代码未找到 ({len(not_found)} 个):\n" + not_found_text, parse_mode="Markdown")
 
-    # 处理集合
+
+async def _process_collection_codes(context, chat_id, message, collection_codes: list) -> None:
+    """处理集合代码"""
     for col_code in collection_codes:
         col_info = get_collection(col_code)
         if not col_info:
@@ -150,22 +291,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         await message.reply_text(col_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # 旧格式（带重试和限速）
-    if legacy_file_ids:
-        for idx, (prefix, fid) in enumerate(legacy_file_ids):
-            try:
-                if prefix == 'p':
-                    await _retry_send(context.bot.send_photo, chat_id=chat_id, photo=fid, read_timeout=30, write_timeout=30)
-                elif prefix == 'v':
-                    await _retry_send(context.bot.send_video, chat_id=chat_id, video=fid, read_timeout=30, write_timeout=30)
-                elif prefix == 'd':
-                    await _retry_send(context.bot.send_document, chat_id=chat_id, document=fid, read_timeout=30, write_timeout=30)
-                total_sent += 1
-                # 滑动限速
-                if idx < len(legacy_file_ids) - 1:
-                    await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
-            except Exception as e:
-                logger.error("旧格式发送失败（已重试）: %s", e)
+
+async def _process_legacy_codes(context, chat_id, legacy_file_ids: list) -> None:
+    """处理旧格式代码（带重试和限速）"""
+    total_sent = 0
+    for idx, (prefix, fid) in enumerate(legacy_file_ids):
+        try:
+            if prefix == 'p':
+                await _retry_send(context.bot.send_photo, chat_id=chat_id, photo=fid, read_timeout=30, write_timeout=30)
+            elif prefix == 'v':
+                await _retry_send(context.bot.send_video, chat_id=chat_id, video=fid, read_timeout=30, write_timeout=30)
+            elif prefix == 'd':
+                await _retry_send(context.bot.send_document, chat_id=chat_id, document=fid, read_timeout=30, write_timeout=30)
+            total_sent += 1
+            # 滑动限速
+            if idx < len(legacy_file_ids) - 1:
+                await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
+        except Exception as e:
+            logger.error("旧格式发送失败（已重试）: %s", e)
 
 
 async def handle_forward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
