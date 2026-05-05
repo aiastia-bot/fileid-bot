@@ -27,7 +27,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         import __main__
         mgr = getattr(__main__, 'bot_manager', None)
         if mgr and mgr.master_bot_username:
-            master_info = f"\n\n🏗 创建自 @{mgr.master_bot_username}"
+            master_info = f"\n\n🏗 创建自 @{escape_markdown(mgr.master_bot_username)}"
     except Exception:
         pass
 
