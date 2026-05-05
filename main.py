@@ -13,7 +13,7 @@ from telegram.ext import (
     ConversationHandler, MessageHandler, TypeHandler, filters
 )
 
-from config import BOT_TOKEN, ADMIN_IDS, MAX_BOTS_PER_USER
+from config import BOT_TOKEN, ADMIN_IDS, MAX_BOTS_PER_USER, API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT
 from database import init_db
 from bot_manager import BotManager
 
@@ -72,11 +72,15 @@ def main():
     # 创建 BotManager
     bot_manager = BotManager()
 
-    # 构建主Bot Application
+    # 构建主Bot Application（带超时配置）
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .post_init(post_init)
+        .read_timeout(API_READ_TIMEOUT)
+        .write_timeout(API_WRITE_TIMEOUT)
+        .connect_timeout(API_CONNECT_TIMEOUT)
+        .pool_timeout(API_CONNECT_TIMEOUT)
         .build()
     )
 

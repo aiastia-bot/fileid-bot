@@ -8,10 +8,10 @@ from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from config import MAX_COLLECTION_FILES, GROUP_SEND_SIZE, FILE_TYPE_MAP
+from config import MAX_COLLECTION_FILES, GROUP_SEND_SIZE, FILE_TYPE_MAP, SEND_INDIVIDUAL_DELAY
 from database import save_file, get_file, get_collection, get_collection_files, create_collection, add_file_to_collection
 from utils import get_code_prefix, escape_markdown, generate_raw_code, parse_file_code, parse_collection_code
-from senders import send_file_group
+from senders import send_file_group, _retry_send
 
 
 def _short_key(context, col_code: str) -> str:
@@ -150,19 +150,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         await message.reply_text(col_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # 旧格式
+    # 旧格式（带重试和限速）
     if legacy_file_ids:
-        for prefix, fid in legacy_file_ids:
+        for idx, (prefix, fid) in enumerate(legacy_file_ids):
             try:
                 if prefix == 'p':
-                    await context.bot.send_photo(chat_id=chat_id, photo=fid)
+                    await _retry_send(context.bot.send_photo, chat_id=chat_id, photo=fid, read_timeout=30, write_timeout=30)
                 elif prefix == 'v':
-                    await context.bot.send_video(chat_id=chat_id, video=fid)
+                    await _retry_send(context.bot.send_video, chat_id=chat_id, video=fid, read_timeout=30, write_timeout=30)
                 elif prefix == 'd':
-                    await context.bot.send_document(chat_id=chat_id, document=fid)
+                    await _retry_send(context.bot.send_document, chat_id=chat_id, document=fid, read_timeout=30, write_timeout=30)
                 total_sent += 1
+                # 滑动限速
+                if idx < len(legacy_file_ids) - 1:
+                    await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
             except Exception as e:
-                logger.error("旧格式发送失败: %s", e)
+                logger.error("旧格式发送失败（已重试）: %s", e)
 
 
 async def handle_forward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

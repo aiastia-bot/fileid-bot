@@ -14,6 +14,7 @@ from telegram.ext import (
 )
 
 from database import get_all_active_user_bots
+from config import API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,15 @@ class BotManager:
         )
         from handlers_callbacks import button_callback
 
-        application = ApplicationBuilder().token(token).build()
+        application = (
+            ApplicationBuilder()
+            .token(token)
+            .read_timeout(API_READ_TIMEOUT)
+            .write_timeout(API_WRITE_TIMEOUT)
+            .connect_timeout(API_CONNECT_TIMEOUT)
+            .pool_timeout(API_CONNECT_TIMEOUT)
+            .build()
+        )
 
         # 注册命令处理器
         application.add_handler(CommandHandler("start", start_command))
