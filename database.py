@@ -101,6 +101,27 @@ def init_db():
 
 
 
+def get_active_bot_files(since_date: str = None) -> List[Dict]:
+    """获取活跃Bot的文件列表，按bot_username+created_at排序，支持日期过滤"""
+    conn = get_db()
+    try:
+        sql = """
+            SELECT fm.code, fm.bot_username, fm.file_type, fm.file_size, fm.user_id, fm.created_at
+            FROM file_mappings fm
+            INNER JOIN user_bots ub ON fm.bot_username = ub.bot_username
+            WHERE ub.status = 'active' AND (fm.is_valid IS NULL OR fm.is_valid = 1)
+        """
+        params = []
+        if since_date:
+            sql += " AND fm.created_at >= ?"
+            params.append(since_date)
+        sql += " ORDER BY fm.bot_username, fm.created_at"
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def mark_file_invalid(code: str) -> bool:
     """标记文件为无效（file_id 失效）"""
     conn = get_db()

@@ -16,6 +16,7 @@ from telegram.ext import (
 from database import (
     add_user_bot, get_user_bots_by_owner, get_user_bot_by_id,
     get_all_owner_ids,
+    get_active_bot_files,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
     delete_user_bot as db_delete_user_bot,
     update_user_bot_status, get_platform_stats,
@@ -905,7 +906,7 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "📤 <b>数据导出命令</b>\n\n"
             "可用格式:\n"
             "• <code>/export json</code> — 完整 JSON 数据\n"
-            "• <code>/export csv</code> — 全部文件列表 CSV\n"
+            "• <code>/export csv [日期]</code> — 活跃Bot文件 CSV（如 /export csv 2026-05-05）\n"
             "• <code>/export bots</code> — Bot 列表 CSV\n"
             "• <code>/export @bot_username</code> — 指定Bot文件代码 CSV",
             parse_mode="HTML"
@@ -928,13 +929,17 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"🚫 黑名单: {len(data['blacklist'])} 人"
             )
         elif export_format == 'csv':
+            # 支持日期参数: /export csv 2026-05-05
+            since_date = args[1] if len(args) > 1 else None
+            files = get_active_bot_files(since_date)
             output = io.StringIO()
             output.write("code,bot_username,file_type,file_size,user_id,created_at\n")
-            for f in data['files']:
-                output.write(f"{f['code']},{f.get('bot_username', '')},{f['file_type']},{f['file_size']},{f['user_id']},{f['created_at']}\n")
+            for f in files:
+                output.write(f"{f['code']},{f['bot_username']},{f['file_type']},{f['file_size']},{f['user_id']},{f['created_at']}\n")
             export_text = output.getvalue()
-            filename = f"files_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            caption = f"📁 文件数据导出，共 {len(data['files'])} 条记录。"
+            date_info = f"（{since_date} 起）" if since_date else ""
+            filename = f"active_files_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            caption = f"📁 活跃Bot文件导出{date_info}，共 {len(files)} 条记录。"
         elif export_format == 'bots':
             output = io.StringIO()
             output.write("id,owner_id,bot_id,bot_username,bot_firstname,status,created_at\n")
@@ -948,7 +953,7 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "❓ 未知格式。\n\n"
                 "可用格式:\n"
                 "• <code>/export json</code> — 完整 JSON 数据（默认）\n"
-                "• <code>/export csv</code> — 全部文件列表 CSV\n"
+                "• <code>/export csv [日期]</code> — 活跃Bot文件 CSV（如 /export csv 2026-05-05）\n"
                 "• <code>/export bots</code> — Bot 列表 CSV\n"
                 "• <code>/export @bot_username</code> — 指定Bot文件代码 CSV",
                 parse_mode="HTML"
