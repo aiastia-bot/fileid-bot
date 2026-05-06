@@ -1,24 +1,95 @@
 version: '3.8'
 
+# ==================== 单机部署（默认） ====================
+# docker compose up -d
+
 services:
-  fileid-bot:
-    image: aiastia/fileid-bot:latest
-    volumes:
-      - ./data:/app/data/
+  bot:
+    build: .
+    container_name: fileid-bot
     restart: unless-stopped
-    ports:
-      - "${WEBHOOK_PORT:-8080}:8080"
     environment:
-      - TZ=Asia/Shanghai
+      - ROLE=standalone
+      - BOT_MODE=${BOT_MODE:-polling}
       - BOT_TOKEN=${BOT_TOKEN}
       - ADMIN_IDS=${ADMIN_IDS:-}
+      - MAX_BOTS_PER_USER=${MAX_BOTS_PER_USER:-1}
       - BOT_MODE=${BOT_MODE:-polling}
       - WEBHOOK_HOST=${WEBHOOK_HOST:-}
       - WEBHOOK_PORT=${WEBHOOK_PORT:-8080}
-      - WEBHOOK_PATH=${WEBHOOK_PATH:-/webhook}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
       - ALLOW_GROUP=${ALLOW_GROUP:-false}
-    logging:
-      options:
-        max-size: "10m"
-        max-file: "3"
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "${WEBHOOK_PORT:-8080}:${WEBHOOK_PORT:-8080}"
+
+# ==================== 分布式部署 ====================
+# 取消下面的注释，注释掉上面的单机配置
+#
+# services:
+#   master:
+#     build: .
+#     container_name: fileid-master
+#     restart: unless-stopped
+#     environment:
+#       - ROLE=master
+#       - BOT_MODE=webhook
+#       - BOT_TOKEN=${BOT_TOKEN}
+#       - ADMIN_IDS=${ADMIN_IDS:-}
+#       - MAX_BOTS_PER_USER=${MAX_BOTS_PER_USER:-1}
+#       - WEBHOOK_HOST=${WEBHOOK_HOST}
+#       - WEBHOOK_PORT=8080
+#       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+#       - WORKER_SECRET=${WORKER_SECRET:-changeme123}
+#       - ALLOW_GROUP=${ALLOW_GROUP:-false}
+#     volumes:
+#       - ./data:/app/data
+#     ports:
+#       - "8080:8080"
+#
+#   worker-1:
+#     build: .
+#     container_name: fileid-worker-1
+#     restart: unless-stopped
+#     environment:
+#       - ROLE=worker
+#       - BOT_MODE=webhook
+#       - NODE_ID=worker-1
+#       - MASTER_URL=http://master:8080
+#       - WORKER_SECRET=${WORKER_SECRET:-changeme123}
+#       - WORKER_PORT=8081
+#       - WORKER_WEBHOOK_HOST=${WORKER1_HOST:-node1.example.com}
+#       - MAX_BOTS_PER_WORKER=${MAX_BOTS_PER_WORKER:-100}
+#       - WEBHOOK_PATH=/webhook
+#       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+#       - ALLOW_GROUP=${ALLOW_GROUP:-false}
+#     volumes:
+#       - ./data:/app/data
+#     ports:
+#       - "8081:8081"
+#     depends_on:
+#       - master
+#
+#   worker-2:
+#     build: .
+#     container_name: fileid-worker-2
+#     restart: unless-stopped
+#     environment:
+#       - ROLE=worker
+#       - BOT_MODE=webhook
+#       - NODE_ID=worker-2
+#       - MASTER_URL=http://master:8080
+#       - WORKER_SECRET=${WORKER_SECRET:-changeme123}
+#       - WORKER_PORT=8082
+#       - WORKER_WEBHOOK_HOST=${WORKER2_HOST:-node2.example.com}
+#       - MAX_BOTS_PER_WORKER=${MAX_BOTS_PER_WORKER:-100}
+#       - WEBHOOK_PATH=/webhook
+#       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+#       - ALLOW_GROUP=${ALLOW_GROUP:-false}
+#     volumes:
+#       - ./data:/app/data
+#     ports:
+#       - "8082:8082"
+#     depends_on:
+#       - master

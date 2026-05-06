@@ -56,3 +56,28 @@ FILE_TYPE_PREFIX = {
     'audio': 'd',
     'voice': 'd',
 }
+
+# ===== 分布式架构配置 =====
+# 节点角色：standalone（单机，默认）/ master（主控节点）/ worker（工作节点）
+ROLE = os.environ.get('ROLE', 'standalone')
+
+# Master 节点地址（Worker 需要配置，用于向 Master 汇报状态）
+MASTER_URL = os.environ.get('MASTER_URL', '')  # 如 https://1.1.1.1:8080
+
+# Worker 节点标识（每个 Worker 唯一）
+NODE_ID = os.environ.get('NODE_ID', 'local')
+
+# Worker 内部通信密钥（Master 和 Worker 必须一致）
+WORKER_SECRET = os.environ.get('WORKER_SECRET', '')
+
+# Worker 内部 API 端口（Worker 节点监听的端口）
+WORKER_PORT = int(os.environ.get('WORKER_PORT', '8081'))
+
+# 每个 Worker 节点最大 Bot 数量
+MAX_BOTS_PER_WORKER = int(os.environ.get('MAX_BOTS_PER_WORKER', '100'))
+
+# Worker 健康检查间隔（秒）
+HEALTH_CHECK_INTERVAL = int(os.environ.get('HEALTH_CHECK_INTERVAL', '60'))
+
+# Worker 自身对外 Webhook 域名（Worker 模式下需要配置，用于设置 Bot webhook）
+WORKER_WEBHOOK_HOST = os.environ.get('WORKER_WEBHOOK_HOST', '')  # 如 node1.example.com
