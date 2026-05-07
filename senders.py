@@ -5,7 +5,7 @@ from typing import List, Dict
 
 from telegram.ext import ContextTypes
 from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio
-from telegram.error import TimedOut, NetworkError, RetryAfter
+from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest
 
 from config import GROUP_SEND_SIZE, SEND_RETRY_COUNT, SEND_RETRY_DELAY, SEND_BATCH_DELAY, SEND_INDIVIDUAL_DELAY
 from database import mark_file_invalid
@@ -23,12 +23,18 @@ async def _retry_send(send_func, *args, **kwargs):
     通用重试包装器：带指数退避的重试机制
     - 对 TimedOut 和 NetworkError 自动重试
     - 对 RetryAfter（429 Flood）等待指定时间后重试
+    - BadRequest（file_id无效）不重试，直接抛出
     - 最多重试 SEND_RETRY_COUNT 次
     """
     last_exception = None
     for attempt in range(SEND_RETRY_COUNT + 1):
         try:
             return await send_func(*args, **kwargs)
+        except BadRequest as e:
+            # file_id 无效等错误，不重试直接抛出
+            if _is_invalid_file_error(e):
+                logger.warning("文件ID无效，跳过重试: %s", e)
+            raise
         except RetryAfter as e:
             wait = e.retry_after if hasattr(e, 'retry_after') and e.retry_after else SEND_RETRY_DELAY * 4
             logger.warning("触发限流 (RetryAfter)，等待 %.1f 秒后重试 (第 %d/%d 次)", wait, attempt + 1, SEND_RETRY_COUNT)
@@ -114,7 +120,7 @@ async def send_file_group(
                     )
                 sent_count += 1
             except Exception as e:
-                logger.error("发送单个媒体失败（已重试）: %s", e, exc_info=True)
+                logger.error("发送单个媒体失败: %s", e)
                 if _is_invalid_file_error(e):
                     mark_file_invalid(f.get("code", ""))
         else:
@@ -138,7 +144,7 @@ async def send_file_group(
                     )
                     sent_count += len(media_list)
                 except Exception as e:
-                    logger.error("发送媒体组失败（已重试），降级逐个发送: %s", e)
+                    logger.error("发送媒体组失败，降级逐个发送: %s", e)
                     # 降级：逐个发送，每个之间有延迟
                     for f in batch:
                         try:
@@ -180,7 +186,9 @@ async def send_file_group(
                 )
                 sent_count += 1
             except Exception as e:
-                logger.error("发送文档失败（已重试）: %s", e)
+                logger.error("发送文档失败: %s", e)
+                if _is_invalid_file_error(e):
+                    mark_file_invalid(batch[0].get("code", ""))
         else:
             media_list = []
             for f in batch:
@@ -197,7 +205,7 @@ async def send_file_group(
                     )
                     sent_count += len(media_list)
                 except Exception as e:
-                    logger.error("发送文档组失败（已重试），降级逐个发送: %s", e)
+                    logger.error("发送文档组失败，降级逐个发送: %s", e)
                     for f in batch:
                         try:
                             await _retry_send(
@@ -209,6 +217,8 @@ async def send_file_group(
                             await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
                         except Exception as e2:
                             logger.error("降级发送文档失败: %s", e2)
+                            if _is_invalid_file_error(e2):
+                                mark_file_invalid(f.get("code", ""))
 
     # 3. 发送音频
     for i in range(0, len(audios), GROUP_SEND_SIZE):
@@ -228,7 +238,9 @@ async def send_file_group(
                 )
                 sent_count += 1
             except Exception as e:
-                logger.error("发送音频失败（已重试）: %s", e)
+                logger.error("发送音频失败: %s", e)
+                if _is_invalid_file_error(e):
+                    mark_file_invalid(batch[0].get("code", ""))
         else:
             media_list = []
             for f in batch:
@@ -245,7 +257,7 @@ async def send_file_group(
                     )
                     sent_count += len(media_list)
                 except Exception as e:
-                    logger.error("发送音频组失败（已重试），降级逐个发送: %s", e)
+                    logger.error("发送音频组失败，降级逐个发送: %s", e)
                     for f in batch:
                         try:
                             await _retry_send(
@@ -257,5 +269,7 @@ async def send_file_group(
                             await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
                         except Exception as e2:
                             logger.error("降级发送音频失败: %s", e2)
+                            if _is_invalid_file_error(e2):
+                                mark_file_invalid(f.get("code", ""))
 
     return sent_count
