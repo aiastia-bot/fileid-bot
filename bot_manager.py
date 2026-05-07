@@ -177,13 +177,14 @@ class BotManager:
                 "message to delete not found",  # 消息已删除
                 "Bad Request: chat not found",  # 聊天不存在
                 "have no rights to send",       # 无发送权限
+                "bot was blocked",             # 用户拉黑了 Bot
             )
             if any(err in error_str for err in silent_errors):
                 logger.info("用户Bot @%s 权限/状态错误（已忽略）: %s", context.bot.username, error_str[:100])
                 return
 
             # 检测 Token 被撤销 / Bot 被删除
-            if "Unauthorized" in error_str or "401" in error_str or "bot was blocked" in error_str.lower():
+            if "Unauthorized" in error_str or "401" in error_str:
                 logger.warning("用户Bot @%s Token 已失效，自动停止", context.bot.username)
                 asyncio.create_task(_auto_stop_revoked_bot(context.bot.username, context.bot_data))
                 return
