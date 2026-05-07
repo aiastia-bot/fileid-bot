@@ -188,6 +188,18 @@ class BotManager:
                 asyncio.create_task(_auto_stop_revoked_bot(context.bot.username, context.bot_data))
                 return
 
+            # 检测 Bot 被冻结/注销 (Frozen_method_invalid)
+            if 'Frozen_method' in error_str or 'frozen' in error_str.lower():
+                logger.warning("用户Bot @%s 运行中被冻结/注销，标记为 frozen", context.bot.username)
+                bot_record = context.bot_data.get('bot_record')
+                if bot_record:
+                    update_user_bot_status(bot_record.get('id'), 'frozen')
+                import __main__
+                bot_manager = getattr(__main__, 'bot_manager', None)
+                if bot_manager and bot_record:
+                    asyncio.create_task(bot_manager.stop_bot(bot_record.get('id')))
+                return
+
             # 其他错误：记录日志
             logger.error("用户Bot @%s 错误: %s", context.bot.username, error_str, exc_info=True)
 
