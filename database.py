@@ -111,6 +111,46 @@ def init_db():
         except Exception:
             pass
 
+        # 迁移：添加 bot_db_id 字段（用于区分同名 Bot 的数据）
+        try:
+            conn.execute("ALTER TABLE file_mappings ADD COLUMN bot_db_id INTEGER")
+        except Exception:
+            pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_file_bot_db ON file_mappings(bot_db_id)")
+        except Exception:
+            pass
+
+        try:
+            conn.execute("ALTER TABLE collections ADD COLUMN bot_db_id INTEGER")
+        except Exception:
+            pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_col_bot_db ON collections(bot_db_id)")
+        except Exception:
+            pass
+
+        # 回填旧数据：根据 bot_username 匹配 user_bots 表填充 bot_db_id
+        try:
+            conn.execute("""
+                UPDATE file_mappings SET bot_db_id = (
+                    SELECT ub.id FROM user_bots ub
+                    WHERE ub.bot_username = file_mappings.bot_username
+                    AND ub.status != 'deleted'
+                    ORDER BY ub.created_at DESC LIMIT 1
+                ) WHERE bot_db_id IS NULL
+            """)
+            conn.execute("""
+                UPDATE collections SET bot_db_id = (
+                    SELECT ub.id FROM user_bots ub
+                    WHERE ub.bot_username = collections.bot_username
+                    AND ub.status != 'deleted'
+                    ORDER BY ub.created_at DESC LIMIT 1
+                ) WHERE bot_db_id IS NULL
+            """)
+        except Exception as e:
+            logger.warning("回填 bot_db_id 失败（可忽略）: %s", e)
+
         conn.commit()
         logger.info("数据库初始化完成")
     finally:
@@ -155,8 +195,10 @@ def mark_file_invalid(code: str) -> bool:
 
 def save_file(user_id: int, file_type: str, file_id: str,
               file_size: int, file_unique_id: str, bot_username: str,
-              code_prefix: str) -> Optional[str]:
-    """保存文件到数据库，返回完整代码"""
+              code_prefix: str, bot_db_id: int = None) -> Optional[str]:
+    """保存文件到数据库，返回完整代码。
+    bot_db_id 用于区分同名 Bot 的数据，同名 Bot 删除后重建不会混淆。
+    """
     import string, random
     from config import CODE_LENGTH
 
@@ -164,10 +206,16 @@ def save_file(user_id: int, file_type: str, file_id: str,
     try:
         # 去重：如果同一 bot 下已存在相同 file_unique_id，直接返回已有代码
         if file_unique_id:
-            existing = conn.execute(
-                "SELECT code FROM file_mappings WHERE file_unique_id = ? AND bot_username = ?",
-                (file_unique_id, bot_username)
-            ).fetchone()
+            if bot_db_id:
+                existing = conn.execute(
+                    "SELECT code FROM file_mappings WHERE file_unique_id = ? AND bot_db_id = ?",
+                    (file_unique_id, bot_db_id)
+                ).fetchone()
+            else:
+                existing = conn.execute(
+                    "SELECT code FROM file_mappings WHERE file_unique_id = ? AND bot_username = ?",
+                    (file_unique_id, bot_username)
+                ).fetchone()
             if existing:
                 logger.info("文件已存在，复用代码: %s (file_unique_id=%s)", existing['code'], file_unique_id)
                 return existing['code']
@@ -191,9 +239,9 @@ def save_file(user_id: int, file_type: str, file_id: str,
 
         conn.execute(
             """INSERT INTO file_mappings 
-               (code, bot_username, file_type, telegram_file_id, file_size, file_unique_id, user_id, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (full_code, bot_username, file_type, file_id, file_size, file_unique_id, user_id, now)
+               (code, bot_username, file_type, telegram_file_id, file_size, file_unique_id, user_id, created_at, bot_db_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (full_code, bot_username, file_type, file_id, file_size, file_unique_id, user_id, now, bot_db_id)
         )
         conn.commit()
         return full_code
@@ -249,15 +297,16 @@ def get_collection_files(code: str) -> List[Dict]:
         conn.close()
 
 
-def create_collection(code: str, bot_username: str, name: str, user_id: int) -> bool:
-    """创建新集合"""
+def create_collection(code: str, bot_username: str, name: str, user_id: int,
+                      bot_db_id: int = None) -> bool:
+    """创建新集合。bot_db_id 用于区分同名 Bot 的数据。"""
     conn = get_db()
     try:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
-            """INSERT INTO collections (code, bot_username, name, user_id, file_count, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 0, 'open', ?, ?)""",
-            (code, bot_username, name, user_id, now, now)
+            """INSERT INTO collections (code, bot_username, name, user_id, file_count, status, created_at, updated_at, bot_db_id)
+               VALUES (?, ?, ?, ?, 0, 'open', ?, ?, ?)""",
+            (code, bot_username, name, user_id, now, now, bot_db_id)
         )
         conn.commit()
         return True
@@ -538,7 +587,7 @@ def get_platform_stats() -> Dict:
 
 
 def get_platform_bot_details() -> List[Dict]:
-    """获取平台中每个 Bot 的详细信息（含文件数、集合数）"""
+    """获取平台中每个 Bot 的详细信息（含文件数、集合数），使用 bot_db_id 区分同名 Bot"""
     conn = get_db()
     try:
         bots = conn.execute(
@@ -547,21 +596,36 @@ def get_platform_bot_details() -> List[Dict]:
         result = []
         for bot in bots:
             bot_dict = dict(bot)
-            # 统计该 Bot 的文件数
+            bot_db_id = bot['id']
+            # 优先用 bot_db_id 统计，回退到 bot_username
             file_count = conn.execute(
-                "SELECT COUNT(*) as c FROM file_mappings WHERE bot_username = ?",
-                (bot['bot_username'],)
+                "SELECT COUNT(*) as c FROM file_mappings WHERE bot_db_id = ?",
+                (bot_db_id,)
             ).fetchone()['c']
-            # 统计该 Bot 的集合数
             col_count = conn.execute(
-                "SELECT COUNT(*) as c FROM collections WHERE bot_username = ?",
-                (bot['bot_username'],)
+                "SELECT COUNT(*) as c FROM collections WHERE bot_db_id = ?",
+                (bot_db_id,)
             ).fetchone()['c']
-            # 统计该 Bot 的独立用户数
             user_count = conn.execute(
-                "SELECT COUNT(DISTINCT user_id) as c FROM file_mappings WHERE bot_username = ?",
-                (bot['bot_username'],)
+                "SELECT COUNT(DISTINCT user_id) as c FROM file_mappings WHERE bot_db_id = ?",
+                (bot_db_id,)
             ).fetchone()['c']
+            # 如果 bot_db_id 统计为 0，回退到 bot_username（兼容旧数据）
+            if file_count == 0:
+                file_count = conn.execute(
+                    "SELECT COUNT(*) as c FROM file_mappings WHERE bot_username = ? AND bot_db_id IS NULL",
+                    (bot['bot_username'],)
+                ).fetchone()['c']
+            if col_count == 0:
+                col_count = conn.execute(
+                    "SELECT COUNT(*) as c FROM collections WHERE bot_username = ? AND bot_db_id IS NULL",
+                    (bot['bot_username'],)
+                ).fetchone()['c']
+            if user_count == 0:
+                user_count = conn.execute(
+                    "SELECT COUNT(DISTINCT user_id) as c FROM file_mappings WHERE bot_username = ? AND bot_db_id IS NULL",
+                    (bot['bot_username'],)
+                ).fetchone()['c']
             bot_dict['file_count'] = file_count
             bot_dict['col_count'] = col_count
             bot_dict['user_count'] = user_count

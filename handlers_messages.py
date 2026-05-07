@@ -45,7 +45,8 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await message.reply_text("❌ 不支持的文件类型。支持: 图片、视频、音频、文档。")
             return
 
-        code = save_file(user_id, file_type, file_id, file_size, file_unique_id, bot_username, code_prefix)
+        bot_db_id = context.bot_data.get('bot_record', {}).get('id')
+        code = save_file(user_id, file_type, file_id, file_size, file_unique_id, bot_username, code_prefix, bot_db_id=bot_db_id)
         if not code:
             await message.reply_text("❌ 保存失败，请重试。")
             return
@@ -430,12 +431,13 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
 
             # 保存集合到数据库
             from database import get_db
+            bot_db_id = context.bot_data.get('bot_record', {}).get('id')
             conn = get_db()
             try:
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO collections (code, bot_username, name, user_id, file_count, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?)",
-                    (full_col_code, bname, col_name, uid, len(codes), now, now)
+                    "INSERT INTO collections (code, bot_username, name, user_id, file_count, status, created_at, updated_at, bot_db_id) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?)",
+                    (full_col_code, bname, col_name, uid, len(codes), now, now, bot_db_id)
                 )
                 for i, code in enumerate(codes):
                     conn.execute("INSERT INTO collection_items (collection_code, file_code, sort_order) VALUES (?, ?, ?)", (full_col_code, code, i + 1))
@@ -490,12 +492,13 @@ async def _save_media_messages(messages, context) -> list:
     uid = messages[0].from_user.id
     bname = context.bot.username
     code_prefix = get_code_prefix(bname)
+    bot_db_id = context.bot_data.get('bot_record', {}).get('id')
     codes = []
 
     for msg in messages:
         file_id, file_type, file_size, file_unique_id = _extract_file_info(msg)
         if file_id and file_type:
-            code = save_file(uid, file_type, file_id, file_size, file_unique_id, bname, code_prefix)
+            code = save_file(uid, file_type, file_id, file_size, file_unique_id, bname, code_prefix, bot_db_id=bot_db_id)
             if code:
                 codes.append(code)
     return codes

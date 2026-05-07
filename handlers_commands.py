@@ -64,6 +64,7 @@ async def create_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
     """/create 创建集合"""
     user_id = update.effective_user.id
     bot_username = context.bot.username
+    bot_db_id = context.bot_data.get('bot_record', {}).get('id')
 
     if context.user_data.get('creating_collection'):
         await update.message.reply_text("⚠️ 你已有正在创建的集合，请先 `/done` 完成或 `/cancel` 取消。")
@@ -74,7 +75,7 @@ async def create_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
     raw_code = generate_raw_code()
     full_code = f"{code_prefix}_col:{raw_code}"
 
-    if create_collection(full_code, bot_username, name, user_id):
+    if create_collection(full_code, bot_username, name, user_id, bot_db_id=bot_db_id):
         context.user_data['creating_collection'] = full_code
         context.user_data['collection_count'] = 0
 
@@ -187,29 +188,30 @@ async def get_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     bot_username = context.bot.username
     user_id = update.effective_user.id
     code_prefix = get_code_prefix(bot_username)
+    bot_db_id = context.bot_data.get('bot_record', {}).get('id')
     result = None
     file_type = None
     file_unique_id = ''
 
     if replied.photo:
         photo = replied.photo[len(replied.photo) - 1]
-        result = save_file(user_id, 'photo', photo.file_id, photo.file_size or 0, photo.file_unique_id or '', bot_username, code_prefix)
+        result = save_file(user_id, 'photo', photo.file_id, photo.file_size or 0, photo.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
         file_type = '图片'
         file_unique_id = photo.file_unique_id or ''
     elif replied.video:
-        result = save_file(user_id, 'video', replied.video.file_id, replied.video.file_size or 0, replied.video.file_unique_id or '', bot_username, code_prefix)
+        result = save_file(user_id, 'video', replied.video.file_id, replied.video.file_size or 0, replied.video.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
         file_type = '视频'
         file_unique_id = replied.video.file_unique_id or ''
     elif replied.audio:
-        result = save_file(user_id, 'audio', replied.audio.file_id, replied.audio.file_size or 0, replied.audio.file_unique_id or '', bot_username, code_prefix)
+        result = save_file(user_id, 'audio', replied.audio.file_id, replied.audio.file_size or 0, replied.audio.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
         file_type = '音频'
         file_unique_id = replied.audio.file_unique_id or ''
     elif replied.document:
-        result = save_file(user_id, 'document', replied.document.file_id, replied.document.file_size or 0, replied.document.file_unique_id or '', bot_username, code_prefix)
+        result = save_file(user_id, 'document', replied.document.file_id, replied.document.file_size or 0, replied.document.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
         file_type = '文档'
         file_unique_id = replied.document.file_unique_id or ''
     elif replied.voice:
-        result = save_file(user_id, 'voice', replied.voice.file_id, replied.voice.file_size or 0, replied.voice.file_unique_id or '', bot_username, code_prefix)
+        result = save_file(user_id, 'voice', replied.voice.file_id, replied.voice.file_size or 0, replied.voice.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
         file_type = '语音'
         file_unique_id = replied.voice.file_unique_id or ''
     else:
