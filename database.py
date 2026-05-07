@@ -7,7 +7,7 @@ from db_files import (  # noqa: F401
     get_files_by_bot_username, get_files_by_bot_db_id,
 )
 from db_collections import (  # noqa: F401
-    get_collection, get_collection_files, create_collection,
+    get_collection, get_collection_by_id, get_collection_files, create_collection,
     add_file_to_collection, complete_collection, delete_collection,
     get_user_collections,
 )

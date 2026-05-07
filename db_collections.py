@@ -20,6 +20,18 @@ def get_collection(code: str) -> Optional[Dict]:
         conn.close()
 
 
+def get_collection_by_id(col_id: int) -> Optional[Dict]:
+    """通过数据库ID获取集合信息"""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM collections WHERE id = ?", (col_id,)).fetchone()
+        if row:
+            return dict(row)
+        return None
+    finally:
+        conn.close()
+
+
 def get_collection_files(code: str) -> List[Dict]:
     """获取集合中的所有文件"""
     conn = get_db()

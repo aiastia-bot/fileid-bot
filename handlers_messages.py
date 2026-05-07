@@ -15,16 +15,28 @@ from senders import send_file_group, _retry_send
 
 
 def _short_key(context, col_code: str) -> str:
-    """生成短 key 用于 callback_data（Telegram 限制 64 字节）"""
+    """生成短 key 用于 callback_data（Telegram 限制 64 字节）
+    
+    使用集合的数据库ID作为短key（c{id}），重启后仍可通过ID从数据库恢复。
+    """
     if 'cb_map' not in context.bot_data:
         context.bot_data['cb_map'] = {}
+
     # 如果已存在映射，复用
     for k, v in context.bot_data['cb_map'].items():
         if v == col_code:
             return k
-    # 新建映射: s0, s1, s2 ...
-    idx = len(context.bot_data['cb_map'])
-    key = f"s{idx}"
+
+    # 使用集合的数据库ID作为短key（重启不失效）
+    from database import get_collection
+    col_info = get_collection(col_code)
+    if col_info and col_info.get('id'):
+        key = f"c{col_info['id']}"
+    else:
+        # 降级：使用递增索引（仅当集合不在数据库中时）
+        idx = len(context.bot_data['cb_map'])
+        key = f"s{idx}"
+
     context.bot_data['cb_map'][key] = col_code
     return key
 

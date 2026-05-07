@@ -17,15 +17,35 @@ PER_PAGE = 5  # 每页文件数
 
 
 def _resolve_key(context, sk: str) -> str:
-    """从短 key 映射回集合代码"""
+    """从短 key 映射回集合代码
+    
+    支持两种短key格式：
+    - c{id}: 基于集合数据库ID，重启后可通过ID从数据库恢复
+    - s{idx}: 基于内存索引（旧格式/降级），重启后失效
+    """
+    # 1. 先从内存 cb_map 查找
     cb_map = context.bot_data.get('cb_map', {})
     col_code = cb_map.get(sk, '')
-    logger.info("_resolve_key: sk=%s, found=%s, map_keys=%s, map_size=%d",
-                sk, bool(col_code), list(cb_map.keys()), len(cb_map))
-    if not col_code:
-        logger.warning("_resolve_key 失败: sk=%s 在 cb_map 中不存在! cb_map 内容: %s",
-                       sk, dict(cb_map))
-    return col_code
+    if col_code:
+        logger.info("_resolve_key: sk=%s, found=True (cb_map), map_size=%d", sk, len(cb_map))
+        return col_code
+
+    # 2. cb_map 未命中：如果是 c{id} 格式，从数据库恢复
+    if sk.startswith('c') and sk[1:].isdigit():
+        col_id = int(sk[1:])
+        from database import get_collection_by_id
+        col_info = get_collection_by_id(col_id)
+        if col_info:
+            col_code = col_info['code']
+            # 回填 cb_map 缓存
+            if 'cb_map' not in context.bot_data:
+                context.bot_data['cb_map'] = {}
+            context.bot_data['cb_map'][sk] = col_code
+            logger.info("_resolve_key: sk=%s, found=True (DB恢复 col_id=%d), col_code=%s", sk, col_id, col_code)
+            return col_code
+
+    logger.warning("_resolve_key 失败: sk=%s 在 cb_map 中不存在 (map_size=%d)", sk, len(cb_map))
+    return ''
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
