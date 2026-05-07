@@ -248,13 +248,13 @@ class BotManager:
                     cmd_err_str = str(cmd_err)
                     # Frozen_method_invalid = Bot 已被冻结/注销
                     if 'Frozen_method' in cmd_err_str or 'frozen' in cmd_err_str.lower():
-                        logger.warning("用户Bot @%s 已被冻结/注销 (Frozen)，标记为 revoked", app.bot.username)
+                        logger.warning("用户Bot @%s 已被冻结/注销 (Frozen)，标记为 frozen", app.bot.username)
                         try:
                             await app.stop()
                             await app.shutdown()
                         except Exception:
                             pass
-                        update_user_bot_status(bot_db_id, 'revoked')
+                        update_user_bot_status(bot_db_id, 'frozen')
                         return False
                     logger.warning("用户Bot @%s 注册命令失败: %s", app.bot.username, cmd_err)
 
