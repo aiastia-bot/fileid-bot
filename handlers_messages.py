@@ -172,9 +172,10 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
         return
 
     files, not_found = [], []
+    current_bot_db_id = context.bot_data.get("bot_record", {}).get("id")
     for code in file_codes:
         f = get_file(code)
-        if f:
+        if f and (not current_bot_db_id or not f.get("bot_db_id") or f["bot_db_id"] == current_bot_db_id):
             files.append(f)
         else:
             not_found.append(code)
@@ -261,7 +262,8 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
     """处理集合代码"""
     for col_code in collection_codes:
         col_info = get_collection(col_code)
-        if not col_info:
+        current_bot_db_id_col = context.bot_data.get("bot_record", {}).get("id")
+        if not col_info or (current_bot_db_id_col and col_info.get("bot_db_id") and col_info["bot_db_id"] != current_bot_db_id_col):
             await message.reply_text(f"❌ 集合不存在: `{col_code}`", parse_mode="Markdown")
             continue
 

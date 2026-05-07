@@ -48,9 +48,12 @@ async def post_init(application: Application) -> None:
         ("mybots", "查看我的 Bot 列表"),
         ("delbot", "删除 Bot"),
         ("botstatus", "查看 Bot 运行状态"),
+        ("updatetoken", "更新失效的 Token"),
         ("platform", "平台统计（管理员）"),
         ("blacklist", "黑名单管理（管理员）"),
         ("export", "导出数据（管理员）"),
+        ("broadcast", "广播消息（管理员）"),
+        ("startbot", "启动指定Bot（管理员）"),
     ]
     try:
         await application.bot.set_my_commands(commands)
@@ -287,9 +290,12 @@ def _run_webhook_master(application: Application, bot_manager: BotManager, sched
             ("mybots", "查看我的 Bot 列表"),
             ("delbot", "删除 Bot"),
             ("botstatus", "查看 Bot 运行状态"),
+            ("updatetoken", "更新失效的 Token"),
             ("platform", "平台统计（管理员）"),
             ("blacklist", "黑名单管理（管理员）"),
             ("export", "导出数据（管理员）"),
+            ("broadcast", "广播消息（管理员）"),
+            ("startbot", "启动指定Bot（管理员）"),
         ]
         try:
             await application.bot.set_my_commands(commands)
@@ -478,9 +484,12 @@ def _run_webhook(application: Application, bot_manager: BotManager):
             ("mybots", "查看我的 Bot 列表"),
             ("delbot", "删除 Bot"),
             ("botstatus", "查看 Bot 运行状态"),
+            ("updatetoken", "更新失效的 Token"),
             ("platform", "平台统计（管理员）"),
             ("blacklist", "黑名单管理（管理员）"),
             ("export", "导出数据（管理员）"),
+            ("broadcast", "广播消息（管理员）"),
+            ("startbot", "启动指定Bot（管理员）"),
         ]
         try:
             await application.bot.set_my_commands(commands)

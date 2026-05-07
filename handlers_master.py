@@ -881,7 +881,7 @@ async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 text += (
                     f"{i}. {status} <b>{escape(bot['bot_firstname'])}</b>\n"
                     f"   📌 @{escape(bot['bot_username'])}\n"
-                    f"   🆔 Bot ID: <code>{bot['bot_id']}</code>\n"
+                    f"   🆔 Bot ID: <code>{bot['bot_id']}</code> | DB ID: <code>{bot['id']}</code>\n"
                     f"   👤 所有者: <code>{bot['owner_id']}</code>\n"
                     f"   📁 文件: {bot['file_count']} | 📦 集合: {bot['col_count']} | 👥 用户: {bot['user_count']}\n"
                     f"   📅 创建: {bot['created_at']}\n\n"
@@ -1129,15 +1129,36 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     args = context.args or []
 
-    # /export <bot_username> — 导出指定Bot的文件代码CSV
+    # /export <bot_username|db_id> — 导出指定Bot的文件代码CSV（支持同名Bot）
     if args and args[0] not in ('json', 'csv', 'bots', 'code'):
-        bot_username = args[0].strip().lstrip('@')
-        status_msg = await update.message.reply_text(f"⏳ 正在导出 @{escape(bot_username)} 的文件代码...")
+        export_arg = args[0].strip().lstrip('@')
+        status_msg = await update.message.reply_text("⏳ 正在导出...")
 
         try:
-            files = get_files_by_bot_username(bot_username)
+            from database import get_files_by_bot_db_id, get_db as _get_db
+            bot_record = None
+            try:
+                bot_record = get_user_bot_by_id(int(export_arg))
+            except ValueError:
+                pass
+            if not bot_record:
+                _conn = _get_db()
+                try:
+                    _row = _conn.execute(
+                        "SELECT * FROM user_bots WHERE bot_username = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+                        (export_arg,)
+                    ).fetchone()
+                    bot_record = dict(_row) if _row else None
+                finally:
+                    _conn.close()
+            if not bot_record:
+                await status_msg.edit_text(f"❌ 未找到 Bot：{escape(export_arg)}")
+                return
+            bot_db_id_export = bot_record['id']
+            bot_username = bot_record['bot_username']
+            files = get_files_by_bot_db_id(bot_db_id_export)
             if not files:
-                await status_msg.edit_text(f"📭 Bot @{escape(bot_username)} 没有文件记录。")
+                await status_msg.edit_text(f"📭 Bot @{escape(bot_username)} (ID:{bot_db_id_export}) 没有文件记录。")
                 return
 
             # 生成CSV（逗号分隔）
@@ -1146,17 +1167,17 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             for f in files:
                 output.write(f"{f['code']},{f['file_type']},{f['file_size']},{f['user_id']},{f['created_at']}\n")
             export_text = output.getvalue()
-            filename = f"{bot_username}_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            filename = f"{bot_username}_{bot_db_id_export}_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
             bytes_io = io.BytesIO(export_text.encode('utf-8'))
             await context.bot.send_document(
                 chat_id=update.message.chat_id,
                 document=bytes_io,
                 filename=filename,
-                caption=f"📁 @{escape(bot_username)} 文件代码导出，共 {len(files)} 条记录。",
+                caption=f"📁 @{escape(bot_username)} (ID:{bot_db_id_export}) 文件代码导出，共 {len(files)} 条记录。",
             )
             await status_msg.delete()
-            logger.info("管理员 %s 导出了 Bot @%s 的文件代码 (%d 条)", user_id, bot_username, len(files))
+            logger.info("管理员 %s 导出了 Bot @%s (ID:%d) 的文件代码 (%d 条)", user_id, bot_username, bot_db_id_export, len(files))
         except Exception as e:
             await status_msg.edit_text(f"❌ 导出失败: {escape(str(e))}")
             logger.error("导出Bot数据失败: %s", e, exc_info=True)
@@ -1274,7 +1295,7 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         conn = get_db()
         try:
             row = conn.execute(
-                "SELECT * FROM user_bots WHERE bot_username = ? AND status != 'deleted'",
+                "SELECT * FROM user_bots WHERE bot_username = ? AND status != 'deleted' ORDER BY created_at DESC LIMIT 1",
                 (username,)
             ).fetchone()
             bot_record = dict(row) if row else None

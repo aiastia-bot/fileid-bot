@@ -238,7 +238,7 @@ def get_active_bot_files(since_date: str = None) -> List[Dict]:
         sql = """
             SELECT fm.code, fm.bot_username, fm.file_type, fm.file_size, fm.user_id, fm.created_at
             FROM file_mappings fm
-            INNER JOIN user_bots ub ON fm.bot_username = ub.bot_username
+            INNER JOIN user_bots ub ON fm.bot_db_id = ub.id
             WHERE ub.status = 'active' AND (fm.is_valid IS NULL OR fm.is_valid = 1)
         """
         params = []
@@ -499,10 +499,29 @@ def get_all_files_for_export() -> List[Dict]:
 
 def add_user_bot(owner_id: int, bot_token: str, bot_id: int,
                  bot_username: str, bot_firstname: str) -> Optional[int]:
-    """添加用户Bot到数据库，返回记录ID"""
     conn = get_db()
     try:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Reuse deleted record with same Telegram bot_id to keep bot_db_id consistent
+        deleted_row = conn.execute(
+            "SELECT id FROM user_bots WHERE bot_id = ? AND status = 'deleted' LIMIT 1",
+            (bot_id,)
+        ).fetchone()
+
+        if deleted_row:
+            old_id = deleted_row['id']
+            conn.execute(
+                """UPDATE user_bots
+                   SET owner_id = ?, bot_token = ?, bot_username = ?, bot_firstname = ?,
+                       status = 'active', updated_at = ?
+                   WHERE id = ?""",
+                (owner_id, bot_token, bot_username, bot_firstname, now, old_id)
+            )
+            conn.commit()
+            logger.info("Reused deleted bot record (bot_db_id=%d, telegram_id=%d)", old_id, bot_id)
+            return old_id
+
         cursor = conn.execute(
             """INSERT INTO user_bots (owner_id, bot_token, bot_id, bot_username, bot_firstname, status, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, 'active', ?, ?)""",
@@ -511,10 +530,10 @@ def add_user_bot(owner_id: int, bot_token: str, bot_id: int,
         conn.commit()
         return cursor.lastrowid
     except sqlite3.IntegrityError:
-        logger.error("Bot Token 已存在")
+        logger.error("Bot Token already exists")
         return None
     except Exception as e:
-        logger.error("添加用户Bot失败: %s", e)
+        logger.error("Failed to add user bot: %s", e)
         return None
     finally:
         conn.close()
@@ -811,12 +830,26 @@ def set_platform_setting(key: str, value: str) -> bool:
 # ==================== 按 Bot 导出文件代码 ====================
 
 def get_files_by_bot_username(bot_username: str) -> List[Dict]:
-    """根据 bot_username 导出该 Bot 的所有文件代码"""
+    """根据 bot_username 导出该 Bot 的所有文件代码（兼容旧调用）"""
     conn = get_db()
     try:
+        # 优先用 bot_db_id 精确查询，避免同名 Bot 数据混淆
         rows = conn.execute(
             "SELECT code, file_type, file_size, user_id, created_at FROM file_mappings WHERE bot_username = ? ORDER BY created_at DESC",
             (bot_username,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_files_by_bot_db_id(bot_db_id: int) -> List[Dict]:
+    """根据 bot_db_id 导出该 Bot 的所有文件代码（精确匹配，避免同名混淆）"""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT code, file_type, file_size, user_id, created_at FROM file_mappings WHERE bot_db_id = ? ORDER BY created_at DESC",
+            (bot_db_id,)
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
