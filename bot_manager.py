@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _auto_stop_revoked_bot(bot_username: str, bot_data: dict):
-    """自动停止 Token 被撤销的 Bot，并通知主 Bot 通知用户"""
+    """自动停止 Token 被撤销的 Bot，并通知管理员"""
     await asyncio.sleep(3)
 
     bot_record = bot_data.get('bot_record')
@@ -47,32 +47,36 @@ async def _auto_stop_revoked_bot(bot_username: str, bot_data: dict):
     from database import update_user_bot_status
     update_user_bot_status(bot_db_id, 'revoked')
 
-    # 通过主 Bot 通知用户
+    # 停止 Bot
     try:
         import __main__
         bot_manager = getattr(__main__, 'bot_manager', None)
         if bot_manager:
             await bot_manager.stop_bot(bot_db_id)
+    except Exception as e:
+        logger.error("停止 Bot 失败: %s", e)
 
-        from config import BOT_TOKEN
+    # 通知管理员
+    try:
+        from config import BOT_TOKEN, ADMIN_IDS
         import httpx
         async with httpx.AsyncClient() as client:
-            await client.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={
-                    "chat_id": owner_id,
-                    "text": (
-                        f"⚠️ <b>Bot 已失效</b>\n\n"
-                        f"🤖 @{bot_username} 的 Token 已被撤销或 Bot 已被删除。\n"
-                        f"系统已自动停止该 Bot。\n\n"
-                        f"如需重新使用，请先 /delbot 删除后重新创建。"
-                    ),
-                    "parse_mode": "HTML"
-                }
-            )
-        logger.info("已通知用户 %s Bot @%s 被撤销", owner_id, bot_username)
+            for admin_id in ADMIN_IDS:
+                await client.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={
+                        "chat_id": admin_id,
+                        "text": (
+                            f"⚠️ Bot 已失效\n\n"
+                            f"🤖 @{bot_username} Token 已被撤销\n"
+                            f"👤 所有者: {owner_id}\n"
+                            f"系统已自动停止该 Bot。"
+                        ),
+                    }
+                )
+        logger.info("已通知管理员 Bot @%s 被撤销", bot_username)
     except Exception as e:
-        logger.error("通知 Bot 撤销失败: %s", e)
+        logger.error("通知管理员失败: %s", e)
 
 
 class BotManager:
