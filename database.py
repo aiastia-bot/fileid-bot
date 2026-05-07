@@ -281,7 +281,7 @@ def save_file(user_id: int, file_type: str, file_id: str,
         if file_unique_id:
             if bot_db_id:
                 existing = conn.execute(
-                    "SELECT code FROM file_mappings WHERE file_unique_id = ? AND bot_db_id = ?",
+                    "SELECT code FROM file_mappings WHERE file_unique_id = ? AND (bot_db_id = ? OR bot_db_id IS NULL)",
                     (file_unique_id, bot_db_id)
                 ).fetchone()
             else:
@@ -514,7 +514,7 @@ def add_user_bot(owner_id: int, bot_token: str, bot_id: int,
             conn.execute(
                 """UPDATE user_bots
                    SET owner_id = ?, bot_token = ?, bot_username = ?, bot_firstname = ?,
-                       status = 'active', updated_at = ?
+                       status = 'active', updated_at = ?, node_id = 'local'
                    WHERE id = ?""",
                 (owner_id, bot_token, bot_username, bot_firstname, now, old_id)
             )
