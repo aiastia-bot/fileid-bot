@@ -83,7 +83,7 @@ def _backfill_bot_db_id(conn):
         # 多个同名 Bot：按时间区间分配
         for file_table in ['file_mappings', 'collections']:
             rows = conn.execute(
-                f"SELECT rowid, created_at FROM {file_table} WHERE bot_username = ? AND bot_db_id IS NULL",
+                f"SELECT id, created_at FROM {file_table} WHERE bot_username = ? AND bot_db_id IS NULL",
                 (username,)
             ).fetchall()
 
@@ -104,8 +104,8 @@ def _backfill_bot_db_id(conn):
 
                 if matched_bot_id is not None:
                     conn.execute(
-                        f"UPDATE {file_table} SET bot_db_id = ? WHERE rowid = ?",
-                        (matched_bot_id, row['rowid'])
+                        f"UPDATE {file_table} SET bot_db_id = ? WHERE id = ?",
+                        (matched_bot_id, row['id'])
                     )
                     if file_table == 'file_mappings':
                         updated_files += 1
