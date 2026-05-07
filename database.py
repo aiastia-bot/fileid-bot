@@ -18,36 +18,36 @@ def get_db():
 
 
 def _backfill_bot_db_id(conn):
-    """智能回填 bot_db_id：根据时间戳将数据分配到正确的同名 Bot。
-
-    逻辑：
-    1. 获取所有同名 Bot 记录（包括 deleted/revoked），按 created_at 排序
-    2. 对每条数据（file_mappings / collections），找到时间上对应的 Bot：
-       - 数据创建时间 >= Bot 创建时间
-       - 且在下一个同名 Bot 创建时间之前
-    3. 如果只有一个同名 Bot，直接关联
-    """
+    """回填 bot_db_id：将 NULL 的数据关联到正确的 Bot 记录"""
     # 检查是否需要回填
-    unlinked_files = conn.execute(
-        "SELECT COUNT(*) as c FROM file_mappings WHERE bot_db_id IS NULL"
-    ).fetchone()['c']
-    unlinked_cols = conn.execute(
-        "SELECT COUNT(*) as c FROM collections WHERE bot_db_id IS NULL"
-    ).fetchone()['c']
+    try:
+        null_files = conn.execute(
+            "SELECT COUNT(*) as c FROM file_mappings WHERE bot_db_id IS NULL"
+        ).fetchone()['c']
+        null_cols = conn.execute(
+            "SELECT COUNT(*) as c FROM collections WHERE bot_db_id IS NULL"
+        ).fetchone()['c']
+    except Exception as e:
+        logger.error("检查 NULL bot_db_id 失败: %s", e)
+        return
 
-    if unlinked_files == 0 and unlinked_cols == 0:
+    if null_files == 0 and null_cols == 0:
         logger.info("无需回填 bot_db_id")
         return
 
-    logger.info("开始回填 bot_db_id: %d 个文件, %d 个集合待处理", unlinked_files, unlinked_cols)
+    logger.info("开始回填 bot_db_id: %d 个文件, %d 个集合", null_files, null_cols)
 
     # 获取所有 Bot 记录（包含 deleted/revoked），按 bot_username + created_at 排序
-    all_bots = conn.execute(
-        "SELECT id, bot_username, created_at FROM user_bots ORDER BY bot_username, created_at"
-    ).fetchall()
+    try:
+        all_bots = conn.execute(
+            "SELECT id, bot_username, created_at FROM user_bots ORDER BY bot_username, created_at"
+        ).fetchall()
+    except Exception as e:
+        logger.error("获取 Bot 记录失败: %s", e)
+        return
 
     # 按 bot_username 分组
-    bots_by_username: Dict[str, list] = {}
+    bots_by_username = {}
     for bot in all_bots:
         uname = bot['bot_username']
         if uname not in bots_by_username:
@@ -57,23 +57,30 @@ def _backfill_bot_db_id(conn):
             'created_at': bot['created_at'] or '',
         })
 
-    # 对每个 bot_username，回填 file_mappings
+    logger.info("找到 %d 个不同 bot_username 的 Bot 记录", len(bots_by_username))
+
+    updated_files = 0
+    updated_cols = 0
+
     for username, bots in bots_by_username.items():
         if len(bots) == 1:
             # 只有一个同名 Bot，直接全部关联
-            conn.execute(
+            bot_id = bots[0]['id']
+            r1 = conn.execute(
                 "UPDATE file_mappings SET bot_db_id = ? WHERE bot_username = ? AND bot_db_id IS NULL",
-                (bots[0]['id'], username)
-            )
-            conn.execute(
+                (bot_id, username)
+            ).rowcount
+            r2 = conn.execute(
                 "UPDATE collections SET bot_db_id = ? WHERE bot_username = ? AND bot_db_id IS NULL",
-                (bots[0]['id'], username)
-            )
+                (bot_id, username)
+            ).rowcount
+            updated_files += r1
+            updated_cols += r2
+            if r1 > 0 or r2 > 0:
+                logger.info("  %s: 单 Bot，关联 %d 文件, %d 集合", username, r1, r2)
             continue
 
         # 多个同名 Bot：按时间区间分配
-        # bots 已按 created_at 排序
-        # 对于每条数据，找到 created_at <= 数据创建时间的最后一个 Bot
         for file_table in ['file_mappings', 'collections']:
             rows = conn.execute(
                 f"SELECT rowid, created_at FROM {file_table} WHERE bot_username = ? AND bot_db_id IS NULL",
@@ -100,9 +107,31 @@ def _backfill_bot_db_id(conn):
                         f"UPDATE {file_table} SET bot_db_id = ? WHERE rowid = ?",
                         (matched_bot_id, row['rowid'])
                     )
+                    if file_table == 'file_mappings':
+                        updated_files += 1
+                    else:
+                        updated_cols += 1
 
-    logger.info("bot_db_id 回填完成")
+        logger.info("  %s: %d 个同名 Bot，已分配", username, len(bots))
 
+    # 检查是否还有残留 NULL
+    remain_files = conn.execute(
+        "SELECT COUNT(*) as c FROM file_mappings WHERE bot_db_id IS NULL"
+    ).fetchone()['c']
+    remain_cols = conn.execute(
+        "SELECT COUNT(*) as c FROM collections WHERE bot_db_id IS NULL"
+    ).fetchone()['c']
+
+    logger.info("回填完成: %d 文件, %d 集合已关联。剩余 NULL: %d 文件, %d 集合",
+                updated_files, updated_cols, remain_files, remain_cols)
+
+    # 残留 NULL 的原因：bot_username 在 user_bots 中不存在（被硬删除）
+    if remain_files > 0 or remain_cols > 0:
+        orphan_usernames = conn.execute(
+            "SELECT DISTINCT bot_username FROM file_mappings WHERE bot_db_id IS NULL"
+        ).fetchall()
+        for row in orphan_usernames:
+            logger.warning("  未匹配的 bot_username: %s（Bot 记录可能已被硬删除）", row['bot_username'])
 
 def init_db():
     """初始化数据库表"""
@@ -218,11 +247,7 @@ def init_db():
             pass
 
         # 智能回填旧数据：根据 bot_username + 时间戳匹配正确的 bot_db_id
-        # 对于同名 Bot（删除后重建），根据数据创建时间分配到对应时期的 Bot
-        try:
-            _backfill_bot_db_id(conn)
-        except Exception as e:
-            logger.warning("回填 bot_db_id 失败（可忽略）: %s", e)
+        _backfill_bot_db_id(conn)
 
         conn.commit()
         logger.info("数据库初始化完成")
