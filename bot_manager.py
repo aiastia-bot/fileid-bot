@@ -255,25 +255,6 @@ class BotManager:
                         except Exception:
                             pass
                         update_user_bot_status(bot_db_id, 'revoked')
-                        # 通知所有者
-                        try:
-                            from config import BOT_TOKEN
-                            import httpx
-                            async with httpx.AsyncClient() as client:
-                                await client.post(
-                                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                                    json={
-                                        "chat_id": bot_record.get('owner_id'),
-                                        "text": (
-                                            f"⚠️ Bot 已失效\n\n"
-                                            f"🤖 @{app.bot.username} 已被 Telegram 冻结或注销。\n"
-                                            f"系统已自动停止该 Bot。\n\n"
-                                            f"如需重新使用，请先 /delbot 删除后重新创建。"
-                                        ),
-                                    }
-                                )
-                        except Exception:
-                            pass
                         return False
                     logger.warning("用户Bot @%s 注册命令失败: %s", app.bot.username, cmd_err)
 
