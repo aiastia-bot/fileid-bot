@@ -286,7 +286,6 @@ class BotManager:
                 # Token 无效，不重试，直接标记 revoked
                 if "InvalidToken" in type(e).__name__ or ("token" in error_str.lower() and "rejected" in error_str.lower()):
                     logger.warning("用户Bot @%s Token 无效，标记为 revoked", name)
-                    from database import update_user_bot_status
                     update_user_bot_status(bot_db_id, 'revoked')
                     return False
 
