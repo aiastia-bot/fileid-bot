@@ -17,6 +17,93 @@ def get_db():
     return conn
 
 
+def _backfill_bot_db_id(conn):
+    """智能回填 bot_db_id：根据时间戳将数据分配到正确的同名 Bot。
+
+    逻辑：
+    1. 获取所有同名 Bot 记录（包括 deleted/revoked），按 created_at 排序
+    2. 对每条数据（file_mappings / collections），找到时间上对应的 Bot：
+       - 数据创建时间 >= Bot 创建时间
+       - 且在下一个同名 Bot 创建时间之前
+    3. 如果只有一个同名 Bot，直接关联
+    """
+    # 检查是否需要回填
+    unlinked_files = conn.execute(
+        "SELECT COUNT(*) as c FROM file_mappings WHERE bot_db_id IS NULL"
+    ).fetchone()['c']
+    unlinked_cols = conn.execute(
+        "SELECT COUNT(*) as c FROM collections WHERE bot_db_id IS NULL"
+    ).fetchone()['c']
+
+    if unlinked_files == 0 and unlinked_cols == 0:
+        logger.info("无需回填 bot_db_id")
+        return
+
+    logger.info("开始回填 bot_db_id: %d 个文件, %d 个集合待处理", unlinked_files, unlinked_cols)
+
+    # 获取所有 Bot 记录（包含 deleted/revoked），按 bot_username + created_at 排序
+    all_bots = conn.execute(
+        "SELECT id, bot_username, created_at FROM user_bots ORDER BY bot_username, created_at"
+    ).fetchall()
+
+    # 按 bot_username 分组
+    bots_by_username: Dict[str, list] = {}
+    for bot in all_bots:
+        uname = bot['bot_username']
+        if uname not in bots_by_username:
+            bots_by_username[uname] = []
+        bots_by_username[uname].append({
+            'id': bot['id'],
+            'created_at': bot['created_at'] or '',
+        })
+
+    # 对每个 bot_username，回填 file_mappings
+    for username, bots in bots_by_username.items():
+        if len(bots) == 1:
+            # 只有一个同名 Bot，直接全部关联
+            conn.execute(
+                "UPDATE file_mappings SET bot_db_id = ? WHERE bot_username = ? AND bot_db_id IS NULL",
+                (bots[0]['id'], username)
+            )
+            conn.execute(
+                "UPDATE collections SET bot_db_id = ? WHERE bot_username = ? AND bot_db_id IS NULL",
+                (bots[0]['id'], username)
+            )
+            continue
+
+        # 多个同名 Bot：按时间区间分配
+        # bots 已按 created_at 排序
+        # 对于每条数据，找到 created_at <= 数据创建时间的最后一个 Bot
+        for file_table in ['file_mappings', 'collections']:
+            rows = conn.execute(
+                f"SELECT rowid, created_at FROM {file_table} WHERE bot_username = ? AND bot_db_id IS NULL",
+                (username,)
+            ).fetchall()
+
+            for row in rows:
+                data_created = row['created_at'] or ''
+                matched_bot_id = None
+
+                # 找到 created_at <= data_created 的最后一个 Bot
+                for bot in bots:
+                    if bot['created_at'] <= data_created:
+                        matched_bot_id = bot['id']
+                    else:
+                        break
+
+                # 如果数据比所有 Bot 都早，关联到最早的 Bot
+                if matched_bot_id is None and bots:
+                    matched_bot_id = bots[0]['id']
+
+                if matched_bot_id is not None:
+                    conn.execute(
+                        f"UPDATE {file_table} SET bot_db_id = ? WHERE rowid = ?",
+                        (matched_bot_id, row['rowid'])
+                    )
+
+    logger.info("bot_db_id 回填完成")
+
+
 def init_db():
     """初始化数据库表"""
     conn = get_db()
@@ -130,24 +217,10 @@ def init_db():
         except Exception:
             pass
 
-        # 回填旧数据：根据 bot_username 匹配 user_bots 表填充 bot_db_id
+        # 智能回填旧数据：根据 bot_username + 时间戳匹配正确的 bot_db_id
+        # 对于同名 Bot（删除后重建），根据数据创建时间分配到对应时期的 Bot
         try:
-            conn.execute("""
-                UPDATE file_mappings SET bot_db_id = (
-                    SELECT ub.id FROM user_bots ub
-                    WHERE ub.bot_username = file_mappings.bot_username
-                    AND ub.status != 'deleted'
-                    ORDER BY ub.created_at DESC LIMIT 1
-                ) WHERE bot_db_id IS NULL
-            """)
-            conn.execute("""
-                UPDATE collections SET bot_db_id = (
-                    SELECT ub.id FROM user_bots ub
-                    WHERE ub.bot_username = collections.bot_username
-                    AND ub.status != 'deleted'
-                    ORDER BY ub.created_at DESC LIMIT 1
-                ) WHERE bot_db_id IS NULL
-            """)
+            _backfill_bot_db_id(conn)
         except Exception as e:
             logger.warning("回填 bot_db_id 失败（可忽略）: %s", e)
 
