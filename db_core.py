@@ -24,12 +24,12 @@ def _build_database_url() -> str:
     """根据配置构建数据库连接 URL"""
     if DB_TYPE == 'mysql':
         if DATABASE_URL:
-            # 确保 asyncmy 驱动前缀
+            # 确保 aiomysql 驱动前缀
             url = DATABASE_URL
             if url.startswith('mysql://'):
-                url = url.replace('mysql://', 'mysql+asyncmy://', 1)
-            elif not url.startswith('mysql+asyncmy://'):
-                url = f'mysql+asyncmy://{url}'
+                url = url.replace('mysql://', 'mysql+aiomysql://', 1)
+            elif not url.startswith('mysql+aiomysql://'):
+                url = f'mysql+aiomysql://{url}'
             return url
         raise ValueError("MySQL 模式需要配置 DATABASE_URL 环境变量")
     else:
