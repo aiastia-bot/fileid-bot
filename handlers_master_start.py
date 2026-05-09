@@ -71,13 +71,13 @@ async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # 检查用户 Bot 数量
     from config import MAX_BOTS_PER_USER
-    user_bots = get_user_bots_by_owner(owner_id)
+    user_bots = await get_user_bots_by_owner(owner_id)
     if len(user_bots) >= MAX_BOTS_PER_USER:
         logger.warning("用户 %s 已达最大 Bot 数量", owner_id)
         return
 
     # 检查 Bot 是否已添加
-    existing = get_user_bot_by_telegram_id(bot_id)
+    existing = await get_user_bot_by_telegram_id(bot_id)
     if existing:
         logger.info("Bot @%s 已存在，跳过", bot_username)
         return
@@ -108,13 +108,13 @@ async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     # 检查 Token 是否已存在
-    existing_token = get_user_bot_by_token(token)
+    existing_token = await get_user_bot_by_token(token)
     if existing_token:
         logger.info("Token 已存在，跳过")
         return
 
     # 保存到数据库
-    record_id = add_user_bot(
+    record_id = await add_user_bot(
         owner_id=owner_id,
         bot_token=token,
         bot_id=bot_id,
@@ -129,7 +129,7 @@ async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # 启动 Bot
     mgr = get_bot_manager()
     if mgr:
-        bot_record = get_user_bot_by_id(record_id)
+        bot_record = await get_user_bot_by_id(record_id)
         success = await mgr.start_bot(bot_record)
         if success:
             logger.info("✅ Managed Bot @%s 自动启动成功 (owner=%s)", bot_username, owner_id)
@@ -169,7 +169,7 @@ async def blacklist_check_handler(update: Update, context: ContextTypes.DEFAULT_
         return
 
     # 检查黑名单
-    if is_user_blacklisted(user_id):
+    if await is_user_blacklisted(user_id):
         # 被封禁用户：静默忽略或发送提示
         if update.message:
             try:

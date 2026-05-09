@@ -75,7 +75,7 @@ async def create_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
     raw_code = generate_raw_code()
     full_code = f"{code_prefix}_col:{raw_code}"
 
-    if create_collection(full_code, bot_username, name, user_id, bot_db_id=bot_db_id):
+    if await create_collection(full_code, bot_username, name, user_id, bot_db_id=bot_db_id):
         context.user_data['creating_collection'] = full_code
         context.user_data['collection_count'] = 0
 
@@ -102,11 +102,11 @@ async def done_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     count = context.user_data.get('collection_count', 0)
     if count == 0:
-        delete_collection(col_code)
+        await delete_collection(col_code)
         await update.message.reply_text("⚠️ 集合为空，已自动取消。")
     else:
-        complete_collection(col_code, count)
-        col_info = get_collection(col_code)
+        await complete_collection(col_code, count)
+        col_info = await get_collection(col_code)
         col_name = col_info['name'] if col_info else "未命名"
         safe_name = escape_markdown(col_name)
         await update.message.reply_text(
@@ -125,7 +125,7 @@ async def cancel_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
     """/cancel 取消当前操作"""
     col_code = context.user_data.get('creating_collection')
     if col_code:
-        delete_collection(col_code)
+        await delete_collection(col_code)
         context.user_data.pop('creating_collection', None)
         context.user_data.pop('collection_count', None)
         await update.message.reply_text("❌ 已取消当前集合。")
@@ -137,7 +137,8 @@ async def cancel_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
 async def my_collections_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/mycol 查看我的集合"""
     user_id = update.effective_user.id
-    rows = get_user_collections(user_id)
+    bot_db_id = context.bot_data.get('bot_record', {}).get('id')
+    rows = await get_user_collections(user_id, bot_db_id=bot_db_id)
 
     if not rows:
         await update.message.reply_text("📦 你还没有创建任何集合。")
@@ -165,7 +166,7 @@ async def delete_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     col_code = context.args[0]
-    col_info = get_collection(col_code)
+    col_info = await get_collection(col_code)
     if not col_info:
         await update.message.reply_text("❌ 集合不存在。")
         return
@@ -174,7 +175,7 @@ async def delete_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("⛔ 你没有权限删除此集合。")
         return
 
-    delete_collection(col_code)
+    await delete_collection(col_code)
     await update.message.reply_text("✅ 集合已删除。")
 
 
@@ -195,23 +196,23 @@ async def get_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if replied.photo:
         photo = replied.photo[len(replied.photo) - 1]
-        result = save_file(user_id, 'photo', photo.file_id, photo.file_size or 0, photo.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
+        result = await save_file(user_id, 'photo', photo.file_id, photo.file_size or 0, photo.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
         file_type = '图片'
         file_unique_id = photo.file_unique_id or ''
     elif replied.video:
-        result = save_file(user_id, 'video', replied.video.file_id, replied.video.file_size or 0, replied.video.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
+        result = await save_file(user_id, 'video', replied.video.file_id, replied.video.file_size or 0, replied.video.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
         file_type = '视频'
         file_unique_id = replied.video.file_unique_id or ''
     elif replied.audio:
-        result = save_file(user_id, 'audio', replied.audio.file_id, replied.audio.file_size or 0, replied.audio.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
+        result = await save_file(user_id, 'audio', replied.audio.file_id, replied.audio.file_size or 0, replied.audio.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
         file_type = '音频'
         file_unique_id = replied.audio.file_unique_id or ''
     elif replied.document:
-        result = save_file(user_id, 'document', replied.document.file_id, replied.document.file_size or 0, replied.document.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
+        result = await save_file(user_id, 'document', replied.document.file_id, replied.document.file_size or 0, replied.document.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
         file_type = '文档'
         file_unique_id = replied.document.file_unique_id or ''
     elif replied.voice:
-        result = save_file(user_id, 'voice', replied.voice.file_id, replied.voice.file_size or 0, replied.voice.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
+        result = await save_file(user_id, 'voice', replied.voice.file_id, replied.voice.file_size or 0, replied.voice.file_unique_id or '', bot_username, code_prefix, bot_db_id=bot_db_id)
         file_type = '语音'
         file_unique_id = replied.voice.file_unique_id or ''
     else:
@@ -232,7 +233,7 @@ async def get_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 @admin_only
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/stats 管理员统计"""
-    stats = get_stats()
+    stats = await get_stats()
     type_text = "\n".join(f"  {FILE_TYPE_MAP.get(r['file_type'], r['file_type'])}: {r['c']}" for r in stats['type_stats'])
     text = (
         f"📊 *Bot 统计信息*\n\n"
@@ -248,7 +249,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 @admin_only
 async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/export 管理员导出数据"""
-    rows = get_all_files_for_export()
+    rows = await get_all_files_for_export()
     if not rows:
         await update.message.reply_text("没有数据可导出。")
         return

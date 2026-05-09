@@ -29,7 +29,7 @@ def escape(text: str) -> str:
 async def my_bots_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/mybots 查看用户的Bot列表"""
     user_id = update.effective_user.id
-    bots = get_user_bots_by_owner(user_id)
+    bots = await get_user_bots_by_owner(user_id)
 
     if not bots:
         await update.message.reply_text(
@@ -64,7 +64,7 @@ async def delete_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    bots = get_user_bots_by_owner(user_id)
+    bots = await get_user_bots_by_owner(user_id)
     if not bots:
         await update.message.reply_text("📭 你没有可删除的 Bot。")
         return
@@ -97,7 +97,7 @@ async def delete_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if mgr:
         await mgr.stop_bot(target_bot['id'])
 
-    db_delete_user_bot(target_bot['id'])
+    await db_delete_user_bot(target_bot["id"])
 
     await update.message.reply_text(
         f"✅ Bot @{escape(target_bot['bot_username'])} 已删除。"
@@ -108,7 +108,7 @@ async def delete_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def bot_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/botstatus 查看Bot运行状态，支持重启已停止的Bot"""
     user_id = update.effective_user.id
-    bots = get_user_bots_by_owner(user_id)
+    bots = await get_user_bots_by_owner(user_id)
 
     if not bots:
         await update.message.reply_text(
@@ -171,7 +171,7 @@ async def restart_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     # 验证这个Bot属于该用户
-    bot_record = get_user_bot_by_id(bot_db_id)
+    bot_record = await get_user_bot_by_id(bot_db_id)
     if not bot_record or bot_record['owner_id'] != user_id:
         await query.answer("❌ 无权操作此 Bot", show_alert=True)
         return
@@ -185,7 +185,7 @@ async def restart_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text(f"⏳ 正在重启 @{escape(bot_record['bot_username'])}...")
 
     # 更新数据库状态为 active
-    update_user_bot_status(bot_db_id, 'active')
+    await update_user_bot_status(bot_db_id, 'active')
 
     # 尝试启动
     mgr = get_bot_manager()
@@ -197,7 +197,7 @@ async def restart_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await mgr.stop_bot(bot_db_id)
 
     # 重新获取记录并启动
-    bot_record = get_user_bot_by_id(bot_db_id)
+    bot_record = await get_user_bot_by_id(bot_db_id)
     success = await mgr.start_bot(bot_record)
 
     if success:
@@ -240,7 +240,7 @@ async def update_token_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     # 验证这个Bot属于该用户
-    bot_record = get_user_bot_by_id(bot_db_id)
+    bot_record = await get_user_bot_by_id(bot_db_id)
     if not bot_record or bot_record['owner_id'] != user_id:
         await query.answer("❌ 无权操作此 Bot", show_alert=True)
         return
@@ -312,13 +312,13 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     # 验证 Bot 归属
-    bot_record = get_user_bot_by_id(bot_db_id)
+    bot_record = await get_user_bot_by_id(bot_db_id)
     if not bot_record or bot_record['owner_id'] != user_id:
         await update.message.reply_text("❌ 无权操作此 Bot。")
         return
 
     # 检查 Token 是否已被其他 Bot 使用
-    existing_token = get_user_bot_by_token(token)
+    existing_token = await get_user_bot_by_token(token)
     if existing_token and existing_token['id'] != bot_db_id:
         await update.message.reply_text(
             f"⚠️ 该 Token 已被 Bot @{escape(existing_token['bot_username'])} 使用。"
@@ -346,7 +346,7 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 pass
 
     # 检查新 Token 对应的 Bot ID 是否被其他记录占用
-    existing_by_id = get_user_bot_by_telegram_id(bot_info.id)
+    existing_by_id = await get_user_bot_by_telegram_id(bot_info.id)
     if existing_by_id and existing_by_id['id'] != bot_db_id:
         await status_msg.edit_text(
             f"⚠️ 该 Token 对应的 Bot 已被其他记录使用。"
@@ -354,7 +354,7 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     # 更新数据库
-    success = update_user_bot_token(bot_db_id, token, bot_info.id)
+    success = await update_user_bot_token(bot_db_id, token, bot_info.id)
     if not success:
         await status_msg.edit_text("❌ 更新 Token 失败，请重试。")
         return
@@ -365,7 +365,7 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await mgr.stop_bot(bot_db_id)
 
     # 重新获取记录并启动
-    bot_record = get_user_bot_by_id(bot_db_id)
+    bot_record = await get_user_bot_by_id(bot_db_id)
     started = False
     if mgr:
         started = await mgr.start_bot(bot_record)

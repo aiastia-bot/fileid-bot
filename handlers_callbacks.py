@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import AUTO_SEND_INTERVAL, GROUP_SEND_SIZE, FILE_TYPE_MAP
-from database import get_collection, get_collection_files, run_sync
+from database import get_collection, get_collection_files
 from utils import escape_markdown
 from senders import send_file_group
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 PER_PAGE = 5  # 每页文件数
 
 
-def _resolve_key(context, sk: str) -> str:
+async def _resolve_key(context, sk: str) -> str:
     """从短 key 映射回集合代码
     
     支持两种短key格式：
@@ -34,7 +34,7 @@ def _resolve_key(context, sk: str) -> str:
     if sk.startswith('c') and sk[1:].isdigit():
         col_id = int(sk[1:])
         from database import get_collection_by_id
-        col_info = get_collection_by_id(col_id)
+        col_info = await get_collection_by_id(col_id)
         if col_info:
             col_code = col_info['code']
             # 回填 cb_map 缓存
@@ -117,7 +117,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     logger.error("下一页页码不是数字: parts[1]=%s", parts[1])
                     await context.bot.send_message(chat_id=chat_id, text="⚠️ 页码格式错误。")
                     return
-                col_code = _resolve_key(context, sk)
+                col_code = await _resolve_key(context, sk)
                 if not col_code:
                     logger.warning("下一页发送失败: sk=%s 无法解析", sk)
                     await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
@@ -130,7 +130,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 # 分页发送: s|key (从第1页开始)
                 sk = rest
                 logger.info("处理分页发送: sk=%s", sk)
-                col_code = _resolve_key(context, sk)
+                col_code = await _resolve_key(context, sk)
                 if not col_code:
                     logger.warning("分页发送失败: sk=%s 无法解析, cb_map=%s", sk, list(context.bot_data.get('cb_map', {}).keys()))
                     await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
@@ -143,7 +143,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 # 自动发送: a|key
                 sk = rest
                 logger.info("处理自动发送: sk=%s", sk)
-                col_code = _resolve_key(context, sk)
+                col_code = await _resolve_key(context, sk)
                 if not col_code:
                     logger.warning("自动发送失败: sk=%s 无法解析", sk)
                     await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
@@ -167,7 +167,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     logger.error("分页页码不是数字: parts[1]=%s", parts[1])
                     await context.bot.send_message(chat_id=chat_id, text="⚠️ 页码格式错误。")
                     return
-                col_code = _resolve_key(context, sk)
+                col_code = await _resolve_key(context, sk)
                 if not col_code:
                     logger.warning("分页失败: sk=%s 无法解析", sk)
                     await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
@@ -231,8 +231,8 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
     """分页发送集合文件：每次发送 PER_PAGE 个，带页码按钮，已发送页显示✅"""
     logger.info("_send_paginated: col_code=%s, sk=%s, page=%d", col_code, sk, page)
 
-    files = await run_sync(get_collection_files, col_code)
-    col_info = await run_sync(get_collection, col_code)
+    files = await get_collection_files(col_code)
+    col_info = await get_collection(col_code)
 
     if not files or not col_info:
         msg = "⚠️ 集合为空或不存在。"
@@ -337,7 +337,7 @@ async def _send_all(context, chat_id, col_code, query=None):
 
     status_msg = await context.bot.send_message(chat_id=chat_id, text="📤 正在准备发送...")
 
-    files = await run_sync(get_collection_files, col_code)
+    files = await get_collection_files(col_code)
     logger.info("_send_all: 查询到 %d 个文件", len(files) if files else 0)
 
     if not files:
@@ -379,7 +379,7 @@ async def _send_all(context, chat_id, col_code, query=None):
 async def _auto_send(context, chat_id, col_code, user_id, query=None):
     """自动发送集合文件（每组间隔）"""
     logger.info("_auto_send 开始: col_code=%s, chat_id=%s, user_id=%s", col_code, chat_id, user_id)
-    files = await run_sync(get_collection_files, col_code)
+    files = await get_collection_files(col_code)
     logger.info("_auto_send: 查询到 %d 个文件", len(files) if files else 0)
     if not files:
         msg = "⚠️ 集合为空。"
@@ -445,8 +445,8 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
 async def _send_page(context, chat_id, col_code, page, query=None):
     """分页浏览集合（只看列表，不发送文件）"""
     logger.info("_send_page: col_code=%s, page=%d, chat_id=%s", col_code, page, chat_id)
-    files = await run_sync(get_collection_files, col_code)
-    col_info = await run_sync(get_collection, col_code)
+    files = await get_collection_files(col_code)
+    col_info = await get_collection(col_code)
     logger.info("_send_page: files=%d, col_info=%s", len(files) if files else 0, bool(col_info))
     if not files or not col_info:
         msg = "⚠️ 集合为空或不存在。"
@@ -480,7 +480,7 @@ async def _send_page(context, chat_id, col_code, page, query=None):
             break
     if not sk:
         from handlers_messages import _short_key
-        sk = _short_key(context, col_code)
+        sk = await _short_key(context, col_code)
 
     buttons = []
     nav = []
@@ -509,7 +509,7 @@ async def _send_page(context, chat_id, col_code, page, query=None):
 async def _send_page_files(context, chat_id, col_code, page, query=None):
     """发送指定页的文件"""
     logger.info("_send_page_files: col_code=%s, page=%d, chat_id=%s", col_code, page, chat_id)
-    files = await run_sync(get_collection_files, col_code)
+    files = await get_collection_files(col_code)
     logger.info("_send_page_files: files=%d", len(files) if files else 0)
     if not files:
         msg = "⚠️ 集合为空。"

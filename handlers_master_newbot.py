@@ -34,7 +34,7 @@ async def new_bot_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     user_id = update.effective_user.id
 
     from config import MAX_BOTS_PER_USER
-    user_bots = get_user_bots_by_owner(user_id)
+    user_bots = await get_user_bots_by_owner(user_id)
     if len(user_bots) >= MAX_BOTS_PER_USER:
         existing = user_bots[0]
         await update.message.reply_text(
@@ -125,7 +125,7 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return INPUT_BOT_TOKEN
 
-    existing = get_user_bot_by_token(token)
+    existing = await get_user_bot_by_token(token)
     if existing:
         await update.message.reply_text(
             f"⚠️ Bot @{escape(existing['bot_username'])} 已经添加过了。"
@@ -153,7 +153,7 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
             except Exception:
                 pass
 
-    existing_by_id = get_user_bot_by_telegram_id(bot_info.id)
+    existing_by_id = await get_user_bot_by_telegram_id(bot_info.id)
     if existing_by_id:
         await status_msg.edit_text(
             f"⚠️ Bot @{escape(bot_info.username)} 已被添加。",
@@ -164,7 +164,7 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ConversationHandler.END
 
     from config import MAX_BOTS_PER_USER
-    user_bots = get_user_bots_by_owner(user_id)
+    user_bots = await get_user_bots_by_owner(user_id)
     if len(user_bots) >= MAX_BOTS_PER_USER:
         await status_msg.edit_text(
             f"⚠️ 每个用户最多添加 {MAX_BOTS_PER_USER} 个 Bot。\n\n"
@@ -174,7 +174,7 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.pop('new_bot_name', None)
         return ConversationHandler.END
 
-    record_id = add_user_bot(
+    record_id = await add_user_bot(
         owner_id=user_id,
         bot_token=token,
         bot_id=bot_info.id,
@@ -188,7 +188,7 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     mgr = get_bot_manager()
     if mgr:
-        bot_record = get_user_bot_by_id(record_id)
+        bot_record = await get_user_bot_by_id(record_id)
         success = await mgr.start_bot(bot_record)
         if success:
             await status_msg.edit_text(
@@ -228,7 +228,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # 检查已有 Bot 数量
     from config import MAX_BOTS_PER_USER
-    user_bots = get_user_bots_by_owner(user_id)
+    user_bots = await get_user_bots_by_owner(user_id)
     if len(user_bots) >= MAX_BOTS_PER_USER:
         existing = user_bots[0]
         await update.message.reply_text(
@@ -254,7 +254,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("❌ Token 格式不正确，请检查后重试。")
         return
 
-    existing = get_user_bot_by_token(token)
+    existing = await get_user_bot_by_token(token)
     if existing:
         await update.message.reply_text(
             f"⚠️ Bot @{escape(existing['bot_username'])} 已经添加过了。"
@@ -278,7 +278,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             except Exception:
                 pass
 
-    existing_by_id = get_user_bot_by_telegram_id(bot_info.id)
+    existing_by_id = await get_user_bot_by_telegram_id(bot_info.id)
     if existing_by_id:
         await status_msg.edit_text(
             f"⚠️ Bot @{escape(bot_info.username)} 已被添加。",
@@ -287,7 +287,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     from config import MAX_BOTS_PER_USER
-    user_bots = get_user_bots_by_owner(user_id)
+    user_bots = await get_user_bots_by_owner(user_id)
     if len(user_bots) >= MAX_BOTS_PER_USER:
         await status_msg.edit_text(
             f"⚠️ 每个用户最多添加 {MAX_BOTS_PER_USER} 个 Bot。\n\n"
@@ -295,7 +295,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    record_id = add_user_bot(
+    record_id = await add_user_bot(
         owner_id=user_id,
         bot_token=token,
         bot_id=bot_info.id,
@@ -309,7 +309,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     mgr = get_bot_manager()
     if mgr:
-        bot_record = get_user_bot_by_id(record_id)
+        bot_record = await get_user_bot_by_id(record_id)
         success = await mgr.start_bot(bot_record)
         if success:
             await status_msg.edit_text(

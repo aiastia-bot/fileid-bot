@@ -10,13 +10,13 @@ from telegram.ext import ContextTypes
 
 from database import (
     get_user_bot_by_id,
+    get_user_bot_by_username,
     update_user_bot_status,
     get_all_owner_ids,
     get_platform_stats,
     get_platform_bot_details, get_platform_export_data,
     get_active_bot_files,
     get_files_by_bot_db_id,
-    get_db as _get_db,
     get_blacklist_count,
 )
 
@@ -46,10 +46,10 @@ async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     args = context.args or []
     show_bots = args and args[0] in ('bots', 'bot', 'detail', 'details')
 
-    stats = get_platform_stats()
+    stats = await get_platform_stats()
     mgr = get_bot_manager()
     running = mgr.active_count if mgr else 0
-    bl_count = get_blacklist_count()
+    bl_count = await get_blacklist_count()
 
     # 总览信息
     text = (
@@ -63,7 +63,7 @@ async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # 如果指定了 bots 参数，显示每个 Bot 的详细信息
     if show_bots:
-        bot_details = get_platform_bot_details()
+        bot_details = await get_platform_bot_details()
         if not bot_details:
             text += "\n📭 暂无 Bot。"
         else:
@@ -138,25 +138,17 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try:
             bot_record = None
             try:
-                bot_record = get_user_bot_by_id(int(export_arg))
+                bot_record = await get_user_bot_by_id(int(export_arg))
             except ValueError:
                 pass
             if not bot_record:
-                _conn = _get_db()
-                try:
-                    _row = _conn.execute(
-                        "SELECT * FROM user_bots WHERE bot_username = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1",
-                        (export_arg,)
-                    ).fetchone()
-                    bot_record = dict(_row) if _row else None
-                finally:
-                    _conn.close()
+                bot_record = await get_user_bot_by_username(export_arg)
             if not bot_record:
                 await status_msg.edit_text(f"❌ 未找到 Bot：{escape(export_arg)}")
                 return
             bot_db_id_export = bot_record['id']
             bot_username = bot_record['bot_username']
-            files = get_files_by_bot_db_id(bot_db_id_export)
+            files = await get_files_by_bot_db_id(bot_db_id_export)
             if not files:
                 await status_msg.edit_text(f"📭 Bot @{escape(bot_username)} (ID:{bot_db_id_export}) 没有文件记录。")
                 return
@@ -201,7 +193,7 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     status_msg = await update.message.reply_text("⏳ 正在准备导出数据...")
 
     try:
-        data = get_platform_export_data()
+        data = await get_platform_export_data()
 
         if export_format in ('json', 'code'):
             export_text = json.dumps(data, ensure_ascii=False, indent=2)
@@ -216,7 +208,7 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif export_format == 'csv':
             # 支持日期参数: /export csv 2026-05-05
             since_date = args[1] if len(args) > 1 else None
-            files = get_active_bot_files(since_date)
+            files = await get_active_bot_files(since_date)
             output = io.StringIO()
             output.write("code,bot_username,file_type,file_size,user_id,created_at\n")
             for f in files:
@@ -285,22 +277,14 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     # 按数据库ID查找
     try:
         bot_db_id = int(arg)
-        bot_record = get_user_bot_by_id(bot_db_id)
+        bot_record = await get_user_bot_by_id(bot_db_id)
     except ValueError:
         pass
 
     # 按用户名查找
     if not bot_record:
         username = arg.lstrip('@')
-        conn = _get_db()
-        try:
-            row = conn.execute(
-                "SELECT * FROM user_bots WHERE bot_username = ? AND status != 'deleted' ORDER BY created_at DESC LIMIT 1",
-                (username,)
-            ).fetchone()
-            bot_record = dict(row) if row else None
-        finally:
-            conn.close()
+        bot_record = await get_user_bot_by_username(username)
 
     if not bot_record:
         await update.message.reply_text(f"❌ 未找到 Bot：{escape(arg)}")
@@ -327,14 +311,14 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
     # 更新数据库状态为 active
-    update_user_bot_status(bot_record['id'], 'active')
+    await update_user_bot_status(bot_record['id'], 'active')
 
     # 先停止旧实例（如果存在）
     if mgr:
         await mgr.stop_bot(bot_record['id'])
 
     # 重新获取记录并启动
-    bot_record = get_user_bot_by_id(bot_record['id'])
+    bot_record = await get_user_bot_by_id(bot_record['id'])
     success = await mgr.start_bot(bot_record) if mgr else False
 
     if success:
@@ -377,7 +361,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     text = " ".join(context.args)
-    owner_ids = get_all_owner_ids()
+    owner_ids = await get_all_owner_ids()
     status_msg = await update.message.reply_text(f"⏳ 正在广播给 {len(owner_ids)} 位用户...")
 
     success = 0

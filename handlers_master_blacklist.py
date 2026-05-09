@@ -10,7 +10,7 @@ from database import (
     update_user_bot_status,
     add_to_blacklist, remove_from_blacklist, is_user_blacklisted,
     get_blacklist,
-    get_db as _get_db,
+    unban_user_bots,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if not context.args:
         # 显示黑名单列表
-        bl = get_blacklist()
+        bl = await get_blacklist()
         text = f"🚫 <b>黑名单管理</b>\n\n"
         text += f"当前黑名单用户数: {len(bl)}\n\n"
         text += "<b>用法：</b>\n"
@@ -80,16 +80,16 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             return
 
         reason = ' '.join(context.args[2:]) if len(context.args) > 2 else ''
-        if add_to_blacklist(target_id, reason):
+        if await add_to_blacklist(target_id, reason):
             # 如果该用户有正在运行的 Bot，停止它们
-            target_bots = get_user_bots_by_owner(target_id)
+            target_bots = await get_user_bots_by_owner(target_id)
             mgr = get_bot_manager()
             stopped = 0
             for bot in target_bots:
                 if mgr and bot['id'] in mgr.get_all_apps():
                     await mgr.stop_bot(bot['id'])
                     stopped += 1
-                update_user_bot_status(bot['id'], 'banned')
+                await update_user_bot_status(bot['id'], 'banned')
 
             text = f"✅ 用户 <code>{target_id}</code> 已加入黑名单。"
             if reason:
@@ -117,17 +117,9 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text("❌ 用户ID必须是数字。")
             return
 
-        if remove_from_blacklist(target_id):
+        if await remove_from_blacklist(target_id):
             # 恢复该用户的 Bot
-            conn = _get_db()
-            try:
-                conn.execute(
-                    "UPDATE user_bots SET status = 'active' WHERE owner_id = ? AND status = 'banned'",
-                    (target_id,)
-                )
-                conn.commit()
-            finally:
-                conn.close()
+            await unban_user_bots(target_id)
 
             await update.message.reply_text(
                 f"✅ 用户 <code>{target_id}</code> 已从黑名单移除。\n"
@@ -139,7 +131,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text("⚠️ 该用户不在黑名单中。")
 
     elif action == 'list':
-        bl = get_blacklist()
+        bl = await get_blacklist()
         if not bl:
             await update.message.reply_text("📭 黑名单为空。")
             return
@@ -186,9 +178,9 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text("❌ 用户ID必须是数字。")
             return
 
-        if is_user_blacklisted(target_id):
+        if await is_user_blacklisted(target_id):
             # 获取详细信息
-            bl_list = get_blacklist()
+            bl_list = await get_blacklist()
             entry = next((e for e in bl_list if e['user_id'] == target_id), None)
             text = f"🚫 用户 <code>{target_id}</code> <b>在黑名单中</b>。"
             if entry:
@@ -196,14 +188,14 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 if entry['reason']:
                     text += f"\n📝 原因: {escape(entry['reason'])}"
             # 显示该用户的 Bot
-            target_bots = get_user_bots_by_owner(target_id)
+            target_bots = await get_user_bots_by_owner(target_id)
             if target_bots:
                 text += f"\n\n🤖 该用户的 Bot ({len(target_bots)} 个):"
                 for bot in target_bots:
                     text += f"\n  • @{escape(bot['bot_username'])} — {bot['status']}"
             await update.message.reply_text(text, parse_mode="HTML")
         else:
-            target_bots = get_user_bots_by_owner(target_id)
+            target_bots = await get_user_bots_by_owner(target_id)
             text = f"✅ 用户 <code>{target_id}</code> 不在黑名单中。"
             if target_bots:
                 text += f"\n🤖 该用户有 {len(target_bots)} 个 Bot。"

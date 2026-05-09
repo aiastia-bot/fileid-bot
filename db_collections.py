@@ -1,136 +1,145 @@
-"""集合操作相关数据库函数"""
+"""集合操作相关数据库函数（Async SQLAlchemy）"""
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict
 
-from db_core import get_db
+from sqlalchemy import select, update
+
+from db_core import get_session, _model_to_dict
+from models import Collection, CollectionItem, FileMapping
 
 logger = logging.getLogger(__name__)
 
 
-def get_collection(code: str) -> Optional[Dict]:
+async def get_collection(code: str) -> Optional[Dict]:
     """获取集合信息"""
-    conn = get_db()
-    try:
-        row = conn.execute("SELECT * FROM collections WHERE code = ?", (code,)).fetchone()
-        if row:
-            return dict(row)
-        return None
-    finally:
-        conn.close()
+    async with get_session() as session:
+        result = await session.execute(
+            select(Collection).where(Collection.code == code)
+        )
+        col = result.scalar_one_or_none()
+        return _model_to_dict(col) if col else None
 
 
-def get_collection_by_id(col_id: int) -> Optional[Dict]:
+async def get_collection_by_id(col_id: int) -> Optional[Dict]:
     """通过数据库ID获取集合信息"""
-    conn = get_db()
-    try:
-        row = conn.execute("SELECT * FROM collections WHERE id = ?", (col_id,)).fetchone()
-        if row:
-            return dict(row)
-        return None
-    finally:
-        conn.close()
+    async with get_session() as session:
+        result = await session.execute(
+            select(Collection).where(Collection.id == col_id)
+        )
+        col = result.scalar_one_or_none()
+        return _model_to_dict(col) if col else None
 
 
-def get_collection_files(code: str) -> List[Dict]:
+async def get_collection_files(code: str) -> List[Dict]:
     """获取集合中的所有文件"""
-    conn = get_db()
-    try:
-        rows = conn.execute(
-            """SELECT fm.* FROM file_mappings fm
-               JOIN collection_items ci ON fm.code = ci.file_code
-               WHERE ci.collection_code = ?
-               ORDER BY ci.sort_order""",
-            (code,)
-        ).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
-
-
-def create_collection(code: str, bot_username: str, name: str, user_id: int,
-                      bot_db_id: int = None) -> bool:
-    """创建新集合。bot_db_id 用于区分同名 Bot 的数据。"""
-    conn = get_db()
-    try:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute(
-            """INSERT INTO collections (code, bot_username, name, user_id, file_count, status, created_at, updated_at, bot_db_id)
-               VALUES (?, ?, ?, ?, 0, 'open', ?, ?, ?)""",
-            (code, bot_username, name, user_id, now, now, bot_db_id)
+    async with get_session() as session:
+        result = await session.execute(
+            select(FileMapping)
+            .join(CollectionItem, FileMapping.code == CollectionItem.file_code)
+            .where(CollectionItem.collection_code == code)
+            .order_by(CollectionItem.sort_order)
         )
-        conn.commit()
-        return True
-    except Exception as e:
-        logger.error("创建集合失败: %s", e)
-        return False
-    finally:
-        conn.close()
+        files = result.scalars().all()
+        return [_model_to_dict(f) for f in files]
 
 
-def add_file_to_collection(col_code: str, file_code: str, sort_order: int) -> bool:
+async def create_collection(code: str, bot_username: str, name: str, user_id: int,
+                            bot_db_id: int = None) -> bool:
+    """创建新集合"""
+    async with get_session() as session:
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            col = Collection(
+                code=code, bot_username=bot_username, name=name,
+                user_id=user_id, file_count=0, status='open',
+                created_at=now, updated_at=now, bot_db_id=bot_db_id
+            )
+            session.add(col)
+            await session.commit()
+            return True
+        except Exception as e:
+            logger.error("创建集合失败: %s", e)
+            return False
+
+
+async def add_file_to_collection(col_code: str, file_code: str, sort_order: int) -> bool:
     """添加文件到集合"""
-    conn = get_db()
-    try:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute(
-            "INSERT INTO collection_items (collection_code, file_code, sort_order) VALUES (?, ?, ?)",
-            (col_code, file_code, sort_order)
-        )
-        conn.execute(
-            "UPDATE collections SET file_count = ?, updated_at = ? WHERE code = ?",
-            (sort_order, now, col_code)
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        logger.error("添加文件到集合失败: %s", e)
-        return False
-    finally:
-        conn.close()
+    async with get_session() as session:
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            item = CollectionItem(
+                collection_code=col_code, file_code=file_code, sort_order=sort_order
+            )
+            session.add(item)
+            await session.execute(
+                update(Collection)
+                .where(Collection.code == col_code)
+                .values(file_count=sort_order, updated_at=now)
+            )
+            await session.commit()
+            return True
+        except Exception as e:
+            logger.error("添加文件到集合失败: %s", e)
+            return False
 
 
-def complete_collection(col_code: str, file_count: int) -> bool:
+async def complete_collection(col_code: str, file_count: int) -> bool:
     """完成集合"""
-    conn = get_db()
-    try:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute(
-            "UPDATE collections SET status = 'completed', file_count = ?, updated_at = ? WHERE code = ?",
-            (file_count, now, col_code)
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        logger.error("完成集合失败: %s", e)
-        return False
-    finally:
-        conn.close()
+    async with get_session() as session:
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            await session.execute(
+                update(Collection)
+                .where(Collection.code == col_code)
+                .values(status='completed', file_count=file_count, updated_at=now)
+            )
+            await session.commit()
+            return True
+        except Exception as e:
+            logger.error("完成集合失败: %s", e)
+            return False
 
 
-def delete_collection(col_code: str) -> bool:
+async def delete_collection(col_code: str) -> bool:
     """删除集合及其文件项"""
-    conn = get_db()
-    try:
-        conn.execute("DELETE FROM collection_items WHERE collection_code = ?", (col_code,))
-        conn.execute("DELETE FROM collections WHERE code = ?", (col_code,))
-        conn.commit()
-        return True
-    except Exception as e:
-        logger.error("删除集合失败: %s", e)
-        return False
-    finally:
-        conn.close()
+    async with get_session() as session:
+        try:
+            # 删除集合项
+            result = await session.execute(
+                select(CollectionItem).where(CollectionItem.collection_code == col_code)
+            )
+            for item in result.scalars().all():
+                await session.delete(item)
+            # 删除集合
+            result = await session.execute(
+                select(Collection).where(Collection.code == col_code)
+            )
+            col = result.scalar_one_or_none()
+            if col:
+                await session.delete(col)
+            await session.commit()
+            return True
+        except Exception as e:
+            logger.error("删除集合失败: %s", e)
+            return False
 
 
-def get_user_collections(user_id: int, limit: int = 20) -> List[Dict]:
-    """获取用户集合列表"""
-    conn = get_db()
-    try:
-        rows = conn.execute(
-            "SELECT code, name, file_count, status, created_at FROM collections WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
-            (user_id, limit)
-        ).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
+async def get_user_collections(user_id: int, limit: int = 20, bot_db_id: int = None) -> List[Dict]:
+    """获取用户集合列表（按 bot_db_id 隔离）"""
+    async with get_session() as session:
+        q = select(
+            Collection.code, Collection.name, Collection.file_count,
+            Collection.status, Collection.created_at
+        ).where(Collection.user_id == user_id)
+
+        if bot_db_id is not None:
+            q = q.where(Collection.bot_db_id == bot_db_id)
+
+        q = q.order_by(Collection.created_at.desc()).limit(limit)
+        result = await session.execute(q)
+        rows = result.fetchall()
+        return [
+            {'code': r[0], 'name': r[1], 'file_count': r[2], 'status': r[3], 'created_at': r[4]}
+            for r in rows
+        ]

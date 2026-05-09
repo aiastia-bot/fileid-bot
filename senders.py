@@ -122,7 +122,7 @@ async def send_file_group(
             except Exception as e:
                 logger.error("发送单个媒体失败: %s", e)
                 if _is_invalid_file_error(e):
-                    mark_file_invalid(f.get("code", "")) if f.get("bot_username") == bot_name else None
+                    await mark_file_invalid(f.get("code", "")) if f.get("bot_username") == bot_name else None
         else:
             media_list = []
             for idx, f in enumerate(batch):
@@ -166,7 +166,7 @@ async def send_file_group(
                         except Exception as e2:
                             logger.error("降级发送失败: %s", e2)
                             if _is_invalid_file_error(e2):
-                                mark_file_invalid(f.get("code", "")) if f.get("bot_username") == bot_name else None
+                                await mark_file_invalid(f.get("code", "")) if f.get("bot_username") == bot_name else None
 
     # 2. 发送文档
     for i in range(0, len(documents), GROUP_SEND_SIZE):
@@ -188,7 +188,7 @@ async def send_file_group(
             except Exception as e:
                 logger.error("发送文档失败: %s", e)
                 if _is_invalid_file_error(e):
-                    mark_file_invalid(batch[0].get("code", "")) if batch[0].get("bot_username") == bot_name else None
+                    await mark_file_invalid(batch[0].get("code", "")) if batch[0].get("bot_username") == bot_name else None
         else:
             media_list = []
             for f in batch:
@@ -218,7 +218,7 @@ async def send_file_group(
                         except Exception as e2:
                             logger.error("降级发送文档失败: %s", e2)
                             if _is_invalid_file_error(e2):
-                                mark_file_invalid(f.get("code", "")) if f.get("bot_username") == bot_name else None
+                                await mark_file_invalid(f.get("code", "")) if f.get("bot_username") == bot_name else None
 
     # 3. 发送音频
     for i in range(0, len(audios), GROUP_SEND_SIZE):
@@ -240,7 +240,7 @@ async def send_file_group(
             except Exception as e:
                 logger.error("发送音频失败: %s", e)
                 if _is_invalid_file_error(e):
-                    mark_file_invalid(batch[0].get("code", "")) if batch[0].get("bot_username") == bot_name else None
+                    await mark_file_invalid(batch[0].get("code", "")) if batch[0].get("bot_username") == bot_name else None
         else:
             media_list = []
             for f in batch:
@@ -270,6 +270,6 @@ async def send_file_group(
                         except Exception as e2:
                             logger.error("降级发送音频失败: %s", e2)
                             if _is_invalid_file_error(e2):
-                                mark_file_invalid(f.get("code", "")) if f.get("bot_username") == bot_name else None
+                                await mark_file_invalid(f.get("code", "")) if f.get("bot_username") == bot_name else None
 
     return sent_count

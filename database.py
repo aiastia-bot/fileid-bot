@@ -1,6 +1,6 @@
 """数据库操作模块 - 入口文件，re-export 所有函数以保持向后兼容"""
 
-from db_core import get_db, init_db, _backfill_bot_db_id, run_sync  # noqa: F401
+from db_core import init_db, run_sync, get_session  # noqa: F401
 from db_files import (  # noqa: F401
     save_file, get_file, get_files_by_codes, mark_file_invalid,
     get_active_bot_files, get_all_files_for_export,
@@ -17,6 +17,7 @@ from db_bots import (  # noqa: F401
     get_user_bot_by_token, get_user_bot_by_telegram_id,
     delete_user_bot, update_user_bot_status, update_user_bot_token,
     get_all_active_user_bots, update_user_bot_node, get_active_bots_by_node,
+    get_user_bot_by_username, unban_user_bots,
     add_to_blacklist, remove_from_blacklist, is_user_blacklisted,
     get_blacklist, get_blacklist_count,
     get_platform_setting, set_platform_setting,

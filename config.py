@@ -19,7 +19,14 @@ MAX_COLLECTION_FILES = 999
 AUTO_SEND_INTERVAL = 5  # 秒
 GROUP_SEND_SIZE = 10  # 每组最多10个
 CODE_LENGTH = 32  # 随机码长度
-DB_PATH = './data/fileid.db'
+# ===== 数据库配置 =====
+# 数据库类型：sqlite（默认）或 mysql
+DB_TYPE = os.environ.get('DB_TYPE', 'sqlite')
+# 数据库连接 URL（仅 MySQL 时需要配置）
+# 格式: mysql+asyncmy://user:password@host:3306/dbname
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
+# SQLite 数据库路径（仅 SQLite 模式使用）
+DB_PATH = os.environ.get('DB_PATH', './data/fileid.db')
 MAX_BOTS_PER_USER = int(os.environ.get('MAX_BOTS_PER_USER', '1'))  # 每个用户最多添加的Bot数
 
 # ===== 发送限速与重试配置 =====

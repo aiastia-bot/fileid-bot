@@ -45,7 +45,7 @@ async def _auto_stop_revoked_bot(bot_username: str, bot_data: dict):
 
     # 更新数据库状态
     from database import update_user_bot_status
-    update_user_bot_status(bot_db_id, 'revoked')
+    await update_user_bot_status(bot_db_id, 'revoked')
 
     # 停止 Bot
     try:
@@ -198,7 +198,7 @@ class BotManager:
                 logger.warning("用户Bot @%s 运行中被冻结/注销，标记为 frozen", context.bot.username)
                 bot_record = context.bot_data.get('bot_record')
                 if bot_record:
-                    update_user_bot_status(bot_record.get('id'), 'frozen')
+                    await update_user_bot_status(bot_record.get('id'), 'frozen')
                 import __main__
                 bot_manager = getattr(__main__, 'bot_manager', None)
                 if bot_manager and bot_record:
@@ -271,7 +271,7 @@ class BotManager:
                             await app.shutdown()
                         except Exception:
                             pass
-                        update_user_bot_status(bot_db_id, 'frozen')
+                        await update_user_bot_status(bot_db_id, 'frozen')
                         return False
                     logger.warning("用户Bot @%s 注册命令失败: %s", app.bot.username, cmd_err)
 
@@ -303,7 +303,7 @@ class BotManager:
                 # Token 无效，不重试，直接标记 revoked
                 if "InvalidToken" in type(e).__name__ or ("token" in error_str.lower() and "rejected" in error_str.lower()):
                     logger.warning("用户Bot @%s Token 无效，标记为 revoked", name)
-                    update_user_bot_status(bot_db_id, 'revoked')
+                    await update_user_bot_status(bot_db_id, 'revoked')
                     return False
 
                 # 网络错误，可重试
@@ -357,7 +357,7 @@ class BotManager:
 
     async def load_all(self) -> int:
         """从数据库加载所有活跃的用户Bot（限制并发数启动）"""
-        bots = get_all_active_user_bots()
+        bots = await get_all_active_user_bots()
         logger.info("从数据库加载 %d 个用户Bot（最大并发 %d）", len(bots), MAX_CONCURRENT_STARTS)
 
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_STARTS)
@@ -406,7 +406,7 @@ class MasterScheduler:
         """将 Bot 分配到最空闲的 Worker 节点，返回 node_id"""
         import httpx
 
-        node = get_best_worker_node()
+        node = await get_best_worker_node()
         if not node:
             logger.warning("没有可用的 Worker 节点")
             return None
@@ -433,7 +433,7 @@ class MasterScheduler:
 
                 if resp.status_code == 200:
                     # 更新数据库中的节点分配
-                    update_user_bot_node(bot_db_id, node_id)
+                    await update_user_bot_node(bot_db_id, node_id)
                     logger.info("Bot @%s 已分配到 Worker %s", bot_record.get('bot_username', ''), node_id)
                     return node_id
                 else:
@@ -442,14 +442,14 @@ class MasterScheduler:
 
         except Exception as e:
             logger.error("联系 Worker %s 失败: %s", node_id, e)
-            set_worker_offline(node_id)
+            await set_worker_offline(node_id)
             return None
 
     async def stop_bot_on_worker(self, bot_db_id: int) -> bool:
         """通知 Worker 停止一个 Bot"""
         import httpx
 
-        bot = get_user_bot_by_id(bot_db_id)
+        bot = await get_user_bot_by_id(bot_db_id)
         if not bot:
             return False
 
@@ -459,7 +459,7 @@ class MasterScheduler:
 
         # 查找 Worker 节点
         from database import get_all_worker_nodes
-        nodes = {n['node_id']: n for n in get_all_worker_nodes()}
+        nodes = {n['node_id']: n for n in await get_all_worker_nodes()}
         node = nodes.get(node_id)
         if not node or node['status'] != 'online':
             logger.warning("Worker %s 不在线，无法停止 Bot", node_id)
@@ -480,7 +480,7 @@ class MasterScheduler:
 
     async def load_all_to_workers(self) -> int:
         """将所有活跃 Bot 分配到 Worker 节点"""
-        bots = get_all_active_user_bots()
+        bots = await get_all_active_user_bots()
         logger.info("开始分配 %d 个 Bot 到 Worker 节点", len(bots))
 
         loaded = 0
@@ -510,22 +510,22 @@ class MasterScheduler:
                                       webhook_host: str = '',
                                       max_bots: int = MAX_BOTS_PER_WORKER) -> bool:
         """处理 Worker 注册请求"""
-        register_worker_node(node_id, node_url, webhook_host, max_bots)
+        await register_worker_node(node_id, node_url, webhook_host, max_bots)
         logger.info("Worker [%s] 已注册 (url=%s, webhook=%s)", node_id, node_url, webhook_host)
         return True
 
     async def handle_worker_heartbeat(self, node_id: str, active_bots: int) -> bool:
         """处理 Worker 心跳"""
-        update_worker_heartbeat(node_id, active_bots)
+        await update_worker_heartbeat(node_id, active_bots)
         return True
 
     async def handle_worker_offline(self, node_id: str) -> bool:
         """处理 Worker 离线"""
-        set_worker_offline(node_id)
+        await set_worker_offline(node_id)
         logger.warning("Worker [%s] 已离线", node_id)
         return True
 
-    def get_worker_status(self) -> List[Dict]:
+    async def get_worker_status(self) -> List[Dict]:
         """获取所有 Worker 状态"""
         from database import get_all_worker_nodes
-        return get_all_worker_nodes()
+        return await get_all_worker_nodes()

@@ -88,7 +88,7 @@ def run_standalone():
         logger.error("❌ 未设置 BOT_TOKEN 环境变量")
         sys.exit(1)
 
-    init_db()
+    asyncio.run(init_db())
     logger.info("📊 数据库初始化完成")
 
     bot_manager = BotManager()
@@ -130,7 +130,7 @@ def run_master():
         logger.error("❌ 未设置 BOT_TOKEN 环境变量")
         sys.exit(1)
 
-    init_db()
+    asyncio.run(init_db())
     logger.info("📊 数据库初始化完成")
 
     bot_manager = BotManager()  # Master 本地也可以运行少量 Bot（fallback）
@@ -338,7 +338,7 @@ def run_worker():
     """Worker 模式：只运行用户Bot，接收Master指令"""
     from worker_server import WorkerServer
 
-    init_db()
+    asyncio.run(init_db())
     logger.info("📊 数据库初始化完成")
 
     bot_manager = BotManager()
