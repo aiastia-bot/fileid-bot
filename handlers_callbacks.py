@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import AUTO_SEND_INTERVAL, GROUP_SEND_SIZE, FILE_TYPE_MAP
-from database import get_collection, get_collection_files
+from database import get_collection, get_collection_files, run_sync
 from utils import escape_markdown
 from senders import send_file_group
 
@@ -231,8 +231,8 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
     """分页发送集合文件：每次发送 PER_PAGE 个，带页码按钮，已发送页显示✅"""
     logger.info("_send_paginated: col_code=%s, sk=%s, page=%d", col_code, sk, page)
 
-    files = get_collection_files(col_code)
-    col_info = get_collection(col_code)
+    files = await run_sync(get_collection_files, col_code)
+    col_info = await run_sync(get_collection, col_code)
 
     if not files or not col_info:
         msg = "⚠️ 集合为空或不存在。"
@@ -337,7 +337,7 @@ async def _send_all(context, chat_id, col_code, query=None):
 
     status_msg = await context.bot.send_message(chat_id=chat_id, text="📤 正在准备发送...")
 
-    files = get_collection_files(col_code)
+    files = await run_sync(get_collection_files, col_code)
     logger.info("_send_all: 查询到 %d 个文件", len(files) if files else 0)
 
     if not files:
@@ -379,7 +379,7 @@ async def _send_all(context, chat_id, col_code, query=None):
 async def _auto_send(context, chat_id, col_code, user_id, query=None):
     """自动发送集合文件（每组间隔）"""
     logger.info("_auto_send 开始: col_code=%s, chat_id=%s, user_id=%s", col_code, chat_id, user_id)
-    files = get_collection_files(col_code)
+    files = await run_sync(get_collection_files, col_code)
     logger.info("_auto_send: 查询到 %d 个文件", len(files) if files else 0)
     if not files:
         msg = "⚠️ 集合为空。"
@@ -445,8 +445,8 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
 async def _send_page(context, chat_id, col_code, page, query=None):
     """分页浏览集合（只看列表，不发送文件）"""
     logger.info("_send_page: col_code=%s, page=%d, chat_id=%s", col_code, page, chat_id)
-    files = get_collection_files(col_code)
-    col_info = get_collection(col_code)
+    files = await run_sync(get_collection_files, col_code)
+    col_info = await run_sync(get_collection, col_code)
     logger.info("_send_page: files=%d, col_info=%s", len(files) if files else 0, bool(col_info))
     if not files or not col_info:
         msg = "⚠️ 集合为空或不存在。"
@@ -509,7 +509,7 @@ async def _send_page(context, chat_id, col_code, page, query=None):
 async def _send_page_files(context, chat_id, col_code, page, query=None):
     """发送指定页的文件"""
     logger.info("_send_page_files: col_code=%s, page=%d, chat_id=%s", col_code, page, chat_id)
-    files = get_collection_files(col_code)
+    files = await run_sync(get_collection_files, col_code)
     logger.info("_send_page_files: files=%d", len(files) if files else 0)
     if not files:
         msg = "⚠️ 集合为空。"

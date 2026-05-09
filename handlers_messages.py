@@ -9,12 +9,15 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import MAX_COLLECTION_FILES, GROUP_SEND_SIZE, FILE_TYPE_MAP, SEND_INDIVIDUAL_DELAY, SEND_BATCH_DELAY
-from database import save_file, get_file, get_collection, get_collection_files, create_collection, add_file_to_collection
+from database import (
+    save_file, get_file, get_files_by_codes, get_collection, get_collection_files,
+    create_collection, add_file_to_collection, run_sync,
+)
 from utils import get_code_prefix, escape_markdown, generate_raw_code, parse_file_code, parse_collection_code
 from senders import send_file_group, _retry_send
 
 
-def _short_key(context, col_code: str) -> str:
+async def _short_key(context, col_code: str) -> str:
     """生成短 key 用于 callback_data（Telegram 限制 64 字节）
     
     使用集合的数据库ID作为短key（c{id}），重启后仍可通过ID从数据库恢复。
@@ -28,8 +31,7 @@ def _short_key(context, col_code: str) -> str:
             return k
 
     # 使用集合的数据库ID作为短key（重启不失效）
-    from database import get_collection
-    col_info = get_collection(col_code)
+    col_info = await run_sync(get_collection, col_code)
     if col_info and col_info.get('id'):
         key = f"c{col_info['id']}"
     else:
@@ -58,7 +60,7 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return
 
         bot_db_id = context.bot_data.get('bot_record', {}).get('id')
-        code = save_file(user_id, file_type, file_id, file_size, file_unique_id, bot_username, code_prefix, bot_db_id=bot_db_id)
+        code = await run_sync(save_file, user_id, file_type, file_id, file_size, file_unique_id, bot_username, code_prefix, bot_db_id=bot_db_id)
         if not code:
             await message.reply_text("❌ 保存失败，请重试。")
             return
@@ -75,7 +77,7 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 await message.reply_text(f"⚠️ 集合已满 {MAX_COLLECTION_FILES} 个文件，请发送 `/done` 完成。")
                 return
             sort_order = current_count + 1
-            add_file_to_collection(creating_col, code, sort_order)
+            await run_sync(add_file_to_collection, creating_col, code, sort_order)
             context.user_data['collection_count'] = sort_order
             reply_kwargs['text'] += f"\n\n📦 已添加到集合 ({sort_order}/{MAX_COLLECTION_FILES})"
 
@@ -183,14 +185,12 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
     if not file_codes:
         return
 
-    files, not_found = [], []
     current_bot_db_id = context.bot_data.get("bot_record", {}).get("id")
-    for code in file_codes:
-        f = get_file(code)
-        if f and (not current_bot_db_id or not f.get("bot_db_id") or f["bot_db_id"] == current_bot_db_id):
-            files.append(f)
-        else:
-            not_found.append(code)
+    # 使用批量查询替代逐个查询，单次 DB 调用 + 单次线程切换
+    found_files = await run_sync(get_files_by_codes, file_codes, current_bot_db_id)
+    found_codes = {f['code'] for f in found_files}
+    files = found_files
+    not_found = [c for c in file_codes if c not in found_codes]
 
     total_sent = 0
     if files:
@@ -273,7 +273,7 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
 async def _process_collection_codes(context, chat_id, message, collection_codes: list) -> None:
     """处理集合代码"""
     for col_code in collection_codes:
-        col_info = get_collection(col_code)
+        col_info = await run_sync(get_collection, col_code)
         current_bot_db_id_col = context.bot_data.get("bot_record", {}).get("id")
         if not col_info or (current_bot_db_id_col and col_info.get("bot_db_id") and col_info["bot_db_id"] != current_bot_db_id_col):
             await message.reply_text(f"❌ 集合不存在: `{col_code}`", parse_mode="Markdown")
@@ -284,7 +284,7 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
             await message.reply_text(f"⚠️ 集合「{safe_name}」尚未完成。")
             continue
 
-        files = get_collection_files(col_code)
+        files = await run_sync(get_collection_files, col_code)
         if not files:
             await message.reply_text(f"⚠️ 集合「{safe_name}」为空。")
             continue
@@ -295,7 +295,7 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
             type_counts[f['file_type']] = type_counts.get(f['file_type'], 0) + 1
         type_stats_text = " ".join(f"{FILE_TYPE_MAP.get(k, k)}x{v}" for k, v in type_counts.items())
 
-        sk = _short_key(context, col_code)
+        sk = await _short_key(context, col_code)
         col_text = f"📦 *集合「{safe_name}」*\n\n📊 共 {total_files} 个文件\n📋 {type_stats_text}\n\n请选择操作："
         keyboard = [
             [InlineKeyboardButton("⬇️ 全部发送", callback_data=f"s|{sk}")],
@@ -443,32 +443,39 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
             col_name = f"转发组_{datetime.now().strftime('%m%d%H%M')}"
             full_col_code = f"{code_prefix}_col:{generate_raw_code()}"
 
-            # 保存集合到数据库
+            # 保存集合到数据库（在后台线程中执行同步 DB 操作）
             from database import get_db
             bot_db_id = context.bot_data.get('bot_record', {}).get('id')
-            conn = get_db()
-            try:
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                conn.execute(
-                    "INSERT INTO collections (code, bot_username, name, user_id, file_count, status, created_at, updated_at, bot_db_id) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?)",
-                    (full_col_code, bname, col_name, uid, len(codes), now, now, bot_db_id)
-                )
-                for i, code in enumerate(codes):
-                    conn.execute("INSERT INTO collection_items (collection_code, file_code, sort_order) VALUES (?, ?, ?)", (full_col_code, code, i + 1))
-                conn.commit()
-            except Exception as e:
-                logger.error("自动创建转发集合失败: %s", e)
+
+            def _save_forward_collection():
+                conn = get_db()
+                try:
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    conn.execute(
+                        "INSERT INTO collections (code, bot_username, name, user_id, file_count, status, created_at, updated_at, bot_db_id) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?)",
+                        (full_col_code, bname, col_name, uid, len(codes), now, now, bot_db_id)
+                    )
+                    for i, code in enumerate(codes):
+                        conn.execute("INSERT INTO collection_items (collection_code, file_code, sort_order) VALUES (?, ?, ?)", (full_col_code, code, i + 1))
+                    conn.commit()
+                    return True
+                except Exception as e:
+                    logger.error("自动创建转发集合失败: %s", e)
+                    return False
+                finally:
+                    conn.close()
+
+            save_ok = await run_sync(_save_forward_collection)
+            if not save_ok:
                 reply = f"✅ 转发媒体已保存（共 {len(codes)} 个）：\n\n" + "\n".join(f"`{c}`" for c in codes)
                 await msgs[0].reply_text(reply, parse_mode="Markdown")
                 return
-            finally:
-                conn.close()
 
             # 回复
             safe_name = escape_markdown(col_name)
             reply = f"✅ 转发媒体组已保存并自动创建集合！\n\n📦 集合: *{safe_name}*\n📊 共 {len(codes)} 个文件\n📦 集合代码: `{full_col_code}`\n\n单个文件代码：\n"
             reply += "\n".join(f"`{c}`" for c in codes)
-            sk = _short_key(context, full_col_code)
+            sk = await _short_key(context, full_col_code)
             keyboard = [[InlineKeyboardButton("⬇️ 全部发送", callback_data=f"s|{sk}"), InlineKeyboardButton("▶️ 自动发送", callback_data=f"a|{sk}")]]
             try:
                 await msgs[0].reply_text(reply, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -512,7 +519,7 @@ async def _save_media_messages(messages, context) -> list:
     for msg in messages:
         file_id, file_type, file_size, file_unique_id = _extract_file_info(msg)
         if file_id and file_type:
-            code = save_file(uid, file_type, file_id, file_size, file_unique_id, bname, code_prefix, bot_db_id=bot_db_id)
+            code = await run_sync(save_file, uid, file_type, file_id, file_size, file_unique_id, bname, code_prefix, bot_db_id=bot_db_id)
             if code:
                 codes.append(code)
     return codes
@@ -524,6 +531,6 @@ async def _add_to_collection(context, col_code, codes):
     for i, code in enumerate(codes):
         if current_count + i + 1 > MAX_COLLECTION_FILES:
             break
-        add_file_to_collection(col_code, code, current_count + i + 1)
+        await run_sync(add_file_to_collection, col_code, code, current_count + i + 1)
     new_count = min(current_count + len(codes), MAX_COLLECTION_FILES)
     context.user_data['collection_count'] = new_count

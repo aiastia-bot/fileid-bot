@@ -120,6 +120,27 @@ def get_file(code: str) -> Optional[Dict]:
         conn.close()
 
 
+def get_files_by_codes(codes: list, bot_db_id: int = None) -> list:
+    """批量根据代码获取文件信息（单次查询，比循环 get_file 高效得多）"""
+    if not codes:
+        return []
+    conn = get_db()
+    try:
+        placeholders = ','.join('?' for _ in codes)
+        sql = f"SELECT * FROM file_mappings WHERE code IN ({placeholders})"
+        rows = conn.execute(sql, codes).fetchall()
+        results = []
+        for row in rows:
+            f = dict(row)
+            # 过滤：如果指定了 bot_db_id，只返回属于该 Bot 的文件
+            if bot_db_id and f.get("bot_db_id") and f["bot_db_id"] != bot_db_id:
+                continue
+            results.append(f)
+        return results
+    finally:
+        conn.close()
+
+
 def get_all_files_for_export() -> List[Dict]:
     """导出所有文件记录"""
     conn = get_db()

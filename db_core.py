@@ -1,8 +1,10 @@
 """数据库核心操作 - 连接管理、表创建与迁移"""
+import asyncio
 import sqlite3
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict
+from functools import partial
 
 from config import DB_PATH
 
@@ -15,6 +17,16 @@ def get_db():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
+
+
+async def run_sync(func, *args, **kwargs):
+    """在线程池中执行同步数据库函数，避免阻塞事件循环。
+    
+    用法:
+        result = await run_sync(save_file, user_id, file_type, ...)
+        result = await run_sync(get_file, code)
+    """
+    return await asyncio.to_thread(func, *args, **kwargs)
 
 
 def _backfill_bot_db_id(conn):

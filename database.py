@@ -1,8 +1,8 @@
 """数据库操作模块 - 入口文件，re-export 所有函数以保持向后兼容"""
 
-from db_core import get_db, init_db, _backfill_bot_db_id  # noqa: F401
+from db_core import get_db, init_db, _backfill_bot_db_id, run_sync  # noqa: F401
 from db_files import (  # noqa: F401
-    save_file, get_file, mark_file_invalid,
+    save_file, get_file, get_files_by_codes, mark_file_invalid,
     get_active_bot_files, get_all_files_for_export,
     get_files_by_bot_username, get_files_by_bot_db_id,
 )
