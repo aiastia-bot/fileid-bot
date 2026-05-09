@@ -91,11 +91,11 @@ async def get_platform_stats() -> Dict:
         total_collections = result.scalar() or 0
 
         return {
+            'bot_count': active_bots,
             'total_bots': total_bots,
-            'active_bots': active_bots,
-            'total_users': total_users,
-            'total_files': total_files,
-            'total_collections': total_collections,
+            'owner_count': total_users,
+            'file_count': total_files,
+            'col_count': total_collections,
         }
 
 
@@ -110,6 +110,8 @@ async def get_platform_bot_details() -> List[Dict]:
         details = []
         for bot in bots:
             file_count = 0
+            col_count = 0
+            user_count = 0
             try:
                 r = await session.execute(
                     select(func.count()).select_from(FileMapping).where(FileMapping.bot_db_id == bot.id)
@@ -117,14 +119,35 @@ async def get_platform_bot_details() -> List[Dict]:
                 file_count = r.scalar() or 0
             except Exception:
                 pass
+            try:
+                r = await session.execute(
+                    select(func.count()).select_from(Collection).where(
+                        Collection.bot_db_id == bot.id, Collection.status == 'completed'
+                    )
+                )
+                col_count = r.scalar() or 0
+            except Exception:
+                pass
+            try:
+                r = await session.execute(
+                    select(func.count(func.distinct(FileMapping.user_id))).select_from(FileMapping)
+                    .where(FileMapping.bot_db_id == bot.id)
+                )
+                user_count = r.scalar() or 0
+            except Exception:
+                pass
 
             details.append({
                 'id': bot.id,
                 'bot_username': bot.bot_username or '',
+                'bot_firstname': bot.bot_firstname or bot.bot_username or '',
+                'bot_id': bot.bot_id or '',
                 'owner_id': bot.owner_id,
                 'status': bot.status,
                 'created_at': bot.created_at or '',
                 'file_count': file_count,
+                'col_count': col_count,
+                'user_count': user_count,
             })
 
         return details
