@@ -13,6 +13,7 @@ from config import (
     SEND_BATCH_DELAY, SEND_INDIVIDUAL_DELAY,
     SEND_MAX_FILES_PER_REQUEST, SEND_MIN_INTERVAL,
 )
+from telegram import Update
 from database import mark_file_invalid
 
 logger = logging.getLogger(__name__)
@@ -100,11 +101,13 @@ async def send_file_group(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int,
     files: List[Dict],
-    caption: str = ""
+    caption: str = "",
+    update: "Update" = None,
 ) -> int:
     """
     组发送文件（图片+视频用相册，文档用文档组，音频用音频组）
     带滑动限速：每次发送之间添加延迟，避免触发 Telegram 限流
+    当文件数量超过 SEND_MAX_FILES_PER_REQUEST 时，自动分批发送并显示进度
     返回成功发送的数量
     """
     if not files:
@@ -112,19 +115,74 @@ async def send_file_group(
         return 0
 
     bot_name = getattr(context.bot, 'username', 'unknown')
-
-    # 单次请求文件数上限
-    if len(files) > SEND_MAX_FILES_PER_REQUEST:
-        logger.warning("send_file_group: @%s 请求发送 %d 个文件，截断为 %d",
-                       bot_name, len(files), SEND_MAX_FILES_PER_REQUEST)
-        files = files[:SEND_MAX_FILES_PER_REQUEST]
+    total = len(files)
 
     # 获取每 Bot 发送锁（防止同一 Bot 并发发送叠加触发 429）
     await _rate_limiter.acquire(bot_name)
     try:
+        # 需要分批
+        if total > SEND_MAX_FILES_PER_REQUEST:
+            return await _send_in_batches(context, chat_id, files, caption, bot_name, update)
+
         return await _send_file_group_inner(context, chat_id, files, caption, bot_name)
     finally:
         _rate_limiter.release(bot_name)
+
+
+async def _send_in_batches(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    files: List[Dict],
+    caption: str,
+    bot_name: str,
+    update: "Update" = None,
+) -> int:
+    """分批发送文件，每批 SEND_MAX_FILES_PER_REQUEST 个，带进度提示"""
+    total = len(files)
+    sent_total = 0
+    progress_msg = None
+
+    # 发送进度提示
+    if update:
+        try:
+            progress_msg = await update.message.reply_text(
+                f"📤 共 {total} 个文件，分批发送中…"
+            )
+        except Exception:
+            pass
+
+    for batch_idx in range(0, total, SEND_MAX_FILES_PER_REQUEST):
+        batch = files[batch_idx:batch_idx + SEND_MAX_FILES_PER_REQUEST]
+        batch_num = batch_idx // SEND_MAX_FILES_PER_REQUEST + 1
+        total_batches = (total + SEND_MAX_FILES_PER_REQUEST - 1) // SEND_MAX_FILES_PER_REQUEST
+
+        # 更新进度
+        if progress_msg:
+            try:
+                await progress_msg.edit_text(
+                    f"📤 发送中… 批次 {batch_num}/{total_batches} "
+                    f"（已发送 {sent_total}/{total}）"
+                )
+            except Exception:
+                pass
+
+        sent = await _send_file_group_inner(context, chat_id, batch, caption, bot_name)
+        sent_total += sent
+
+        # 批次间额外等待，避免触发限流
+        if batch_idx + SEND_MAX_FILES_PER_REQUEST < total:
+            extra_wait = SEND_BATCH_DELAY * 2
+            logger.info("分批发送: 等待 %.1f 秒后发送下一批", extra_wait)
+            await asyncio.sleep(extra_wait)
+
+    # 完成提示
+    if progress_msg:
+        try:
+            await progress_msg.edit_text(f"✅ 发送完成！共 {sent_total}/{total} 个文件")
+        except Exception:
+            pass
+
+    return sent_total
 
 
 async def _send_file_group_inner(
