@@ -333,41 +333,42 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
 
 
 async def _send_all(context, chat_id, col_code, query=None):
-    """发送集合全部文件（旧格式兼容）"""
+    """发送集合全部文件（通过统一发送队列）"""
     logger.info("_send_all: col_code=%s", col_code)
 
-    status_msg = await context.bot.send_message(chat_id=chat_id, text="📤 正在准备发送...")
-
     files = await get_collection_files(col_code)
-    logger.info("_send_all: 查询到 %d 个文件", len(files) if files else 0)
-
     if not files:
-        await context.bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text="⚠️ 集合为空或不存在。")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ 集合为空或不存在。")
         return
 
     total = len(files)
+    queue = get_queue_from_context(context)
+    batches = split_files_to_batches(files)
 
-    pv = [f for f in files if f['file_type'] in ('photo', 'video')]
-    docs = [f for f in files if f['file_type'] == 'document']
-    audios = [f for f in files if f['file_type'] in ('audio', 'voice')]
-    logger.info("分组: photo+video=%d, document=%d, audio=%d", len(pv), len(docs), len(audios))
-
-    await context.bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text=f"📤 正在发送... (0/{total})")
+    info = queue.queue_info(chat_id)
+    status_msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"📤 已排队 {total} 个文件（{len(batches)} 批）\n"
+             f"📋 队列中共 {info['total_pending'] + len(batches)} 批等待发送"
+    )
 
     sent_count = 0
-    batch_num = 0
-    for group in [pv, docs, audios]:
-        for i in range(0, len(group), GROUP_SEND_SIZE):
-            batch = group[i:i + GROUP_SEND_SIZE]
+    for i, batch in enumerate(batches):
+        try:
+            sent = await queue.submit_batch(chat_id, batch)
+            sent_count += sent
+        except Exception as e:
+            logger.error("_send_all 批次发送失败: %s", e)
+
+        # 每几批更新一次进度
+        if (i + 1) % 3 == 0 or i == len(batches) - 1:
             try:
-                sent = await send_file_group(context, chat_id, batch)
-                sent_count += sent
-                logger.info("batch: sent=%d, total=%d/%d", sent, sent_count, total)
-            except Exception as e:
-                logger.error("批量发送失败: %s", e, exc_info=True)
-            batch_num += 1
-            if batch_num % 2 == 0:
-                await asyncio.sleep(2)
+                await context.bot.edit_message_text(
+                    chat_id=chat_id, message_id=status_msg.message_id,
+                    text=f"📤 发送中… ({sent_count}/{total})"
+                )
+            except Exception:
+                pass
 
     result_text = f"✅ 发送完成！成功 {sent_count}/{total}"
     logger.info("_send_all 完成: %s", result_text)
