@@ -1,16 +1,57 @@
-"""文件发送逻辑模块 - 带重试机制和滑动限速"""
+"""文件发送逻辑模块 - 带重试机制、滑动限速和每 Bot 并发控制"""
 import asyncio
 import logging
+import time
 from typing import List, Dict
 
 from telegram.ext import ContextTypes
 from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio
 from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest
 
-from config import GROUP_SEND_SIZE, SEND_RETRY_COUNT, SEND_RETRY_DELAY, SEND_BATCH_DELAY, SEND_INDIVIDUAL_DELAY
+from config import (
+    GROUP_SEND_SIZE, SEND_RETRY_COUNT, SEND_RETRY_DELAY,
+    SEND_BATCH_DELAY, SEND_INDIVIDUAL_DELAY,
+    SEND_MAX_FILES_PER_REQUEST, SEND_MIN_INTERVAL,
+)
 from database import mark_file_invalid
 
 logger = logging.getLogger(__name__)
+
+
+# ===== 每 Bot 限速器 =====
+
+class _BotRateLimiter:
+    """每 Bot 的发送限速器：信号量 + 最小发送间隔"""
+    def __init__(self):
+        self._semaphores: Dict[str, asyncio.Semaphore] = {}
+        self._last_send: Dict[str, float] = {}
+
+    def _get_semaphore(self, bot_name: str) -> asyncio.Semaphore:
+        if bot_name not in self._semaphores:
+            self._semaphores[bot_name] = asyncio.Semaphore(1)
+        return self._semaphores[bot_name]
+
+    async def acquire(self, bot_name: str):
+        """获取发送许可（同一 Bot 同时只允许一个发送任务）"""
+        sem = self._get_semaphore(bot_name)
+        await sem.acquire()
+        # 确保两次发送之间有最小间隔
+        last = self._last_send.get(bot_name, 0)
+        now = time.monotonic()
+        wait = SEND_MIN_INTERVAL - (now - last)
+        if wait > 0:
+            logger.debug("Bot @%s 发送间隔等待 %.2f 秒", bot_name, wait)
+            await asyncio.sleep(wait)
+
+    def release(self, bot_name: str):
+        """释放发送许可"""
+        self._last_send[bot_name] = time.monotonic()
+        sem = self._semaphores.get(bot_name)
+        if sem:
+            sem.release()
+
+
+_rate_limiter = _BotRateLimiter()
 
 
 def _is_invalid_file_error(e):
@@ -71,6 +112,29 @@ async def send_file_group(
         return 0
 
     bot_name = getattr(context.bot, 'username', 'unknown')
+
+    # 单次请求文件数上限
+    if len(files) > SEND_MAX_FILES_PER_REQUEST:
+        logger.warning("send_file_group: @%s 请求发送 %d 个文件，截断为 %d",
+                       bot_name, len(files), SEND_MAX_FILES_PER_REQUEST)
+        files = files[:SEND_MAX_FILES_PER_REQUEST]
+
+    # 获取每 Bot 发送锁（防止同一 Bot 并发发送叠加触发 429）
+    await _rate_limiter.acquire(bot_name)
+    try:
+        return await _send_file_group_inner(context, chat_id, files, caption, bot_name)
+    finally:
+        _rate_limiter.release(bot_name)
+
+
+async def _send_file_group_inner(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    files: List[Dict],
+    caption: str,
+    bot_name: str,
+) -> int:
+    """内部发送逻辑（已获取锁）"""
     logger.info("send_file_group: @%s 准备发送 %d 个文件到 chat_id=%s", bot_name, len(files), chat_id)
 
     # 按类型分组
