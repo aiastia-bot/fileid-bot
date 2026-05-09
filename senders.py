@@ -1,4 +1,13 @@
-"""文件发送逻辑模块 - 带重试机制、滑动限速和每 Bot 并发控制"""
+"""文件发送底层函数 - 被 send_queue 调用
+
+send_batch(bot, chat_id, files, caption) → 发一批文件（≤GROUP_SEND_SIZE）
+  - 按类型分组（图片/视频用相册，文档用文档组，音频用音频组）
+  - 内置重试 + 指数退避 + 429 RetryAfter 处理
+  - 不负责限速（由队列消费者控制节奏）
+
+send_file_group(context, chat_id, files, caption) → 向后兼容包装
+  - 内部使用 send_queue 提交任务
+"""
 import asyncio
 import logging
 import time
@@ -10,49 +19,11 @@ from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest
 
 from config import (
     GROUP_SEND_SIZE, SEND_RETRY_COUNT, SEND_RETRY_DELAY,
-    SEND_BATCH_DELAY, SEND_INDIVIDUAL_DELAY,
-    SEND_MAX_FILES_PER_REQUEST, SEND_MIN_INTERVAL,
+    SEND_INDIVIDUAL_DELAY,
 )
-from telegram import Update
 from database import mark_file_invalid
 
 logger = logging.getLogger(__name__)
-
-
-# ===== 每 Bot 限速器 =====
-
-class _BotRateLimiter:
-    """每 Bot 的发送限速器：信号量 + 最小发送间隔"""
-    def __init__(self):
-        self._semaphores: Dict[str, asyncio.Semaphore] = {}
-        self._last_send: Dict[str, float] = {}
-
-    def _get_semaphore(self, bot_name: str) -> asyncio.Semaphore:
-        if bot_name not in self._semaphores:
-            self._semaphores[bot_name] = asyncio.Semaphore(1)
-        return self._semaphores[bot_name]
-
-    async def acquire(self, bot_name: str):
-        """获取发送许可（同一 Bot 同时只允许一个发送任务）"""
-        sem = self._get_semaphore(bot_name)
-        await sem.acquire()
-        # 确保两次发送之间有最小间隔
-        last = self._last_send.get(bot_name, 0)
-        now = time.monotonic()
-        wait = SEND_MIN_INTERVAL - (now - last)
-        if wait > 0:
-            logger.debug("Bot @%s 发送间隔等待 %.2f 秒", bot_name, wait)
-            await asyncio.sleep(wait)
-
-    def release(self, bot_name: str):
-        """释放发送许可"""
-        self._last_send[bot_name] = time.monotonic()
-        sem = self._semaphores.get(bot_name)
-        if sem:
-            sem.release()
-
-
-_rate_limiter = _BotRateLimiter()
 
 
 def _is_invalid_file_error(e):
@@ -63,9 +34,9 @@ def _is_invalid_file_error(e):
 async def _retry_send(send_func, *args, **kwargs):
     """
     通用重试包装器：带指数退避的重试机制
-    - 对 TimedOut 和 NetworkError 自动重试
-    - 对 RetryAfter（429 Flood）等待指定时间后重试
-    - BadRequest（file_id无效）不重试，直接抛出
+    - RetryAfter（429 Flood）等待指定时间后重试
+    - TimedOut / NetworkError 自动重试（指数退避）
+    - BadRequest（file_id无效）不重试
     - 最多重试 SEND_RETRY_COUNT 次
     """
     last_exception = None
@@ -73,325 +44,200 @@ async def _retry_send(send_func, *args, **kwargs):
         try:
             return await send_func(*args, **kwargs)
         except BadRequest as e:
-            # file_id 无效等错误，不重试直接抛出
             if _is_invalid_file_error(e):
                 logger.warning("文件ID无效，跳过重试: %s", e)
             raise
         except RetryAfter as e:
             wait = e.retry_after if hasattr(e, 'retry_after') and e.retry_after else SEND_RETRY_DELAY * 4
-            logger.warning("触发限流 (RetryAfter)，等待 %.1f 秒后重试 (第 %d/%d 次)", wait, attempt + 1, SEND_RETRY_COUNT)
+            logger.warning("触发限流 (RetryAfter)，等待 %.1f 秒后重试 (第 %d/%d 次)",
+                           wait, attempt + 1, SEND_RETRY_COUNT)
             await asyncio.sleep(wait)
             last_exception = e
         except (TimedOut, NetworkError) as e:
             if attempt < SEND_RETRY_COUNT:
-                delay = SEND_RETRY_DELAY * (2 ** attempt)  # 指数退避: 2s, 4s, 8s
-                logger.warning("发送超时/网络错误: %s，等待 %.1f 秒后重试 (第 %d/%d 次)", type(e).__name__, delay, attempt + 1, SEND_RETRY_COUNT)
+                delay = SEND_RETRY_DELAY * (2 ** attempt)
+                logger.warning("发送超时/网络错误: %s，等待 %.1f 秒后重试 (第 %d/%d 次)",
+                               type(e).__name__, delay, attempt + 1, SEND_RETRY_COUNT)
                 await asyncio.sleep(delay)
                 last_exception = e
             else:
                 logger.error("发送失败，已重试 %d 次: %s", SEND_RETRY_COUNT, e)
                 raise
-        except Exception as e:
-            # 非网络错误（如 media_file_invalid）不重试，直接抛出
+        except Exception:
             raise
     raise last_exception
 
+
+# ===== 核心：发送一批文件（被队列消费者调用） =====
+
+async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "") -> int:
+    """发送一批文件（≤ GROUP_SEND_SIZE）
+    
+    按类型分组合并发送：
+    - 图片+视频 → send_media_group（相册）
+    - 文档 → send_media_group（文档组）
+    - 音频 → send_media_group（音频组）
+    
+    返回成功发送的数量
+    """
+    if not files:
+        return 0
+
+    bot_name = getattr(bot, 'username', 'unknown')
+    logger.info("send_batch: @%s 发送 %d 个文件到 chat_id=%s", bot_name, len(files), chat_id)
+
+    # 按类型分组
+    photo_video = [f for f in files if f['file_type'] in ('photo', 'video')]
+    documents = [f for f in files if f['file_type'] in ('document', 'voice')]
+    audios = [f for f in files if f['file_type'] == 'audio']
+
+    sent_count = 0
+
+    # 1. 图片+视频
+    if photo_video:
+        sent_count += await _send_typed_batch(bot, chat_id, photo_video, caption, 'photo_video', bot_name)
+
+    # 2. 文档（组间小延迟）
+    if documents:
+        if photo_video:
+            await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
+        sent_count += await _send_typed_batch(bot, chat_id, documents, caption, 'document', bot_name)
+
+    # 3. 音频
+    if audios:
+        if photo_video or documents:
+            await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
+        sent_count += await _send_typed_batch(bot, chat_id, audios, caption, 'audio', bot_name)
+
+    return sent_count
+
+
+async def _send_typed_batch(bot, chat_id, files, caption, type_key, bot_name) -> int:
+    """发送同类型的一批文件"""
+    if len(files) == 1:
+        return await _send_single(bot, chat_id, files[0], caption, bot_name)
+    return await _send_media_group(bot, chat_id, files, caption, type_key, bot_name)
+
+
+async def _send_single(bot, chat_id, f, caption, bot_name) -> int:
+    """发送单个文件"""
+    try:
+        ft = f['file_type']
+        fid = f['telegram_file_id']
+        cap = caption[:1024] if caption else ""
+        timeout = dict(read_timeout=30, write_timeout=30)
+
+        if ft == 'photo':
+            await _retry_send(bot.send_photo, chat_id=chat_id, photo=fid, caption=cap, **timeout)
+        elif ft == 'video':
+            await _retry_send(bot.send_video, chat_id=chat_id, video=fid, caption=cap, **timeout)
+        elif ft == 'audio':
+            await _retry_send(bot.send_audio, chat_id=chat_id, audio=fid, caption=cap, **timeout)
+        else:
+            await _retry_send(bot.send_document, chat_id=chat_id, document=fid, caption=cap, **timeout)
+        return 1
+    except Exception as e:
+        logger.error("发送单个文件失败: %s", e)
+        if _is_invalid_file_error(e):
+            await mark_file_invalid(f.get("code", ""))
+        return 0
+
+
+async def _send_media_group(bot, chat_id, files, caption, type_key, bot_name) -> int:
+    """发送媒体组，失败时降级为逐个发送"""
+    timeout = dict(read_timeout=30, write_timeout=30)
+    media_list = []
+
+    for idx, f in enumerate(files):
+        fid = f['telegram_file_id']
+        cap = caption if idx == 0 else ""
+        cap = cap[:1024] if cap else ""
+
+        try:
+            if f['file_type'] == 'photo':
+                media_list.append(InputMediaPhoto(media=fid, caption=cap))
+            elif f['file_type'] == 'video':
+                media_list.append(InputMediaVideo(media=fid, caption=cap))
+            elif f['file_type'] == 'audio':
+                media_list.append(InputMediaAudio(media=fid, caption=cap))
+            else:
+                media_list.append(InputMediaDocument(media=fid, caption=cap))
+        except Exception as e:
+            logger.error("构建媒体列表失败: %s", e)
+
+    if not media_list:
+        return 0
+
+    # 尝试组发送
+    try:
+        await _retry_send(bot.send_media_group, chat_id=chat_id, media=media_list, **timeout)
+        return len(media_list)
+    except Exception as e:
+        logger.warning("媒体组发送失败，降级逐个发送: %s", e)
+
+    # 降级：逐个发送
+    sent = 0
+    for f in files:
+        s = await _send_single(bot, chat_id, f, "", bot_name)
+        sent += s
+        if sent < len(files):
+            await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
+    return sent
+
+
+# ===== 向后兼容：send_file_group → 通过队列发送 =====
 
 async def send_file_group(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int,
     files: List[Dict],
     caption: str = "",
-    update: "Update" = None,
+    update=None,
 ) -> int:
+    """向后兼容：提交到发送队列并等待完成
+    
+    旧代码仍可调用此函数，内部会自动使用发送队列。
+    新代码建议直接用 send_queue.submit_batch()
     """
-    组发送文件（图片+视频用相册，文档用文档组，音频用音频组）
-    带滑动限速：每次发送之间添加延迟，避免触发 Telegram 限流
-    当文件数量超过 SEND_MAX_FILES_PER_REQUEST 时，自动分批发送并显示进度
-    返回成功发送的数量
-    """
-    if not files:
-        logger.warning("send_file_group: files 为空")
+    from send_queue import get_queue_from_context, split_files_to_batches
+
+    queue = get_queue_from_context(context)
+    batches = split_files_to_batches(files)
+
+    if not batches:
         return 0
 
-    bot_name = getattr(context.bot, 'username', 'unknown')
-    total = len(files)
-
-    # 获取每 Bot 发送锁（防止同一 Bot 并发发送叠加触发 429）
-    await _rate_limiter.acquire(bot_name)
-    try:
-        # 需要分批
-        if total > SEND_MAX_FILES_PER_REQUEST:
-            return await _send_in_batches(context, chat_id, files, caption, bot_name, update)
-
-        return await _send_file_group_inner(context, chat_id, files, caption, bot_name)
-    finally:
-        _rate_limiter.release(bot_name)
-
-
-async def _send_in_batches(
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    files: List[Dict],
-    caption: str,
-    bot_name: str,
-    update: "Update" = None,
-) -> int:
-    """分批发送文件，每批 SEND_MAX_FILES_PER_REQUEST 个，带进度提示"""
-    total = len(files)
-    sent_total = 0
-    progress_msg = None
+    total_sent = 0
 
     # 发送进度提示
-    if update:
+    progress_msg = None
+    if update and len(files) > 10:
         try:
             progress_msg = await update.message.reply_text(
-                f"📤 共 {total} 个文件，分批发送中…"
+                f"📤 已排队 {len(files)} 个文件（{len(batches)} 批）…"
             )
         except Exception:
             pass
 
-    for batch_idx in range(0, total, SEND_MAX_FILES_PER_REQUEST):
-        batch = files[batch_idx:batch_idx + SEND_MAX_FILES_PER_REQUEST]
-        batch_num = batch_idx // SEND_MAX_FILES_PER_REQUEST + 1
-        total_batches = (total + SEND_MAX_FILES_PER_REQUEST - 1) // SEND_MAX_FILES_PER_REQUEST
+    for i, batch in enumerate(batches):
+        sent = await queue.submit_batch(chat_id, batch, caption)
+        total_sent += sent
 
         # 更新进度
-        if progress_msg:
+        if progress_msg and (i + 1) % 2 == 0:
             try:
                 await progress_msg.edit_text(
-                    f"📤 发送中… 批次 {batch_num}/{total_batches} "
-                    f"（已发送 {sent_total}/{total}）"
+                    f"📤 发送中… 批次 {i + 1}/{len(batches)} "
+                    f"（已发送 {total_sent}/{len(files)}）"
                 )
             except Exception:
                 pass
 
-        sent = await _send_file_group_inner(context, chat_id, batch, caption, bot_name)
-        sent_total += sent
-
-        # 批次间额外等待，避免触发限流
-        if batch_idx + SEND_MAX_FILES_PER_REQUEST < total:
-            extra_wait = SEND_BATCH_DELAY * 2
-            logger.info("分批发送: 等待 %.1f 秒后发送下一批", extra_wait)
-            await asyncio.sleep(extra_wait)
-
     # 完成提示
     if progress_msg:
         try:
-            await progress_msg.edit_text(f"✅ 发送完成！共 {sent_total}/{total} 个文件")
+            await progress_msg.edit_text(f"✅ 发送完成！共 {total_sent}/{len(files)} 个文件")
         except Exception:
             pass
 
-    return sent_total
-
-
-async def _send_file_group_inner(
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    files: List[Dict],
-    caption: str,
-    bot_name: str,
-) -> int:
-    """内部发送逻辑（已获取锁）"""
-    logger.info("send_file_group: @%s 准备发送 %d 个文件到 chat_id=%s", bot_name, len(files), chat_id)
-
-    # 按类型分组
-    photo_video = []
-    documents = []
-    audios = []
-
-    for f in files:
-        ft = f['file_type']
-        if ft in ('photo', 'video'):
-            photo_video.append(f)
-        elif ft == 'audio':
-            audios.append(f)
-        else:  # document, voice
-            documents.append(f)
-
-    sent_count = 0
-
-    # 1. 发送图片+视频
-    for i in range(0, len(photo_video), GROUP_SEND_SIZE):
-        batch = photo_video[i:i + GROUP_SEND_SIZE]
-        logger.info("发送图片+视频组: %d 个文件", len(batch))
-
-        # 滑动限速：每组之间延迟（第一批不延迟）
-        if i > 0:
-            logger.debug("组间延迟 %.1f 秒", SEND_BATCH_DELAY)
-            await asyncio.sleep(SEND_BATCH_DELAY)
-
-        if len(batch) == 1:
-            f = batch[0]
-            try:
-                fid = f['telegram_file_id']
-                logger.info("发送单个媒体: type=%s, file_id=%s...(len=%d)", f['file_type'], str(fid)[:30], len(str(fid)))
-                if f['file_type'] == 'photo':
-                    await _retry_send(
-                        context.bot.send_photo,
-                        chat_id=chat_id, photo=fid,
-                        caption=caption[:1024] if caption else "",
-                        read_timeout=30, write_timeout=30
-                    )
-                else:
-                    await _retry_send(
-                        context.bot.send_video,
-                        chat_id=chat_id, video=fid,
-                        caption=caption[:1024] if caption else "",
-                        read_timeout=30, write_timeout=30
-                    )
-                sent_count += 1
-            except Exception as e:
-                logger.error("发送单个媒体失败: %s", e)
-                if _is_invalid_file_error(e):
-                    await mark_file_invalid(f.get("code", "")) if f.get("bot_username") == bot_name else None
-        else:
-            media_list = []
-            for idx, f in enumerate(batch):
-                file_id = f['telegram_file_id']
-                cap = caption if idx == 0 else ""
-                try:
-                    if f['file_type'] == 'photo':
-                        media_list.append(InputMediaPhoto(media=file_id, caption=cap[:1024] if cap else ""))
-                    else:
-                        media_list.append(InputMediaVideo(media=file_id, caption=cap[:1024] if cap else ""))
-                except Exception as e:
-                    logger.error("构建媒体列表失败: %s", e)
-            if media_list:
-                try:
-                    await _retry_send(
-                        context.bot.send_media_group,
-                        chat_id=chat_id, media=media_list,
-                        read_timeout=30, write_timeout=30
-                    )
-                    sent_count += len(media_list)
-                except Exception as e:
-                    logger.error("发送媒体组失败，降级逐个发送: %s", e)
-                    # 降级：逐个发送，每个之间有延迟
-                    for f in batch:
-                        try:
-                            if f['file_type'] == 'photo':
-                                await _retry_send(
-                                    context.bot.send_photo,
-                                    chat_id=chat_id, photo=f['telegram_file_id'],
-                                    read_timeout=30, write_timeout=30
-                                )
-                            else:
-                                await _retry_send(
-                                    context.bot.send_video,
-                                    chat_id=chat_id, video=f['telegram_file_id'],
-                                    read_timeout=30, write_timeout=30
-                                )
-                            sent_count += 1
-                            # 滑动限速：单个文件之间延迟
-                            await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
-                        except Exception as e2:
-                            logger.error("降级发送失败: %s", e2)
-                            if _is_invalid_file_error(e2):
-                                await mark_file_invalid(f.get("code", "")) if f.get("bot_username") == bot_name else None
-
-    # 2. 发送文档
-    for i in range(0, len(documents), GROUP_SEND_SIZE):
-        batch = documents[i:i + GROUP_SEND_SIZE]
-
-        # 滑动限速：和上一组类型之间延迟
-        if i > 0 or photo_video:
-            await asyncio.sleep(SEND_BATCH_DELAY)
-
-        if len(batch) == 1:
-            try:
-                await _retry_send(
-                    context.bot.send_document,
-                    chat_id=chat_id, document=batch[0]['telegram_file_id'],
-                    caption=caption[:1024] if caption else "",
-                    read_timeout=30, write_timeout=30
-                )
-                sent_count += 1
-            except Exception as e:
-                logger.error("发送文档失败: %s", e)
-                if _is_invalid_file_error(e):
-                    await mark_file_invalid(batch[0].get("code", "")) if batch[0].get("bot_username") == bot_name else None
-        else:
-            media_list = []
-            for f in batch:
-                try:
-                    media_list.append(InputMediaDocument(media=f['telegram_file_id']))
-                except Exception as e:
-                    logger.error("构建文档列表失败: %s", e)
-            if media_list:
-                try:
-                    await _retry_send(
-                        context.bot.send_media_group,
-                        chat_id=chat_id, media=media_list,
-                        read_timeout=30, write_timeout=30
-                    )
-                    sent_count += len(media_list)
-                except Exception as e:
-                    logger.error("发送文档组失败，降级逐个发送: %s", e)
-                    for f in batch:
-                        try:
-                            await _retry_send(
-                                context.bot.send_document,
-                                chat_id=chat_id, document=f['telegram_file_id'],
-                                read_timeout=30, write_timeout=30
-                            )
-                            sent_count += 1
-                            await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
-                        except Exception as e2:
-                            logger.error("降级发送文档失败: %s", e2)
-                            if _is_invalid_file_error(e2):
-                                await mark_file_invalid(f.get("code", "")) if f.get("bot_username") == bot_name else None
-
-    # 3. 发送音频
-    for i in range(0, len(audios), GROUP_SEND_SIZE):
-        batch = audios[i:i + GROUP_SEND_SIZE]
-
-        # 滑动限速：和上一组类型之间延迟
-        if i > 0 or photo_video or documents:
-            await asyncio.sleep(SEND_BATCH_DELAY)
-
-        if len(batch) == 1:
-            try:
-                await _retry_send(
-                    context.bot.send_audio,
-                    chat_id=chat_id, audio=batch[0]['telegram_file_id'],
-                    caption=caption[:1024] if caption else "",
-                    read_timeout=30, write_timeout=30
-                )
-                sent_count += 1
-            except Exception as e:
-                logger.error("发送音频失败: %s", e)
-                if _is_invalid_file_error(e):
-                    await mark_file_invalid(batch[0].get("code", "")) if batch[0].get("bot_username") == bot_name else None
-        else:
-            media_list = []
-            for f in batch:
-                try:
-                    media_list.append(InputMediaAudio(media=f['telegram_file_id']))
-                except Exception as e:
-                    logger.error("构建音频列表失败: %s", e)
-            if media_list:
-                try:
-                    await _retry_send(
-                        context.bot.send_media_group,
-                        chat_id=chat_id, media=media_list,
-                        read_timeout=30, write_timeout=30
-                    )
-                    sent_count += len(media_list)
-                except Exception as e:
-                    logger.error("发送音频组失败，降级逐个发送: %s", e)
-                    for f in batch:
-                        try:
-                            await _retry_send(
-                                context.bot.send_audio,
-                                chat_id=chat_id, audio=f['telegram_file_id'],
-                                read_timeout=30, write_timeout=30
-                            )
-                            sent_count += 1
-                            await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
-                        except Exception as e2:
-                            logger.error("降级发送音频失败: %s", e2)
-                            if _is_invalid_file_error(e2):
-                                await mark_file_invalid(f.get("code", "")) if f.get("bot_username") == bot_name else None
-
-    return sent_count
+    return total_sent

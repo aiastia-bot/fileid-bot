@@ -308,6 +308,8 @@ def _run_webhook_master(application: Application, bot_manager: BotManager, sched
 
     async def on_shutdown(app: web.Application):
         logger.info("正在停止所有Bot...")
+        from send_queue import stop_all_queues
+        await stop_all_queues()
         await bot_manager.stop_all()
         await application.stop()
         await application.shutdown()
@@ -501,6 +503,8 @@ def _run_webhook(application: Application, bot_manager: BotManager):
 
     async def on_shutdown(app: web.Application):
         logger.info("正在停止所有Bot...")
+        from send_queue import stop_all_queues
+        await stop_all_queues()
         await bot_manager.stop_all()
         await application.stop()
         await application.shutdown()
