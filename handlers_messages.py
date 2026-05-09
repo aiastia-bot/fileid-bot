@@ -196,22 +196,46 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
         queue = get_queue_from_context(context)
         batches = split_files_to_batches(found_files)
 
-        # 提示用户
+        # 初始提示
+        status_msg = None
         if total > GROUP_SEND_SIZE:
-            info = queue.queue_info(chat_id)
-            await message.reply_text(
-                f"📤 已排队 {total} 个文件（{len(batches)} 批）\n"
-                f"📋 队列中共 {info['total_pending']} 批等待发送"
-            )
+            try:
+                status_msg = await message.reply_text(
+                    f"📤 已排队 {total} 个文件（{len(batches)} 批），发送中…"
+                )
+            except Exception:
+                pass
 
         # 提交所有批次到队列，等待完成
         total_sent = 0
-        for batch in batches:
+        for i, batch in enumerate(batches):
             try:
                 sent = await queue.submit_batch(chat_id, batch)
                 total_sent += sent
             except Exception as e:
                 logger.error("队列发送失败: %s", e)
+
+            # 定期更新进度
+            if status_msg and ((i + 1) % 5 == 0 or i == len(batches) - 1):
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=status_msg.message_id,
+                        text=f"📤 发送中… ({total_sent}/{total})"
+                    )
+                except Exception:
+                    pass
+
+        # 完成提示
+        if status_msg:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg.message_id,
+                    text=f"✅ 发送完成！共 {total_sent}/{total} 个文件"
+                )
+            except Exception:
+                pass
 
         logger.info("_process_file_codes: 完成 %d/%d", total_sent, total)
 
