@@ -46,6 +46,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 • `/delcol 代码` — 删除集合
 
 🔧 *其他命令：*
+• `/stop` — 停止所有发送任务
 • 回复消息 + `/getid` — 获取文件ID
 • `/stats` — 管理员统计
 
@@ -58,6 +59,37 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 将代码直接发送给 bot 即可获取文件！{master_info}"""
 
     await update.message.reply_text(help_text, parse_mode="Markdown", disable_web_page_preview=True)
+
+
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/stop 停止所有发送任务"""
+    chat_id = update.effective_chat.id
+    bot_username = context.bot.username
+    stopped_count = 0
+
+    # 1. 停止自动发送
+    context.user_data['stop_auto_send'] = True
+
+    # 2. 取消发送队列中该用户所有任务
+    from send_queue import get_queue
+    try:
+        queue = get_queue(bot_username)
+        tasks = queue._queues.get(chat_id, [])
+        for t in tasks[:]:
+            if not t.future.done():
+                t.future.cancel()
+                stopped_count += 1
+        if chat_id in queue._queues:
+            del queue._queues[chat_id]
+        if stopped_count > 0:
+            logger.info("/stop: @%s 取消了 chat_id=%s 的 %d 个队列任务", bot_username, chat_id, stopped_count)
+    except Exception as e:
+        logger.warning("/stop: 取消队列任务失败: %s", e)
+
+    if stopped_count > 0:
+        await update.message.reply_text(f"⏹ 已停止！取消了 {stopped_count} 个待发送任务。")
+    else:
+        await update.message.reply_text("⏹ 已停止。当前没有正在发送的任务。")
 
 
 async def create_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
