@@ -15,7 +15,7 @@ from typing import List, Dict
 
 from telegram.ext import ContextTypes
 from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio
-from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest
+from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest, Forbidden
 
 from config import (
     GROUP_SEND_SIZE, SEND_RETRY_COUNT, SEND_RETRY_DELAY,
@@ -29,6 +29,17 @@ logger = logging.getLogger(__name__)
 def _is_invalid_file_error(e):
     msg = str(e).lower()
     return 'media_file_invalid' in msg or 'wrong_file_id' in msg
+
+
+def _is_blocked_error(e):
+    """检查是否是用户拉黑了 Bot"""
+    msg = str(e).lower()
+    return 'blocked by the user' in msg or 'user_is_blocked' in msg
+
+
+class SendBlockedError(Exception):
+    """用户已拉黑 Bot，发送应立即中止"""
+    pass
 
 
 async def _retry_send(send_func, *args, **kwargs):
@@ -137,6 +148,10 @@ async def _send_single(bot, chat_id, f, caption, bot_name) -> int:
             await _retry_send(bot.send_document, chat_id=chat_id, document=fid, caption=cap, **timeout)
         return 1
     except Exception as e:
+        # 用户已拉黑 Bot，立即中止整个发送任务
+        if _is_blocked_error(e):
+            logger.warning("用户 chat_id=%s 已拉黑 Bot @%s，立即中止发送", chat_id, bot_name)
+            raise SendBlockedError(f"chat_id={chat_id} 已拉黑 Bot")
         logger.error("发送单个文件失败: %s", e)
         if _is_invalid_file_error(e):
             await mark_file_invalid(f.get("code", ""))

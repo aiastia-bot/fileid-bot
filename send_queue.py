@@ -211,8 +211,20 @@ class SendQueue:
                     if not task.future.done():
                         task.future.set_result(sent)
                 except Exception as e:
-                    logger.error("SendQueue(@%s): 发送失败 chat_id=%s: %s",
-                                 self.bot_name, task.chat_id, e)
+                    # 用户已拉黑 Bot：取消该用户所有剩余任务
+                    from senders import SendBlockedError
+                    if isinstance(e, SendBlockedError):
+                        cancelled = 0
+                        remaining = self._queues.pop(chat_id, [])
+                        for t in remaining:
+                            if not t.future.done():
+                                t.future.cancel()
+                                cancelled += 1
+                        logger.warning("SendQueue(@%s): chat_id=%s 已拉黑 Bot，取消剩余 %d 个任务",
+                                       self.bot_name, chat_id, cancelled)
+                    else:
+                        logger.error("SendQueue(@%s): 发送失败 chat_id=%s: %s",
+                                     self.bot_name, task.chat_id, e)
                     if not task.future.done():
                         task.future.set_exception(e)
 
