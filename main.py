@@ -96,6 +96,7 @@ def run_standalone():
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
+            .concurrent_updates(True)
         .post_init(post_init)
         .read_timeout(API_READ_TIMEOUT)
         .write_timeout(API_WRITE_TIMEOUT)
@@ -139,6 +140,7 @@ def run_master():
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
+            .concurrent_updates(True)
         .post_init(post_init)
         .read_timeout(API_READ_TIMEOUT)
         .write_timeout(API_WRITE_TIMEOUT)

@@ -110,6 +110,7 @@ class BotManager:
         application = (
             ApplicationBuilder()
             .token(token)
+            .concurrent_updates(True)
             .read_timeout(API_READ_TIMEOUT)
             .write_timeout(API_WRITE_TIMEOUT)
             .connect_timeout(API_CONNECT_TIMEOUT)
