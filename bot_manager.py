@@ -257,6 +257,7 @@ class BotManager:
                     ("cancel", "取消当前操作"),
                     ("getid", "回复消息获取文件ID"),
                     ("mycol", "查看我的集合"),
+                    ("stop", "停止所有发送任务"),
                     ("delcol", "删除集合 delcol 代码"),
                 ]
                 try:
