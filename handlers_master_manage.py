@@ -132,11 +132,12 @@ async def bot_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             status = "🔴 已停止"
         text += f"- @{escape(bot['bot_username'])}: {status}\n"
 
-        # 已停止且非 banned 的Bot：提供重启按钮
-        if not is_running and bot['status'] not in ('banned',):
+        # 所有非 banned 的Bot：提供重启按钮（运行中的也可重启）
+        if bot['status'] not in ('banned',):
+            action_text = "🔄 重启" if not is_running else "🔄 重启"
             stopped_buttons.append(
                 InlineKeyboardButton(
-                    f"🔄 重启 @{bot['bot_username']}",
+                    f"{action_text} @{bot['bot_username']}",
                     callback_data=f"restart_bot|{bot['id']}"
                 )
             )
@@ -144,7 +145,7 @@ async def bot_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # 添加操作按钮
     keyboard = []
     if stopped_buttons:
-        text += "\n💡 点击下方按钮操作。"
+        text += "\n💡 点击下方按钮重启 Bot。"
         for btn in stopped_buttons:
             keyboard.append([btn])
 
