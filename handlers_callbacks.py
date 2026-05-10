@@ -93,10 +93,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     try:
         # 短格式回调处理（sn| 必须在 s| 之前检查）
-        if data.startswith("sn|") or data.startswith("s|") or data.startswith("a|") or data.startswith("p|"):
+        if data.startswith("sn|") or data.startswith("s|") or data.startswith("a|") or data.startswith("p|") or data.startswith("ps|"):
             # 解析 action 和 rest
             if data.startswith("sn|"):
                 action = 'sn'
+                rest = data[3:]
+            elif data.startswith("ps|"):
+                action = 'ps'
                 rest = data[3:]
             else:
                 action = data[0]
@@ -176,6 +179,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 logger.info("开始分页浏览: col_code=%s, page=%d", col_code, page)
                 await _send_page(context, chat_id, col_code, page, query)
                 logger.info("分页浏览完成: col_code=%s, page=%d", col_code, page)
+
+            elif action == 'ps':
+                # 发送本页文件: ps|key|page
+                parts = rest.split("|")
+                if len(parts) < 2:
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 数据格式错误。")
+                    return
+                sk = parts[0]
+                try:
+                    page = int(parts[1])
+                except ValueError:
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 页码格式错误。")
+                    return
+                col_code = await _resolve_key(context, sk)
+                if not col_code:
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
+                    return
+                logger.info("开始发送本页文件: col_code=%s, page=%d", col_code, page)
+                await _send_page_files(context, chat_id, col_code, page, query)
+                logger.info("发送本页文件完成: col_code=%s, page=%d", col_code, page)
 
         # 旧格式兼容
         elif data.startswith("col_send|"):
@@ -492,7 +515,7 @@ async def _send_page(context, chat_id, col_code, page, query=None):
     if page < total_pages:
         nav.append(InlineKeyboardButton("➡️ 下一页", callback_data=f"p|{sk}|{page + 1}"))
     buttons.append(nav)
-    buttons.append([InlineKeyboardButton("⬇️ 发送本页文件", callback_data=f"page_send|{col_code}|{page}")])
+    buttons.append([InlineKeyboardButton("⬇️ 发送本页文件", callback_data=f"ps|{sk}|{page}")])
     buttons.append([
         InlineKeyboardButton("⬇️ 分页发送", callback_data=f"s|{sk}"),
         InlineKeyboardButton("▶️ 自动发送", callback_data=f"a|{sk}"),
