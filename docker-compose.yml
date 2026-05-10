@@ -5,7 +5,7 @@ version: '3.8'
 
 services:
   bot:
-    build: .
+    image: aiastia/fileid-bot:latest
     container_name: fileid-bot
     restart: unless-stopped
     environment:
@@ -29,7 +29,7 @@ services:
 #
 # services:
 #   master:
-#     build: .
+#     image: aiastia/fileid-bot:latest
 #     container_name: fileid-master
 #     restart: unless-stopped
 #     environment:
@@ -49,7 +49,7 @@ services:
 #       - "8080:8080"
 #
 #   worker-1:
-#     build: .
+#     image: aiastia/fileid-bot:latest
 #     container_name: fileid-worker-1
 #     restart: unless-stopped
 #     environment:
@@ -72,7 +72,7 @@ services:
 #       - master
 #
 #   worker-2:
-#     build: .
+#     image: aiastia/fileid-bot:latest
 #     container_name: fileid-worker-2
 #     restart: unless-stopped
 #     environment:
