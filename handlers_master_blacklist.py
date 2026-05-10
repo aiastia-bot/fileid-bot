@@ -41,10 +41,10 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         text = f"🚫 <b>黑名单管理</b>\n\n"
         text += f"当前黑名单用户数: {len(bl)}\n\n"
         text += "<b>用法：</b>\n"
-        text += "• <code>/blacklist add <用户ID> [原因]</code> — 添加到黑名单\n"
-        text += "• <code>/blacklist del <用户ID></code> — 从黑名单移除\n"
+        text += "• <code>/blacklist add &lt;用户ID&gt; [原因]</code> — 添加到黑名单\n"
+        text += "• <code>/blacklist del &lt;用户ID&gt;</code> — 从黑名单移除\n"
         text += "• <code>/blacklist list</code> — 查看黑名单列表\n"
-        text += "• <code>/blacklist check <用户ID></code> — 检查用户状态\n\n"
+        text += "• <code>/blacklist check &lt;用户ID&gt;</code> — 检查用户状态\n\n"
 
         if bl:
             text += "<b>当前黑名单：</b>\n"
@@ -64,7 +64,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if action == 'add':
         if len(context.args) < 2:
             await update.message.reply_text(
-                "用法：<code>/blacklist add <用户ID> [原因]</code>",
+                "用法：<code>/blacklist add &lt;用户ID&gt; [原因]</code>",
                 parse_mode="HTML"
             )
             return
@@ -107,7 +107,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     elif action in ('del', 'remove', 'rm', 'delete'):
         if len(context.args) < 2:
             await update.message.reply_text(
-                "用法：<code>/blacklist del <用户ID></code>",
+                "用法：<code>/blacklist del &lt;用户ID&gt;</code>",
                 parse_mode="HTML"
             )
             return
@@ -168,7 +168,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     elif action == 'check':
         if len(context.args) < 2:
             await update.message.reply_text(
-                "用法：<code>/blacklist check <用户ID></code>",
+                "用法：<code>/blacklist check &lt;用户ID&gt;</code>",
                 parse_mode="HTML"
             )
             return

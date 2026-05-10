@@ -241,7 +241,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(
             "🔑 <b>添加 Bot</b>\n\n"
             "请使用以下命令格式：\n"
-            "<code>/addbot <Token></code>\n\n"
+            "<code>/addbot &lt;Token&gt;</code>\n\n"
             "例如：<code>/addbot 123456:ABCdefGHIjklMNOpqrS</code>\n\n"
             "💡 不知道怎么获取 Token？使用 /newbot 一键创建！",
             parse_mode="HTML"

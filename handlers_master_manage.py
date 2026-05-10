@@ -263,7 +263,7 @@ async def update_token_callback(update: Update, context: ContextTypes.DEFAULT_TY
         f"2. 发送 <code>/token</code>\n"
         f"3. 选择 @{escape(bot_record['bot_username'])}\n"
         f"4. 将返回的新 Token 发到这里\n\n"
-        f"或使用命令：<code>/updatetoken <新Token></code>",
+        f"或使用命令：<code>/updatetoken &lt;新Token&gt;</code>",
         parse_mode="HTML"
     )
 
@@ -280,7 +280,7 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         else:
             await update.message.reply_text(
                 "🔑 <b>更新 Bot Token</b>\n\n"
-                "用法：<code>/updatetoken <新Token></code>\n\n"
+                "用法：<code>/updatetoken &lt;新Token&gt;</code>\n\n"
                 "用于更新已失效（revoked）Bot 的 Token。\n"
                 "使用 /botstatus 查看哪些 Bot 需要更新。",
                 parse_mode="HTML"
@@ -294,7 +294,7 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not bot_db_id:
         await update.message.reply_text(
             "❌ 请先使用 /botstatus 点击「更新Token」按钮，\n"
-            "或使用 <code>/updatetoken <新Token></code> 并先通过 /botstatus 选择 Bot。",
+            "或使用 <code>/updatetoken &lt;新Token&gt;</code> 并先通过 /botstatus 选择 Bot。",
             parse_mode="HTML"
         )
         return
