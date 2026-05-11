@@ -320,7 +320,7 @@ def _run_webhook_master(application: Application, bot_manager: BotManager, sched
     web_app = web.Application()
     # Webhook 路由
     web_app.router.add_post(f"{WEBHOOK_PATH}/master", webhook_handler)
-    web_app.router.add_post(f"{WEBHOOK_PATH}/{{bot_id:int}}", webhook_handler)
+    web_app.router.add_post(f"{WEBHOOK_PATH}/{{bot_id:\\d+}}", webhook_handler)
     # 内部管理 API
     web_app.router.add_post("/internal/register", handle_worker_register)
     web_app.router.add_post("/internal/heartbeat", handle_worker_heartbeat)
@@ -514,7 +514,7 @@ def _run_webhook(application: Application, bot_manager: BotManager):
 
     web_app = web.Application()
     web_app.router.add_post(f"{WEBHOOK_PATH}/master", webhook_handler)
-    web_app.router.add_post(f"{WEBHOOK_PATH}/{{bot_id:int}}", webhook_handler)
+    web_app.router.add_post(f"{WEBHOOK_PATH}/{{bot_id:\\d+}}", webhook_handler)
     web_app.router.add_get("/health", health_handler)
     web_app.on_startup.append(on_startup)
     web_app.on_shutdown.append(on_shutdown)
