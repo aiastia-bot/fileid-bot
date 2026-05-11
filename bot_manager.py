@@ -93,6 +93,7 @@ class BotManager:
     def __init__(self):
         self._apps: Dict[int, Application] = {}  # bot_db_id -> Application
         self.master_bot_username: str = ""  # 主Bot用户名，由 main.py 设置
+        self._webhook_monitor_task: Optional[asyncio.Task] = None  # webhook 监控任务
 
     def _create_user_bot_app(self, token: str) -> Application:
         """为用户Bot创建 Application 实例，注册所有 FileID 处理器"""
@@ -382,6 +383,16 @@ class BotManager:
 
     async def stop_all(self):
         """停止所有用户Bot"""
+        # 停止 webhook 监控
+        if self._webhook_monitor_task and not self._webhook_monitor_task.done():
+            self._webhook_monitor_task.cancel()
+            try:
+                await self._webhook_monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._webhook_monitor_task = None
+            logger.info("Webhook 监控已停止")
+
         for bot_db_id in list(self._apps.keys()):
             await self.stop_bot(bot_db_id)
 
@@ -393,6 +404,58 @@ class BotManager:
     def active_count(self) -> int:
         """当前活跃Bot数量"""
         return len(self._apps)
+
+    async def start_webhook_monitor(self, interval: int = 300):
+        """启动 webhook 定期验证，防止用户在别处使用 Bot Token"""
+        if BOT_MODE != 'webhook':
+            return
+
+        async def _monitor_loop():
+            logger.info("🔍 Webhook 监控已启动（间隔 %d 秒）", interval)
+            while True:
+                try:
+                    await asyncio.sleep(interval)
+                    await self._verify_all_webhooks()
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error("Webhook 监控异常: %s", e)
+
+        self._webhook_monitor_task = asyncio.create_task(_monitor_loop())
+
+    async def _verify_all_webhooks(self):
+        """验证所有用户 Bot 的 webhook 是否指向正确地址，被篡改则恢复"""
+        if not WEBHOOK_HOST:
+            return
+
+        checked = 0
+        recovered = 0
+
+        for bot_db_id, app in list(self._apps.items()):
+            try:
+                info = await app.bot.get_webhook_info()
+                expected_url = self._get_webhook_url(bot_db_id)
+
+                if info.url != expected_url:
+                    logger.warning(
+                        "⚠️ Bot @%s (db_id=%s) 的 webhook 被篡改！当前: %s，期望: %s",
+                        app.bot.username, bot_db_id, info.url, expected_url
+                    )
+                    # 恢复正确的 webhook
+                    await app.bot.set_webhook(
+                        url=expected_url,
+                        secret_token=WEBHOOK_SECRET or None,
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True,
+                    )
+                    recovered += 1
+                    logger.info("✅ Bot @%s (db_id=%s) 的 webhook 已恢复", app.bot.username, bot_db_id)
+                checked += 1
+            except Exception as e:
+                logger.error("验证 Bot (db_id=%s) webhook 失败: %s", bot_db_id, e)
+
+        if checked > 0:
+            logger.info("🔍 Webhook 验证完成：检查 %d 个 Bot，恢复 %d 个", checked, recovered)
 
 
 class MasterScheduler:

@@ -308,6 +308,9 @@ def _run_webhook_master(application: Application, bot_manager: BotManager, sched
         loaded = await scheduler.load_all_to_workers()
         logger.info("✅ Master webhook 启动完成，已分配 %d 个用户Bot", loaded)
 
+        # 启动 webhook 定期验证（防止用户在别处使用 Bot Token）
+        await bot_manager.start_webhook_monitor()
+
     async def on_shutdown(app: web.Application):
         logger.info("正在停止所有Bot...")
         from send_queue import stop_all_queues
@@ -502,6 +505,9 @@ def _run_webhook(application: Application, bot_manager: BotManager):
 
         loaded = await bot_manager.load_all()
         logger.info("✅ webhook 服务器启动完成，共加载 %d 个用户Bot", loaded)
+
+        # 启动 webhook 定期验证（防止用户在别处使用 Bot Token）
+        await bot_manager.start_webhook_monitor()
 
     async def on_shutdown(app: web.Application):
         logger.info("正在停止所有Bot...")
