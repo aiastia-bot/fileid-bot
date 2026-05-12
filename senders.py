@@ -19,7 +19,7 @@ from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest, Forbi
 
 from config import (
     GROUP_SEND_SIZE, SEND_RETRY_COUNT, SEND_RETRY_DELAY,
-    SEND_INDIVIDUAL_DELAY,
+    SEND_INDIVIDUAL_DELAY, RETRY_AFTER_MAX_WAIT,
 )
 from database import mark_file_invalid
 
@@ -83,6 +83,11 @@ async def _retry_send(send_func, *args, **kwargs):
             raise
         except RetryAfter as e:
             wait = e.retry_after if hasattr(e, 'retry_after') and e.retry_after else SEND_RETRY_DELAY * 4
+            # 限制最大等待时间，避免阻塞 webhook 导致 499
+            if wait > RETRY_AFTER_MAX_WAIT:
+                logger.warning("触发限流 (RetryAfter %.0fs)，超过最大等待 %.0fs，放弃重试让 Telegram 稍后重投 [%s]",
+                               wait, RETRY_AFTER_MAX_WAIT, bot_label)
+                raise
             logger.warning("触发限流 (RetryAfter)，等待 %.1f 秒后重试 (第 %d/%d 次) [%s]",
                            wait, attempt + 1, SEND_RETRY_COUNT, bot_label)
             await asyncio.sleep(wait)

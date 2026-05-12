@@ -41,7 +41,8 @@ API_WRITE_TIMEOUT = float(os.environ.get('API_WRITE_TIMEOUT', '30.0')) # Telegra
 API_CONNECT_TIMEOUT = float(os.environ.get('API_CONNECT_TIMEOUT', '10.0'))  # Telegram API 连接超时（秒）
 
 # ===== 单机防雪崩配置 =====
-WEBHOOK_UPDATE_TIMEOUT = float(os.environ.get('WEBHOOK_UPDATE_TIMEOUT', '120.0'))  # 单个 webhook 更新最大处理时间（秒）
+WEBHOOK_UPDATE_TIMEOUT = float(os.environ.get('WEBHOOK_UPDATE_TIMEOUT', '55.0'))  # 单个 webhook 更新最大处理时间（秒），必须 < Telegram 60s 超时，否则会 499
+RETRY_AFTER_MAX_WAIT = float(os.environ.get('RETRY_AFTER_MAX_WAIT', '30.0'))  # 单次 RetryAfter 最大等待秒数，超过则放弃让 Telegram 重试
 PER_BOT_CONCURRENCY = int(os.environ.get('PER_BOT_CONCURRENCY', '3'))  # 每个 Bot 最大并发处理数
 
 # ===== Redis 配置（可选） =====
