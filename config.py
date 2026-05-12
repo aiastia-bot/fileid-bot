@@ -44,6 +44,15 @@ API_CONNECT_TIMEOUT = float(os.environ.get('API_CONNECT_TIMEOUT', '10.0'))  # Te
 WEBHOOK_UPDATE_TIMEOUT = float(os.environ.get('WEBHOOK_UPDATE_TIMEOUT', '120.0'))  # 单个 webhook 更新最大处理时间（秒）
 PER_BOT_CONCURRENCY = int(os.environ.get('PER_BOT_CONCURRENCY', '3'))  # 每个 Bot 最大并发处理数
 
+# ===== Redis 配置（可选） =====
+# 未配置时自动降级为内存方案，不影响正常运行
+REDIS_URL = os.environ.get('REDIS_URL', '')  # 如 redis://localhost:6379/0
+
+# ===== 用户限流配置 =====
+RATE_LIMIT_WINDOW = int(os.environ.get('RATE_LIMIT_WINDOW', '60'))     # 限流窗口（秒）
+RATE_LIMIT_MAX = int(os.environ.get('RATE_LIMIT_MAX', '30'))           # 窗口内最大请求数
+RATE_LIMIT_MAX_WAIT = float(os.environ.get('RATE_LIMIT_MAX_WAIT', '30'))  # 排队最大等待时间（秒）
+
 # ===== Webhook 模式配置 =====
 BOT_MODE = os.environ.get('BOT_MODE', 'polling')  # 'polling' 或 'webhook'
 WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', '')  # 外部域名，如 'bots.example.com'（不含 https://）

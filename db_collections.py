@@ -11,14 +11,28 @@ from models import Collection, CollectionItem, FileMapping
 logger = logging.getLogger(__name__)
 
 
+async def _get_redis():
+    """延迟导入获取 Redis 实例"""
+    from redis_manager import get_redis
+    return await get_redis()
+
+
 async def get_collection(code: str) -> Optional[Dict]:
-    """获取集合信息"""
+    """获取集合信息，带缓存"""
+    r = await _get_redis()
+    cached = await r.cache_get_json(f"col:{code}")
+    if cached:
+        return cached
+
     async with get_session() as session:
         result = await session.execute(
             select(Collection).where(Collection.code == code)
         )
         col = result.scalar_one_or_none()
-        return _model_to_dict(col) if col else None
+        data = _model_to_dict(col) if col else None
+        if data:
+            await r.cache_set_json(f"col:{code}", data, ttl=300)
+        return data
 
 
 async def get_collection_by_id(col_id: int) -> Optional[Dict]:
@@ -32,7 +46,12 @@ async def get_collection_by_id(col_id: int) -> Optional[Dict]:
 
 
 async def get_collection_files(code: str) -> List[Dict]:
-    """获取集合中的所有文件"""
+    """获取集合中的所有文件，带缓存"""
+    r = await _get_redis()
+    cached = await r.cache_get_json(f"col_files:{code}")
+    if cached:
+        return cached
+
     async with get_session() as session:
         result = await session.execute(
             select(FileMapping)
@@ -41,7 +60,9 @@ async def get_collection_files(code: str) -> List[Dict]:
             .order_by(CollectionItem.sort_order)
         )
         files = result.scalars().all()
-        return [_model_to_dict(f) for f in files]
+        data = [_model_to_dict(f) for f in files]
+        await r.cache_set_json(f"col_files:{code}", data, ttl=300)
+        return data
 
 
 async def create_collection(code: str, bot_username: str, name: str, user_id: int,
@@ -78,6 +99,10 @@ async def add_file_to_collection(col_code: str, file_code: str, sort_order: int)
                 .values(file_count=sort_order, updated_at=now)
             )
             await session.commit()
+            # 清除集合文件缓存
+            r = await _get_redis()
+            await r.cache_delete(f"col_files:{col_code}")
+            await r.cache_delete(f"col:{col_code}")
             return True
         except Exception as e:
             logger.error("添加文件到集合失败: %s", e)
@@ -95,6 +120,10 @@ async def complete_collection(col_code: str, file_count: int) -> bool:
                 .values(status='completed', file_count=file_count, updated_at=now)
             )
             await session.commit()
+            # 清除集合缓存
+            r = await _get_redis()
+            await r.cache_delete(f"col:{col_code}")
+            await r.cache_delete(f"col_files:{col_code}")
             return True
         except Exception as e:
             logger.error("完成集合失败: %s", e)
@@ -119,6 +148,10 @@ async def delete_collection(col_code: str) -> bool:
             if col:
                 await session.delete(col)
             await session.commit()
+            # 清除集合缓存
+            r = await _get_redis()
+            await r.cache_delete(f"col:{col_code}")
+            await r.cache_delete(f"col_files:{col_code}")
             return True
         except Exception as e:
             logger.error("删除集合失败: %s", e)

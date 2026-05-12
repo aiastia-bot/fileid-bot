@@ -12,6 +12,12 @@ from config import VIP_PLANS
 logger = logging.getLogger(__name__)
 
 
+async def _get_redis():
+    """延迟导入获取 Redis 实例"""
+    from redis_manager import get_redis
+    return await get_redis()
+
+
 async def get_or_create_user(user_id: int) -> Dict:
     """获取或创建用户记录，返回用户信息字典"""
     async with get_session() as session:
@@ -40,7 +46,13 @@ async def get_or_create_user(user_id: int) -> Dict:
 
 
 async def get_user_vip_level(user_id: int) -> int:
-    """获取用户的有效VIP等级（自动检查过期）"""
+    """获取用户的有效VIP等级（自动检查过期），带缓存"""
+    # 尝试从缓存读取
+    r = await _get_redis()
+    cached = await r.cache_get(f"vip_level:{user_id}")
+    if cached is not None:
+        return int(cached)
+
     user = await get_or_create_user(user_id)
     level = user.get('vip_level', 0)
     expire_at = user.get('vip_expire_at')
@@ -51,10 +63,12 @@ async def get_user_vip_level(user_id: int) -> int:
             if datetime.now() > expire_dt:
                 # VIP 已过期，降回 0
                 await _downgrade_expired_user(user_id)
-                return 0
+                level = 0
         except ValueError:
             pass
 
+    # 缓存 5 分钟（过期信息缓存在 VIP 过期前会自动失效）
+    await r.cache_set(f"vip_level:{user_id}", str(level), ttl=300)
     return level
 
 
@@ -131,6 +145,10 @@ async def update_user_vip(user_id: int, level: int, months: int) -> bool:
             await session.commit()
             logger.info("用户 %s VIP 升级到 %d（%d个月），过期时间: %s",
                        user_id, level, months, user.vip_expire_at)
+            # 清除 VIP 缓存
+            r = await _get_redis()
+            await r.cache_delete(f"vip_level:{user_id}")
+            await r.cache_delete(f"vip_info:{user_id}")
             return True
         except Exception as e:
             logger.error("更新用户VIP失败: %s", e)
@@ -185,6 +203,10 @@ async def _downgrade_expired_user(user_id: int) -> bool:
             )
             await session.commit()
             logger.info("用户 %s VIP 已过期，降回 VIP 0", user_id)
+            # 清除 VIP 缓存
+            r = await _get_redis()
+            await r.cache_delete(f"vip_level:{user_id}")
+            await r.cache_delete(f"vip_info:{user_id}")
             return True
         except Exception as e:
             logger.error("降级用户VIP失败: %s", e)

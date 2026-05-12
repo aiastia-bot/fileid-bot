@@ -120,6 +120,8 @@ async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "") ->
     bot_name = getattr(bot, 'username', 'unknown')
     logger.info("send_batch: @%s 发送 %d 个文件到 chat_id=%s", bot_name, len(files), chat_id)
 
+    _start = time.time()
+
     # 按类型分组
     photo_video = [f for f in files if f['file_type'] in ('photo', 'video')]
     documents = [f for f in files if f['file_type'] in ('document', 'voice')]
@@ -142,6 +144,18 @@ async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "") ->
         if photo_video or documents:
             await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
         sent_count += await _send_typed_batch(bot, chat_id, audios, caption, 'audio', bot_name)
+
+    # 记录发送计数
+    if sent_count > 0:
+        try:
+            from redis_manager import get_redis
+            r = await get_redis()
+            today = time.strftime('%Y-%m-%d')
+            await r.counter_incr(f"stats:sent:{today}:{bot_name}", ttl=86400 * 2)
+            await r.counter_incr(f"stats:sent:{today}:total", ttl=86400 * 2)
+            logger.debug("发送计数: @%s +%d (%.1fs)", bot_name, sent_count, time.time() - _start)
+        except Exception:
+            pass
 
     return sent_count
 

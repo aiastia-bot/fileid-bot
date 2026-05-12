@@ -9,6 +9,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import MAX_COLLECTION_FILES, GROUP_SEND_SIZE, FILE_TYPE_MAP, SEND_INDIVIDUAL_DELAY, SEND_BATCH_DELAY
+from config import RATE_LIMIT_WINDOW, RATE_LIMIT_MAX, RATE_LIMIT_MAX_WAIT
 from database import (
     save_file, get_file, get_files_by_codes, get_collection, get_collection_files,
     create_collection, add_file_to_collection,
@@ -46,11 +47,29 @@ async def _short_key(context, col_code: str) -> str:
 logger = logging.getLogger(__name__)
 
 
+async def _rate_limit_wait(user_id: int, bot_username: str) -> bool:
+    """用户级限流（排队模式）。
+    Returns: True 可以继续, False 超时（不应继续处理）
+    """
+    try:
+        from redis_manager import get_redis
+        r = await get_redis()
+        key = f"rate:user:{bot_username}:{user_id}"
+        return await r.rate_limit_wait(key, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW, RATE_LIMIT_MAX_WAIT)
+    except Exception:
+        return True  # 降级时放行
+
+
 async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理用户发送的图片/视频/音频/文档"""
     message = update.message
     user_id = update.effective_user.id
     bot_username = context.bot.username
+
+    # 用户级限流（排队等待）
+    if not await _rate_limit_wait(user_id, bot_username):
+        await _retry_send(message.reply_text, "⚠️ 操作太频繁，请稍后再试。")
+        return
     code_prefix = get_code_prefix(bot_username)
     creating_col = context.user_data.get('creating_collection')
 
@@ -100,6 +119,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     text = message.text.strip()
     bot_username = context.bot.username
+    user_id = update.effective_user.id
+
+    # 用户级限流（排队等待）
+    if not await _rate_limit_wait(user_id, bot_username):
+        await _retry_send(message.reply_text, "⚠️ 操作太频繁，请稍后再试。")
+        return
     file_codes = parse_file_code(text, bot_username)
     collection_codes = parse_collection_code(text, bot_username)
 

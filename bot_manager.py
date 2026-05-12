@@ -436,6 +436,20 @@ class BotManager:
         """当前活跃Bot数量"""
         return len(self._apps)
 
+    async def _update_redis_status(self):
+        """更新 Bot 状态到 Redis（供多节点共享）"""
+        try:
+            from redis_manager import get_redis
+            r = await get_redis()
+            status = {
+                'active_bots': len(self._apps),
+                'bot_ids': list(self._apps.keys()),
+                'node_id': ROLE,
+            }
+            await r.set_bot_status(0, status, ttl=120)  # 0 = 本节点总状态
+        except Exception:
+            pass  # Redis 不可用时忽略
+
     async def start_webhook_monitor(self, interval: int = 300):
         """启动 webhook 定期验证，防止用户在别处使用 Bot Token"""
         if BOT_MODE != 'webhook':

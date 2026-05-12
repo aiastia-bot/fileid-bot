@@ -19,7 +19,7 @@ from config import (
     BOT_TOKEN, ADMIN_IDS, MAX_BOTS_PER_USER,
     API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT,
     BOT_MODE, WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET,
-    ROLE, WORKER_SECRET
+    ROLE, WORKER_SECRET, REDIS_URL
 )
 from database import init_db
 from bot_manager import BotManager, MasterScheduler
@@ -582,9 +582,26 @@ def _run_webhook(application: Application, bot_manager: BotManager):
 
 # ==================== 入口 ====================
 
+async def _init_redis():
+    """初始化 Redis（可选）"""
+    try:
+        from redis_manager import get_redis
+        r = await get_redis()
+        if r.available:
+            logger.info("📦 Redis 已连接")
+        else:
+            logger.info("📦 使用内存降级方案（未配置 REDIS_URL）")
+    except Exception as e:
+        logger.warning("📦 Redis 初始化失败: %s，使用内存降级方案", e)
+
+
 def main():
     """根据 ROLE 选择启动模式"""
     logger.info("🔧 启动模式: %s", ROLE)
+
+    # 预初始化 Redis（在 asyncio.run 之外无法 await，由首次调用自动初始化）
+    if REDIS_URL:
+        logger.info("📦 检测到 REDIS_URL 配置: %s", REDIS_URL[:30] + '...')
 
     if ROLE == 'standalone':
         run_standalone()
