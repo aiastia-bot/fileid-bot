@@ -57,13 +57,13 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         file_id, file_type, file_size, file_unique_id = _extract_file_info(message)
         if not file_id:
-            await message.reply_text("❌ 不支持的文件类型。支持: 图片、视频、音频、文档。")
+            await _retry_send(message.reply_text, "❌ 不支持的文件类型。支持: 图片、视频、音频、文档。")
             return
 
         bot_db_id = context.bot_data.get('bot_record', {}).get('id')
         code = await save_file(user_id, file_type, file_id, file_size, file_unique_id, bot_username, code_prefix, bot_db_id=bot_db_id)
         if not code:
-            await message.reply_text("❌ 保存失败，请重试。")
+            await _retry_send(message.reply_text, "❌ 保存失败，请重试。")
             return
 
         type_name = FILE_TYPE_MAP.get(file_type, file_type)
@@ -75,17 +75,17 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if creating_col:
             current_count = context.user_data.get('collection_count', 0)
             if current_count >= MAX_COLLECTION_FILES:
-                await message.reply_text(f"⚠️ 集合已满 {MAX_COLLECTION_FILES} 个文件，请发送 `/done` 完成。")
+                await _retry_send(message.reply_text, f"⚠️ 集合已满 {MAX_COLLECTION_FILES} 个文件，请发送 `/done` 完成。")
                 return
             sort_order = current_count + 1
             await add_file_to_collection(creating_col, code, sort_order)
             context.user_data['collection_count'] = sort_order
             reply_kwargs['text'] += f"\n\n📦 已添加到集合 ({sort_order}/{MAX_COLLECTION_FILES})"
 
-        await message.reply_text(**reply_kwargs)
+        await _retry_send(message.reply_text, **reply_kwargs)
     except Exception as e:
         logger.error("处理附件失败: %s", e)
-        await message.reply_text(f"❌ 处理文件时出错: {e}")
+        await _retry_send(message.reply_text, f"❌ 处理文件时出错: {e}")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -110,7 +110,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             legacy_file_ids.append((m.group(1), m.group(2)))
 
     if not file_codes and not collection_codes and not legacy_file_ids:
-        await message.reply_text("❓ 未识别的输入。\n\n• 发送文件获取代码\n• 发送代码获取文件\n• `/help` 查看帮助")
+        await _retry_send(message.reply_text, "❓ 未识别的输入。\n\n• 发送文件获取代码\n• 发送代码获取文件\n• `/help` 查看帮助")
         return
 
     chat_id = message.chat_id
@@ -200,7 +200,7 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
         status_msg = None
         if total > GROUP_SEND_SIZE:
             try:
-                status_msg = await message.reply_text(
+                status_msg = await _retry_send(message.reply_text, 
                     f"📤 已排队 {total} 个文件（{len(batches)} 批），发送中…"
                 )
             except Exception:
@@ -245,7 +245,7 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
         not_found_text = "\n".join(f"• `{c}`" for c in shown)
         if len(not_found) > max_show:
             not_found_text += f"\n... 等 {len(not_found)} 个"
-        await message.reply_text(f"⚠️ 以下代码未找到 ({len(not_found)} 个):\n" + not_found_text, parse_mode="Markdown")
+        await _retry_send(message.reply_text, f"⚠️ 以下代码未找到 ({len(not_found)} 个):\n" + not_found_text, parse_mode="Markdown")
 
 
 async def _process_collection_codes(context, chat_id, message, collection_codes: list) -> None:
@@ -254,17 +254,17 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
         col_info = await get_collection(col_code)
         current_bot_db_id_col = context.bot_data.get("bot_record", {}).get("id")
         if not col_info or (current_bot_db_id_col and col_info.get("bot_db_id") and col_info["bot_db_id"] != current_bot_db_id_col):
-            await message.reply_text(f"❌ 集合不存在: `{col_code}`", parse_mode="Markdown")
+            await _retry_send(message.reply_text, f"❌ 集合不存在: `{col_code}`", parse_mode="Markdown")
             continue
 
         safe_name = escape_markdown(col_info['name'])
         if col_info['status'] != 'completed':
-            await message.reply_text(f"⚠️ 集合「{safe_name}」尚未完成。")
+            await _retry_send(message.reply_text, f"⚠️ 集合「{safe_name}」尚未完成。")
             continue
 
         files = await get_collection_files(col_code)
         if not files:
-            await message.reply_text(f"⚠️ 集合「{safe_name}」为空。")
+            await _retry_send(message.reply_text, f"⚠️ 集合「{safe_name}」为空。")
             continue
 
         total_files = len(files)
@@ -282,7 +282,7 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
         if total_files > GROUP_SEND_SIZE:
             keyboard.append([InlineKeyboardButton("📖 分页浏览", callback_data=f"p|{sk}|1")])
 
-        await message.reply_text(col_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        await _retry_send(message.reply_text, col_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _process_legacy_codes(context, chat_id, legacy_file_ids: list) -> None:
@@ -312,7 +312,7 @@ async def handle_forward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif message.text:
         await handle_text(update, context)
     else:
-        await message.reply_text("请转发包含媒体的消息，我会返回其代码。")
+        await _retry_send(message.reply_text, "请转发包含媒体的消息，我会返回其代码。")
 
 
 async def handle_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -358,7 +358,7 @@ async def handle_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 else:
                     reply = f"✅ 媒体组已保存！共 {len(codes)} 个文件：\n\n"
                 reply += "\n".join(f"`{c}`" for c in codes)
-                await msgs[0].reply_text(reply, parse_mode="Markdown")
+                await _retry_send(msgs[0].reply_text, reply, parse_mode="Markdown")
         except Exception as e:
             logger.error("process_media_group 失败: %s", e, exc_info=True)
         finally:
@@ -381,7 +381,7 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
         if message.text:
             await handle_text(update, context)
         else:
-            await message.reply_text("请转发包含媒体的消息。")
+            await _retry_send(message.reply_text, "请转发包含媒体的消息。")
         return
 
     media_group_id = message.media_group_id
@@ -411,7 +411,7 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
 
             codes = await _save_media_messages(msgs, context)
             if not codes:
-                await msgs[0].reply_text("❌ 转发的媒体组处理失败。")
+                await _retry_send(msgs[0].reply_text, "❌ 转发的媒体组处理失败。")
                 return
 
             # 自动创建集合
@@ -436,7 +436,7 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
                 logger.error("自动创建转发集合失败: %s", e)
             if not save_ok:
                 reply = f"✅ 转发媒体已保存（共 {len(codes)} 个）：\n\n" + "\n".join(f"`{c}`" for c in codes)
-                await msgs[0].reply_text(reply, parse_mode="Markdown")
+                await _retry_send(msgs[0].reply_text, reply, parse_mode="Markdown")
                 return
 
             # 回复
@@ -446,9 +446,9 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
             sk = await _short_key(context, full_col_code)
             keyboard = [[InlineKeyboardButton("⬇️ 全部发送", callback_data=f"s|{sk}"), InlineKeyboardButton("▶️ 自动发送", callback_data=f"a|{sk}")]]
             try:
-                await msgs[0].reply_text(reply, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+                await _retry_send(msgs[0].reply_text, reply, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
             except Exception:
-                await msgs[0].reply_text(reply, parse_mode="Markdown")
+                await _retry_send(msgs[0].reply_text, reply, parse_mode="Markdown")
 
         except Exception as e:
             logger.error("process_forward_group 失败: %s", e, exc_info=True)

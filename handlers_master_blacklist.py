@@ -1,6 +1,7 @@
 """黑名单管理命令 - /blacklist"""
 import html
 import logging
+from senders import _retry_send
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -32,7 +33,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     from config import ADMIN_IDS
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ 此命令仅限管理员使用。")
+        await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
         return
 
     if not context.args:
@@ -56,14 +57,14 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         else:
             text += "📭 黑名单为空。"
 
-        await update.message.reply_text(text, parse_mode="HTML")
+        await _retry_send(update.message.reply_text, text, parse_mode="HTML")
         return
 
     action = context.args[0].lower()
 
     if action == 'add':
         if len(context.args) < 2:
-            await update.message.reply_text(
+            await _retry_send(update.message.reply_text, 
                 "用法：<code>/blacklist add &lt;用户ID&gt; [原因]</code>",
                 parse_mode="HTML"
             )
@@ -71,12 +72,12 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             target_id = int(context.args[1])
         except ValueError:
-            await update.message.reply_text("❌ 用户ID必须是数字。")
+            await _retry_send(update.message.reply_text, "❌ 用户ID必须是数字。")
             return
 
         # 不能封禁管理员
         if target_id in ADMIN_IDS:
-            await update.message.reply_text("❌ 不能将管理员加入黑名单。")
+            await _retry_send(update.message.reply_text, "❌ 不能将管理员加入黑名单。")
             return
 
         reason = ' '.join(context.args[2:]) if len(context.args) > 2 else ''
@@ -99,14 +100,14 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             if target_bots:
                 text += f"\n⚠️ 该用户有 {len(target_bots)} 个 Bot 已被标记为 banned。"
 
-            await update.message.reply_text(text, parse_mode="HTML")
+            await _retry_send(update.message.reply_text, text, parse_mode="HTML")
             logger.info("管理员 %s 将用户 %s 加入黑名单 (原因: %s)", user_id, target_id, reason)
         else:
-            await update.message.reply_text("❌ 添加黑名单失败。")
+            await _retry_send(update.message.reply_text, "❌ 添加黑名单失败。")
 
     elif action in ('del', 'remove', 'rm', 'delete'):
         if len(context.args) < 2:
-            await update.message.reply_text(
+            await _retry_send(update.message.reply_text, 
                 "用法：<code>/blacklist del &lt;用户ID&gt;</code>",
                 parse_mode="HTML"
             )
@@ -114,26 +115,26 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             target_id = int(context.args[1])
         except ValueError:
-            await update.message.reply_text("❌ 用户ID必须是数字。")
+            await _retry_send(update.message.reply_text, "❌ 用户ID必须是数字。")
             return
 
         if await remove_from_blacklist(target_id):
             # 恢复该用户的 Bot
             await unban_user_bots(target_id)
 
-            await update.message.reply_text(
+            await _retry_send(update.message.reply_text, 
                 f"✅ 用户 <code>{target_id}</code> 已从黑名单移除。\n"
                 f"💡 如需重新启动其 Bot，请使用 /platform bots 查看，或让用户使用 /botstatus。",
                 parse_mode="HTML"
             )
             logger.info("管理员 %s 将用户 %s 从黑名单移除", user_id, target_id)
         else:
-            await update.message.reply_text("⚠️ 该用户不在黑名单中。")
+            await _retry_send(update.message.reply_text, "⚠️ 该用户不在黑名单中。")
 
     elif action == 'list':
         bl = await get_blacklist()
         if not bl:
-            await update.message.reply_text("📭 黑名单为空。")
+            await _retry_send(update.message.reply_text, "📭 黑名单为空。")
             return
 
         text = f"🚫 <b>黑名单列表</b> (共 {len(bl)} 人)\n\n"
@@ -155,19 +156,19 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 parts.append(current)
             for i, part in enumerate(parts):
                 if i == 0:
-                    await update.message.reply_text(part, parse_mode="HTML")
+                    await _retry_send(update.message.reply_text, part, parse_mode="HTML")
                 else:
-                    await context.bot.send_message(
+                    await _retry_send(context.bot.send_message, 
                         chat_id=update.message.chat_id,
                         text=part,
                         parse_mode="HTML"
                     )
         else:
-            await update.message.reply_text(text, parse_mode="HTML")
+            await _retry_send(update.message.reply_text, text, parse_mode="HTML")
 
     elif action == 'check':
         if len(context.args) < 2:
-            await update.message.reply_text(
+            await _retry_send(update.message.reply_text, 
                 "用法：<code>/blacklist check &lt;用户ID&gt;</code>",
                 parse_mode="HTML"
             )
@@ -175,7 +176,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             target_id = int(context.args[1])
         except ValueError:
-            await update.message.reply_text("❌ 用户ID必须是数字。")
+            await _retry_send(update.message.reply_text, "❌ 用户ID必须是数字。")
             return
 
         if await is_user_blacklisted(target_id):
@@ -193,16 +194,16 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 text += f"\n\n🤖 该用户的 Bot ({len(target_bots)} 个):"
                 for bot in target_bots:
                     text += f"\n  • @{escape(bot['bot_username'])} — {bot['status']}"
-            await update.message.reply_text(text, parse_mode="HTML")
+            await _retry_send(update.message.reply_text, text, parse_mode="HTML")
         else:
             target_bots = await get_user_bots_by_owner(target_id)
             text = f"✅ 用户 <code>{target_id}</code> 不在黑名单中。"
             if target_bots:
                 text += f"\n🤖 该用户有 {len(target_bots)} 个 Bot。"
-            await update.message.reply_text(text, parse_mode="HTML")
+            await _retry_send(update.message.reply_text, text, parse_mode="HTML")
 
     else:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "❓ 未知操作。可用操作: <code>add</code>, <code>del</code>, <code>list</code>, <code>check</code>",
             parse_mode="HTML"
         )

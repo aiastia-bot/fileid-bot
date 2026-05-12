@@ -3,6 +3,7 @@ import html
 import json
 import logging
 import time
+from senders import _retry_send
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import ContextTypes
@@ -101,7 +102,7 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+    await _retry_send(update.message.reply_text, text, parse_mode="HTML", reply_markup=reply_markup)
 
 
 # ==================== 购买回调 ====================
@@ -165,14 +166,14 @@ async def buy_vip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             currency="XTR",
             prices=prices,
         )
-        await query.message.reply_text(
+        await _retry_send(query.message.reply_text, 
             f"💳 正在发起支付...\n"
             f"⭐ {plan['name']} {time_label}付 — {price} 星星",
             parse_mode="HTML"
         )
     except Exception as e:
         logger.error("发送 Invoice 失败: %s", e)
-        await query.message.reply_text(
+        await _retry_send(query.message.reply_text, 
             f"❌ 发起支付失败：{escape(str(e)[:100])}\n请稍后重试。"
         )
 
@@ -188,7 +189,7 @@ async def vip_history_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     history = await get_payment_history(user_id, limit=10)
 
     if not history:
-        await query.message.reply_text("📜 暂无支付记录。")
+        await _retry_send(query.message.reply_text, "📜 暂无支付记录。")
         return
 
     text = "📜 <b>支付记录</b>\n\n"
@@ -201,7 +202,7 @@ async def vip_history_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             f"   📅 {p['created_at']}\n"
         )
 
-    await query.message.reply_text(text, parse_mode="HTML")
+    await _retry_send(query.message.reply_text, text, parse_mode="HTML")
 
 
 # ==================== PreCheckout 处理 ====================
@@ -320,7 +321,7 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
     if not verified:
         logger.warning("用户 %s 支付验证失败，charge_id=%s（可能为伪造请求）", user_id, telegram_charge_id)
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "⚠️ 支付验证失败，请稍后重试或联系管理员。"
         )
         return
@@ -350,7 +351,7 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
             f"🤖 <b>可创建 Bot 数：</b>{plan['max_bots']} 个\n\n"
             f"感谢你的支持！🌟"
         )
-        await update.message.reply_text(text, parse_mode="HTML")
+        await _retry_send(update.message.reply_text, text, parse_mode="HTML")
 
         # 检查是否有暂停的 Bot 可以恢复
         await _try_resume_paused_bots(user_id, level)
@@ -358,7 +359,7 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
         logger.info("用户 %s 支付成功（已验证）: %s %d个月, %d⭐",
                     user_id, plan_name, months, payment.total_amount)
     else:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "⚠️ 支付已收到但 VIP 升级失败，请联系管理员。"
         )
         logger.error("用户 %s VIP 升级失败（支付已验证成功）", user_id)
@@ -405,7 +406,7 @@ async def handle_expired_vips() -> None:
                     text += f"\n💡 续费 VIP 后 Bot 将自动恢复运行。"
 
                 text += "\n\n使用 /vip 查看续费选项"
-                await master_app.bot.send_message(
+                await _retry_send(master_app.bot.send_message, 
                     chat_id=user_id,
                     text=text,
                     parse_mode="HTML",
@@ -434,7 +435,7 @@ async def send_expire_reminders() -> None:
             import __main__
             master_app = getattr(__main__, 'master_app', None)
             if master_app:
-                await master_app.bot.send_message(
+                await _retry_send(master_app.bot.send_message, 
                     chat_id=user_id,
                     text=(
                         f"⏰ <b>VIP 即将到期</b>\n\n"
@@ -525,7 +526,7 @@ async def _try_resume_paused_bots(user_id: int, new_level: int) -> None:
             import __main__
             master_app = getattr(__main__, 'master_app', None)
             if master_app:
-                await master_app.bot.send_message(
+                await _retry_send(master_app.bot.send_message, 
                     chat_id=user_id,
                     text=f"✅ 已自动恢复 {resumed} 个暂停的 Bot！",
                     parse_mode="HTML",

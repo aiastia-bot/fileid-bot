@@ -216,7 +216,7 @@ class BotManager:
                 chat_type = update.effective_message.chat.type if update.effective_message.chat else ""
                 if chat_type == "private":
                     try:
-                        await update.effective_message.reply_text("❌ 处理请求时发生内部错误，请稍后重试。")
+                        await _retry_send(update.effective_message.reply_text, "❌ 处理请求时发生内部错误，请稍后重试。")
                     except Exception:
                         pass
 

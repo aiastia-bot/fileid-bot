@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes
 from config import AUTO_SEND_INTERVAL, GROUP_SEND_SIZE, FILE_TYPE_MAP
 from database import get_collection, get_collection_files
 from utils import escape_markdown
-from senders import send_file_group
+from senders import send_file_group, _retry_send
 from send_queue import get_queue_from_context, split_files_to_batches
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not data:
         logger.error("button_callback: callback_data 为空! query=%s", query)
         try:
-            await context.bot.send_message(chat_id=chat_id, text="❌ 回调数据为空，请重试。")
+            await _retry_send(context.bot.send_message, chat_id=chat_id, text="❌ 回调数据为空，请重试。")
         except Exception:
             pass
         return
@@ -112,19 +112,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 logger.info("处理下一页发送: parts=%s", parts)
                 if len(parts) < 2:
                     logger.error("下一页发送数据格式错误: rest=%s", rest)
-                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 数据格式错误。")
+                    await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 数据格式错误。")
                     return
                 sk = parts[0]
                 try:
                     page = int(parts[1])
                 except ValueError:
                     logger.error("下一页页码不是数字: parts[1]=%s", parts[1])
-                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 页码格式错误。")
+                    await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 页码格式错误。")
                     return
                 col_code = await _resolve_key(context, sk)
                 if not col_code:
                     logger.warning("下一页发送失败: sk=%s 无法解析", sk)
-                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
+                    await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
                 logger.info("开始下一页发送: col_code=%s, page=%d", col_code, page)
                 await _send_paginated(context, chat_id, col_code, sk, page=page, query=query)
@@ -137,7 +137,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 col_code = await _resolve_key(context, sk)
                 if not col_code:
                     logger.warning("分页发送失败: sk=%s 无法解析, cb_map=%s", sk, list(context.bot_data.get('cb_map', {}).keys()))
-                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
+                    await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
                 logger.info("开始分页发送: col_code=%s, chat_id=%s", col_code, chat_id)
                 await _send_paginated(context, chat_id, col_code, sk, page=1, query=query)
@@ -150,7 +150,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 col_code = await _resolve_key(context, sk)
                 if not col_code:
                     logger.warning("自动发送失败: sk=%s 无法解析", sk)
-                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
+                    await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
                 logger.info("开始自动发送: col_code=%s, chat_id=%s, user_id=%s", col_code, chat_id, user_id)
                 await _auto_send(context, chat_id, col_code, user_id, query)
@@ -162,19 +162,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 logger.info("处理分页浏览: parts=%s", parts)
                 if len(parts) < 2:
                     logger.error("分页数据格式错误: rest=%s, parts=%s", rest, parts)
-                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 数据格式错误。")
+                    await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 数据格式错误。")
                     return
                 sk = parts[0]
                 try:
                     page = int(parts[1])
                 except ValueError:
                     logger.error("分页页码不是数字: parts[1]=%s", parts[1])
-                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 页码格式错误。")
+                    await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 页码格式错误。")
                     return
                 col_code = await _resolve_key(context, sk)
                 if not col_code:
                     logger.warning("分页失败: sk=%s 无法解析", sk)
-                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
+                    await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
                 logger.info("开始分页浏览: col_code=%s, page=%d", col_code, page)
                 await _send_page(context, chat_id, col_code, page, query)
@@ -184,17 +184,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 # 发送本页文件: ps|key|page
                 parts = rest.split("|")
                 if len(parts) < 2:
-                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 数据格式错误。")
+                    await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 数据格式错误。")
                     return
                 sk = parts[0]
                 try:
                     page = int(parts[1])
                 except ValueError:
-                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 页码格式错误。")
+                    await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 页码格式错误。")
                     return
                 col_code = await _resolve_key(context, sk)
                 if not col_code:
-                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
+                    await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
                 logger.info("开始发送本页文件: col_code=%s, page=%d", col_code, page)
                 await _send_page_files(context, chat_id, col_code, page, query)
@@ -232,19 +232,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await query.edit_message_reply_markup(reply_markup=None)
             except Exception as e:
                 logger.warning("停止按钮: 编辑消息失败 (可忽略): %s", e)
-            await context.bot.send_message(chat_id=chat_id, text="⏹ 已停止自动发送。")
+            await _retry_send(context.bot.send_message, chat_id=chat_id, text="⏹ 已停止自动发送。")
 
         elif data == "noop":
             logger.debug("noop 回调")
 
         else:
             logger.warning("未知的回调数据: %r", data)
-            await context.bot.send_message(chat_id=chat_id, text=f"❓ 未知操作: {data}")
+            await _retry_send(context.bot.send_message, chat_id=chat_id, text=f"❓ 未知操作: {data}")
 
     except Exception as e:
         logger.error("按钮回调处理失败: data=%r, error=%s", data, e, exc_info=True)
         try:
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ 操作失败: {e}")
+            await _retry_send(context.bot.send_message, chat_id=chat_id, text=f"❌ 操作失败: {e}")
         except Exception as e2:
             logger.error("发送错误消息也失败: %s\n原始错误: %s", e2, e)
 
@@ -264,7 +264,7 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
             try:
                 await query.edit_message_text(msg)
             except Exception:
-                await context.bot.send_message(chat_id=chat_id, text=msg)
+                await _retry_send(context.bot.send_message, chat_id=chat_id, text=msg)
         return
 
     total = len(files)
@@ -350,9 +350,9 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception:
-            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
+            await _retry_send(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
     else:
-        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
+        await _retry_send(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
 
 
 async def _send_all(context, chat_id, col_code, query=None):
@@ -361,7 +361,7 @@ async def _send_all(context, chat_id, col_code, query=None):
 
     files = await get_collection_files(col_code)
     if not files:
-        await context.bot.send_message(chat_id=chat_id, text="⚠️ 集合为空或不存在。")
+        await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 集合为空或不存在。")
         return
 
     total = len(files)
@@ -369,7 +369,7 @@ async def _send_all(context, chat_id, col_code, query=None):
     batches = split_files_to_batches(files)
 
     info = queue.queue_info(chat_id)
-    status_msg = await context.bot.send_message(
+    status_msg = await _retry_send(context.bot.send_message, 
         chat_id=chat_id,
         text=f"📤 已排队 {total} 个文件（{len(batches)} 批）\n"
              f"📋 队列中共 {info['total_pending'] + len(batches)} 批等待发送"
@@ -398,7 +398,7 @@ async def _send_all(context, chat_id, col_code, query=None):
     try:
         await context.bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text=result_text)
     except Exception:
-        await context.bot.send_message(chat_id=chat_id, text=result_text)
+        await _retry_send(context.bot.send_message, chat_id=chat_id, text=result_text)
 
 
 async def _auto_send(context, chat_id, col_code, user_id, query=None):
@@ -412,7 +412,7 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
             try:
                 await query.edit_message_text(msg)
             except Exception:
-                await context.bot.send_message(chat_id=chat_id, text=msg)
+                await _retry_send(context.bot.send_message, chat_id=chat_id, text=msg)
         return
 
     total = len(files)
@@ -421,7 +421,7 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
     keyboard = [[InlineKeyboardButton("⏹ 停止发送", callback_data="stop_auto")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    status_msg = await context.bot.send_message(
+    status_msg = await _retry_send(context.bot.send_message, 
         chat_id=chat_id, text=f"▶️ 自动发送中... (0/{total})", reply_markup=reply_markup
     )
 
@@ -437,7 +437,7 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
     sent_count = 0
     for idx, group in enumerate(all_groups):
         if context.user_data.get('stop_auto_send'):
-            await context.bot.send_message(chat_id=chat_id, text=f"⏹ 已停止。成功发送 {sent_count}/{total} 个文件。")
+            await _retry_send(context.bot.send_message, chat_id=chat_id, text=f"⏹ 已停止。成功发送 {sent_count}/{total} 个文件。")
             return
 
         try:
@@ -464,7 +464,7 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
             reply_markup=None
         )
     except Exception:
-        await context.bot.send_message(chat_id=chat_id, text=f"✅ 自动发送完成！成功 {sent_count}/{total}")
+        await _retry_send(context.bot.send_message, chat_id=chat_id, text=f"✅ 自动发送完成！成功 {sent_count}/{total}")
 
 
 async def _send_page(context, chat_id, col_code, page, query=None):
@@ -479,7 +479,7 @@ async def _send_page(context, chat_id, col_code, page, query=None):
             try:
                 await query.edit_message_text(msg)
             except Exception:
-                await context.bot.send_message(chat_id=chat_id, text=msg)
+                await _retry_send(context.bot.send_message, chat_id=chat_id, text=msg)
         return
 
     total = len(files)
@@ -526,9 +526,9 @@ async def _send_page(context, chat_id, col_code, page, query=None):
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception:
-            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
+            await _retry_send(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
     else:
-        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
+        await _retry_send(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
 
 
 async def _send_page_files(context, chat_id, col_code, page, query=None):
@@ -542,7 +542,7 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
             try:
                 await query.edit_message_text(msg)
             except Exception:
-                await context.bot.send_message(chat_id=chat_id, text=msg)
+                await _retry_send(context.bot.send_message, chat_id=chat_id, text=msg)
         return
 
     start = (page - 1) * PER_PAGE
@@ -553,7 +553,7 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
             try:
                 await query.edit_message_text(msg)
             except Exception:
-                await context.bot.send_message(chat_id=chat_id, text=msg)
+                await _retry_send(context.bot.send_message, chat_id=chat_id, text=msg)
         return
 
     logger.info("_send_page_files: 准备发送 %d 个文件", len(page_files))
@@ -564,4 +564,4 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
         try:
             await query.edit_message_text(result_text)
         except Exception:
-            await context.bot.send_message(chat_id=chat_id, text=result_text)
+            await _retry_send(context.bot.send_message, chat_id=chat_id, text=result_text)

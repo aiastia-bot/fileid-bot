@@ -4,6 +4,7 @@ import io
 import json
 import logging
 from datetime import datetime
+from senders import _retry_send
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -39,7 +40,7 @@ async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     from config import ADMIN_IDS
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ 此命令仅限管理员使用。")
+        await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
         return
 
     # 检查是否有参数，如 /platform bots 显示详细 Bot 列表
@@ -107,15 +108,15 @@ async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         for i, part in enumerate(parts):
             if i == 0:
-                await update.message.reply_text(part, parse_mode="HTML")
+                await _retry_send(update.message.reply_text, part, parse_mode="HTML")
             else:
-                await context.bot.send_message(
+                await _retry_send(context.bot.send_message, 
                     chat_id=update.message.chat_id,
                     text=part,
                     parse_mode="HTML"
                 )
     else:
-        await update.message.reply_text(text, parse_mode="HTML")
+        await _retry_send(update.message.reply_text, text, parse_mode="HTML")
 
 
 # ==================== 导出功能 ====================
@@ -125,7 +126,7 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     from config import ADMIN_IDS
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ 此命令仅限管理员使用。")
+        await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
         return
 
     args = context.args or []
@@ -133,7 +134,7 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # /export <bot_username|db_id> — 导出指定Bot的文件代码CSV（支持同名Bot）
     if args and args[0] not in ('json', 'csv', 'bots', 'code'):
         export_arg = args[0].strip().lstrip('@')
-        status_msg = await update.message.reply_text("⏳ 正在导出...")
+        status_msg = await _retry_send(update.message.reply_text, "⏳ 正在导出...")
 
         try:
             bot_record = None
@@ -162,7 +163,7 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             filename = f"{bot_username}_{bot_db_id_export}_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
             bytes_io = io.BytesIO(export_text.encode('utf-8'))
-            await context.bot.send_document(
+            await _retry_send(context.bot.send_document, 
                 chat_id=update.message.chat_id,
                 document=bytes_io,
                 filename=filename,
@@ -179,7 +180,7 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     export_format = args[0] if args else 'help'
 
     if export_format == 'help':
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "📤 <b>数据导出命令</b>\n\n"
             "可用格式:\n"
             "• <code>/export json</code> — 完整 JSON 数据\n"
@@ -190,7 +191,7 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    status_msg = await update.message.reply_text("⏳ 正在准备导出数据...")
+    status_msg = await _retry_send(update.message.reply_text, "⏳ 正在准备导出数据...")
 
     try:
         data = await get_platform_export_data()
@@ -238,7 +239,7 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         bytes_io = io.BytesIO(export_text.encode('utf-8'))
-        await context.bot.send_document(
+        await _retry_send(context.bot.send_document, 
             chat_id=update.message.chat_id,
             document=bytes_io,
             filename=filename,
@@ -258,11 +259,11 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     from config import ADMIN_IDS
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ 此命令仅限管理员使用。")
+        await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
         return
 
     if not context.args:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "🚀 <b>启动指定 Bot</b>\n\n"
             "用法：<code>/startbot @用户名</code> 或 <code>/startbot 数据库ID</code>\n\n"
             "可用于启动已停止或 revoked 状态的 Bot。\n"
@@ -287,26 +288,26 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         bot_record = await get_user_bot_by_username(username)
 
     if not bot_record:
-        await update.message.reply_text(f"❌ 未找到 Bot：{escape(arg)}")
+        await _retry_send(update.message.reply_text, f"❌ 未找到 Bot：{escape(arg)}")
         return
 
     # 检查是否已在运行
     mgr = get_bot_manager()
     if mgr and bot_record['id'] in mgr.get_all_apps():
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             f"ℹ️ Bot @{escape(bot_record['bot_username'])} 已在运行中，无需启动。"
         )
         return
 
     # 检查是否被封禁
     if bot_record['status'] == 'banned':
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             f"🚫 Bot @{escape(bot_record['bot_username'])} 已被封禁，无法启动。\n"
             f"使用 /blacklist del {bot_record['owner_id']} 解除封禁。"
         )
         return
 
-    status_msg = await update.message.reply_text(
+    status_msg = await _retry_send(update.message.reply_text, 
         f"⏳ 正在启动 @{escape(bot_record['bot_username'])}..."
     )
 
@@ -348,11 +349,11 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     from config import ADMIN_IDS
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ 此命令仅限管理员使用。")
+        await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
         return
 
     if not context.args:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "📢 <b>广播命令</b>\n\n"
             "用法：<code>/broadcast 消息内容</code>\n\n"
             "消息将发送给所有 Bot 所有者。",
@@ -362,13 +363,13 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     text = " ".join(context.args)
     owner_ids = await get_all_owner_ids()
-    status_msg = await update.message.reply_text(f"⏳ 正在广播给 {len(owner_ids)} 位用户...")
+    status_msg = await _retry_send(update.message.reply_text, f"⏳ 正在广播给 {len(owner_ids)} 位用户...")
 
     success = 0
     fail = 0
     for oid in owner_ids:
         try:
-            await context.bot.send_message(chat_id=oid, text=text, parse_mode="HTML")
+            await _retry_send(context.bot.send_message, chat_id=oid, text=text, parse_mode="HTML")
             success += 1
         except Exception:
             fail += 1

@@ -1,6 +1,7 @@
 """主Bot入口处理 - start命令、managed_bot处理、黑名单检查中间件"""
 import html
 import logging
+from senders import _retry_send
 
 import httpx
 
@@ -47,7 +48,7 @@ async def master_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "3. 使用 /vip 升级会员可创建更多 Bot\n\n"
         "所有 Bot 共享服务器资源，你无需部署！"
     )
-    await update.message.reply_text(text, parse_mode="HTML")
+    await _retry_send(update.message.reply_text, text, parse_mode="HTML")
 
 
 # ==================== Managed Bot 自动处理 ====================
@@ -138,7 +139,7 @@ async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.info("✅ Managed Bot @%s 自动启动成功 (owner=%s)", bot_username, owner_id)
             # 尝试通知用户
             try:
-                await context.bot.send_message(
+                await _retry_send(context.bot.send_message, 
                     chat_id=owner_id,
                     text=(
                         f"✅ <b>Bot 创建成功并已启动！</b>\n\n"
@@ -176,7 +177,7 @@ async def blacklist_check_handler(update: Update, context: ContextTypes.DEFAULT_
         # 被封禁用户：静默忽略或发送提示
         if update.message:
             try:
-                await update.message.reply_text(
+                await _retry_send(update.message.reply_text, 
                     "⛔ 你已被管理员禁止使用本平台。\n"
                     "如有疑问请联系管理员。"
                 )

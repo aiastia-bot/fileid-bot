@@ -1,6 +1,7 @@
 """Bot 管理命令 - /mybots, /delbot, /botstatus, 重启, 更新Token"""
 import html
 import logging
+from senders import _retry_send
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -32,7 +33,7 @@ async def my_bots_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     bots = await get_user_bots_by_owner(user_id)
 
     if not bots:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "📭 你还没有添加任何 Bot。\n\n使用 /newbot 一键创建！"
         )
         return
@@ -48,7 +49,7 @@ async def my_bots_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
     text += f"共 {len(bots)} 个 Bot"
-    await update.message.reply_text(text, parse_mode="HTML")
+    await _retry_send(update.message.reply_text, text, parse_mode="HTML")
 
 
 async def delete_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -56,7 +57,7 @@ async def delete_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
 
     if not context.args:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "请提供 Bot 的用户名或编号。\n"
             "用法：<code>/delbot @用户名</code> 或 <code>/delbot 编号</code>\n\n"
             "使用 /mybots 查看你的 Bot 列表。",
@@ -66,7 +67,7 @@ async def delete_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     bots = await get_user_bots_by_owner(user_id)
     if not bots:
-        await update.message.reply_text("📭 你没有可删除的 Bot。")
+        await _retry_send(update.message.reply_text, "📭 你没有可删除的 Bot。")
         return
 
     arg = context.args[0].strip()
@@ -87,7 +88,7 @@ async def delete_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 break
 
     if not target_bot:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "❌ 未找到指定的 Bot。使用 /mybots 查看列表。",
             parse_mode="HTML"
         )
@@ -99,7 +100,7 @@ async def delete_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await db_delete_user_bot(target_bot["id"])
 
-    await update.message.reply_text(
+    await _retry_send(update.message.reply_text, 
         f"✅ Bot @{escape(target_bot['bot_username'])} 已删除。"
     )
     logger.info("用户 %s 删除了 Bot @%s", user_id, target_bot['bot_username'])
@@ -111,7 +112,7 @@ async def bot_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     bots = await get_user_bots_by_owner(user_id)
 
     if not bots:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "📭 你没有 Bot。使用 /newbot 创建！"
         )
         return
@@ -150,7 +151,7 @@ async def bot_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             keyboard.append([btn])
 
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+    await _retry_send(update.message.reply_text, text, parse_mode="HTML", reply_markup=reply_markup)
 
 
 async def restart_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -279,7 +280,7 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if bot_db_id and update.message and update.message.text:
             token = update.message.text.strip()
         else:
-            await update.message.reply_text(
+            await _retry_send(update.message.reply_text, 
                 "🔑 <b>更新 Bot Token</b>\n\n"
                 "用法：<code>/updatetoken &lt;新Token&gt;</code>\n\n"
                 "用于更新已失效（revoked）Bot 的 Token。\n"
@@ -293,7 +294,7 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # 如果没有通过按钮指定 bot，让用户指定
     if not bot_db_id:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "❌ 请先使用 /botstatus 点击「更新Token」按钮，\n"
             "或使用 <code>/updatetoken &lt;新Token&gt;</code> 并先通过 /botstatus 选择 Bot。",
             parse_mode="HTML"
@@ -305,7 +306,7 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # 验证 Token 格式
     if ":" not in token or len(token) < 10:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "❌ Token 格式不正确。\n\n"
             "Token 格式类似：<code>123456789:ABCdefGHIjklMNOpqrS</code>",
             parse_mode="HTML"
@@ -315,18 +316,18 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # 验证 Bot 归属
     bot_record = await get_user_bot_by_id(bot_db_id)
     if not bot_record or bot_record['owner_id'] != user_id:
-        await update.message.reply_text("❌ 无权操作此 Bot。")
+        await _retry_send(update.message.reply_text, "❌ 无权操作此 Bot。")
         return
 
     # 检查 Token 是否已被其他 Bot 使用
     existing_token = await get_user_bot_by_token(token)
     if existing_token and existing_token['id'] != bot_db_id:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             f"⚠️ 该 Token 已被 Bot @{escape(existing_token['bot_username'])} 使用。"
         )
         return
 
-    status_msg = await update.message.reply_text("⏳ 正在校验新 Token...")
+    status_msg = await _retry_send(update.message.reply_text, "⏳ 正在校验新 Token...")
 
     # 校验新 Token
     from telegram import Bot

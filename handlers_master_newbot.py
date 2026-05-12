@@ -2,6 +2,7 @@
 import html
 import logging
 import urllib.parse
+from senders import _retry_send
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
@@ -37,13 +38,13 @@ async def new_bot_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
     if len(user_bots) >= max_bots:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             f"⚠️ 你已达到 Bot 数量上限（{max_bots} 个）。\n\n"
             f"💡 使用 /vip 升级 VIP 可创建更多 Bot，或使用 /delbot 删除已有 Bot。"
         )
         return ConversationHandler.END
 
-    await update.message.reply_text(
+    await _retry_send(update.message.reply_text, 
         "🤖 <b>创建新 Bot</b>\n\n"
         "请输入 Bot 的 <b>用户名</b>（必须以 <code>bot</code> 结尾）\n\n"
         "例如：<code>myfile_bot</code>\n\n"
@@ -58,7 +59,7 @@ async def new_bot_input_username(update: Update, context: ContextTypes.DEFAULT_T
     username = update.message.text.strip().lstrip('@')
 
     if not username.lower().endswith('bot'):
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "❌ Bot 用户名必须以 <code>bot</code> 结尾，请重新输入。\n\n"
             "例如：<code>myfile_bot</code>",
             parse_mode="HTML"
@@ -67,7 +68,7 @@ async def new_bot_input_username(update: Update, context: ContextTypes.DEFAULT_T
 
     context.user_data['new_bot_username'] = username
 
-    await update.message.reply_text(
+    await _retry_send(update.message.reply_text, 
         f"✅ Bot 用户名：<code>@{escape(username)}</code>\n\n"
         f"请输入 Bot 的 <b>显示名称</b>：\n\n"
         f"例如：<code>我的文件Bot</code>",
@@ -82,7 +83,7 @@ async def new_bot_input_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     bot_username = context.user_data.get('new_bot_username', '')
 
     if not bot_username:
-        await update.message.reply_text("❌ 出错了，请重新使用 /newbot 开始。")
+        await _retry_send(update.message.reply_text, "❌ 出错了，请重新使用 /newbot 开始。")
         return ConversationHandler.END
 
     context.user_data['new_bot_name'] = bot_name
@@ -108,7 +109,7 @@ async def new_bot_input_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"💡 输入 /cancel 取消操作"
     )
 
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await _retry_send(update.message.reply_text, text, parse_mode="HTML", reply_markup=keyboard)
     return INPUT_BOT_TOKEN
 
 
@@ -118,7 +119,7 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
 
     if ":" not in token or len(token) < 10:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "❌ 这不像是一个有效的 Token，请重新输入。\n\n"
             "Token 格式类似：<code>123456789:ABCdefGHIjklMNOpqrS</code>",
             parse_mode="HTML"
@@ -127,14 +128,14 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     existing = await get_user_bot_by_token(token)
     if existing:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             f"⚠️ Bot @{escape(existing['bot_username'])} 已经添加过了。"
         )
         context.user_data.pop('new_bot_username', None)
         context.user_data.pop('new_bot_name', None)
         return ConversationHandler.END
 
-    status_msg = await update.message.reply_text("⏳ 正在校验 Token 并启动 Bot...")
+    status_msg = await _retry_send(update.message.reply_text, "⏳ 正在校验 Token 并启动 Bot...")
 
     from telegram import Bot
     test_bot = None
@@ -216,7 +217,7 @@ async def new_bot_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """取消创建"""
     context.user_data.pop('new_bot_username', None)
     context.user_data.pop('new_bot_name', None)
-    await update.message.reply_text("❌ 已取消创建 Bot。")
+    await _retry_send(update.message.reply_text, "❌ 已取消创建 Bot。")
     return ConversationHandler.END
 
 
@@ -230,14 +231,14 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
     if len(user_bots) >= max_bots:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             f"⚠️ 你已达到 Bot 数量上限（{max_bots} 个）。\n\n"
             f"💡 使用 /vip 升级 VIP 可创建更多 Bot，或使用 /delbot 删除已有 Bot。"
         )
         return
 
     if not context.args:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             "🔑 <b>添加 Bot</b>\n\n"
             "请使用以下命令格式：\n"
             "<code>/addbot &lt;Token&gt;</code>\n\n"
@@ -250,17 +251,17 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     token = context.args[0].strip()
 
     if ":" not in token:
-        await update.message.reply_text("❌ Token 格式不正确，请检查后重试。")
+        await _retry_send(update.message.reply_text, "❌ Token 格式不正确，请检查后重试。")
         return
 
     existing = await get_user_bot_by_token(token)
     if existing:
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             f"⚠️ Bot @{escape(existing['bot_username'])} 已经添加过了。"
         )
         return
 
-    status_msg = await update.message.reply_text("⏳ 正在校验 Token...")
+    status_msg = await _retry_send(update.message.reply_text, "⏳ 正在校验 Token...")
 
     from telegram import Bot
     test_bot = None

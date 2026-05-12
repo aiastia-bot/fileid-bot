@@ -1,3 +1,4 @@
+from senders import _retry_send
 """命令处理器模块"""
 import io
 import logging
@@ -58,7 +59,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 将代码直接发送给 bot 即可获取文件！{master_info}"""
 
-    await update.message.reply_text(help_text, parse_mode="Markdown", disable_web_page_preview=True)
+    await _retry_send(update.message.reply_text, help_text, parse_mode="Markdown", disable_web_page_preview=True)
 
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -87,9 +88,9 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.warning("/stop: 取消队列任务失败: %s", e)
 
     if stopped_count > 0:
-        await update.message.reply_text(f"⏹ 已停止！取消了 {stopped_count} 个待发送任务。")
+        await _retry_send(update.message.reply_text, f"⏹ 已停止！取消了 {stopped_count} 个待发送任务。")
     else:
-        await update.message.reply_text("⏹ 已停止。当前没有正在发送的任务。")
+        await _retry_send(update.message.reply_text, "⏹ 已停止。当前没有正在发送的任务。")
 
 
 async def create_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -99,7 +100,7 @@ async def create_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
     bot_db_id = context.bot_data.get('bot_record', {}).get('id')
 
     if context.user_data.get('creating_collection'):
-        await update.message.reply_text("⚠️ 你已有正在创建的集合，请先 `/done` 完成或 `/cancel` 取消。")
+        await _retry_send(update.message.reply_text, "⚠️ 你已有正在创建的集合，请先 `/done` 完成或 `/cancel` 取消。")
         return
 
     name = ' '.join(context.args) if context.args else f"集合_{datetime.now().strftime('%m%d%H%M')}"
@@ -112,7 +113,7 @@ async def create_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data['collection_count'] = 0
 
         safe_name = escape_markdown(name)
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             f"✅ 集合「{safe_name}」创建成功！\n\n"
             f"📦 代码: `{full_code}`\n\n"
             f"👉 请连续发送要添加的文件（图片/视频/音频/文档），"
@@ -122,26 +123,26 @@ async def create_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode="Markdown"
         )
     else:
-        await update.message.reply_text("❌ 创建集合失败，请重试。")
+        await _retry_send(update.message.reply_text, "❌ 创建集合失败，请重试。")
 
 
 async def done_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/done 完成集合"""
     col_code = context.user_data.get('creating_collection')
     if not col_code:
-        await update.message.reply_text("⚠️ 你没有正在创建的集合。发送 `/create 名称` 开始。")
+        await _retry_send(update.message.reply_text, "⚠️ 你没有正在创建的集合。发送 `/create 名称` 开始。")
         return
 
     count = context.user_data.get('collection_count', 0)
     if count == 0:
         await delete_collection(col_code)
-        await update.message.reply_text("⚠️ 集合为空，已自动取消。")
+        await _retry_send(update.message.reply_text, "⚠️ 集合为空，已自动取消。")
     else:
         await complete_collection(col_code, count)
         col_info = await get_collection(col_code)
         col_name = col_info['name'] if col_info else "未命名"
         safe_name = escape_markdown(col_name)
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             f"🎉 集合「{safe_name}」创建完成！\n\n"
             f"📦 代码: `{col_code}`\n"
             f"📊 共 {count} 个文件\n\n"
@@ -160,10 +161,10 @@ async def cancel_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
         await delete_collection(col_code)
         context.user_data.pop('creating_collection', None)
         context.user_data.pop('collection_count', None)
-        await update.message.reply_text("❌ 已取消当前集合。")
+        await _retry_send(update.message.reply_text, "❌ 已取消当前集合。")
     else:
         context.user_data['stop_auto_send'] = True
-        await update.message.reply_text("❌ 已停止当前操作。")
+        await _retry_send(update.message.reply_text, "❌ 已停止当前操作。")
 
 
 async def my_collections_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -173,7 +174,7 @@ async def my_collections_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     rows = await get_user_collections(user_id, bot_db_id=bot_db_id)
 
     if not rows:
-        await update.message.reply_text("📦 你还没有创建任何集合。")
+        await _retry_send(update.message.reply_text, "📦 你还没有创建任何集合。")
         return
 
     text = "📦 *我的集合列表：*\n\n"
@@ -186,7 +187,7 @@ async def my_collections_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"  文件数: {r['file_count']} | 创建于: {r['created_at']}\n\n"
         )
 
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await _retry_send(update.message.reply_text, text, parse_mode="Markdown")
 
 
 async def delete_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -194,27 +195,27 @@ async def delete_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     if not context.args:
         code_prefix = get_code_prefix(context.bot.username)
-        await update.message.reply_text(f"请提供集合代码。\n用法: `/delcol {code_prefix}_col:xxx`", parse_mode="Markdown")
+        await _retry_send(update.message.reply_text, f"请提供集合代码。\n用法: `/delcol {code_prefix}_col:xxx`", parse_mode="Markdown")
         return
 
     col_code = context.args[0]
     col_info = await get_collection(col_code)
     if not col_info:
-        await update.message.reply_text("❌ 集合不存在。")
+        await _retry_send(update.message.reply_text, "❌ 集合不存在。")
         return
     from config import ADMIN_IDS
     if col_info['user_id'] != user_id and user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ 你没有权限删除此集合。")
+        await _retry_send(update.message.reply_text, "⛔ 你没有权限删除此集合。")
         return
 
     await delete_collection(col_code)
-    await update.message.reply_text("✅ 集合已删除。")
+    await _retry_send(update.message.reply_text, "✅ 集合已删除。")
 
 
 async def get_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/getid 回复消息获取文件ID"""
     if not update.message.reply_to_message:
-        await update.message.reply_text("请回复一条包含媒体的消息来获取其ID。\n用法: 回复消息 + `/getid`", parse_mode="Markdown")
+        await _retry_send(update.message.reply_text, "请回复一条包含媒体的消息来获取其ID。\n用法: 回复消息 + `/getid`", parse_mode="Markdown")
         return
 
     replied = update.message.reply_to_message
@@ -248,18 +249,18 @@ async def get_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         file_type = '语音'
         file_unique_id = replied.voice.file_unique_id or ''
     else:
-        await update.message.reply_text("❌ 回复的消息不包含可识别的媒体文件。")
+        await _retry_send(update.message.reply_text, "❌ 回复的消息不包含可识别的媒体文件。")
         return
 
     if result:
         uid_info = f" file_unique_id: `{file_unique_id}`" if file_unique_id else ""
-        await update.message.reply_text(
+        await _retry_send(update.message.reply_text, 
             f"✅ {file_type}ID已保存！{uid_info}\n\n代码: `{result}`\n\n将此代码发送给 `@{bot_username}` 即可获取文件。",
             parse_mode="Markdown",
             reply_to_message_id=update.message.reply_to_message.message_id
         )
     else:
-        await update.message.reply_text("❌ 保存失败，请重试。")
+        await _retry_send(update.message.reply_text, "❌ 保存失败，请重试。")
 
 
 @admin_only
@@ -275,7 +276,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"📅 今日新增: {stats['today_files']}\n\n"
         f"📋 按类型统计:\n{type_text}"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await _retry_send(update.message.reply_text, text, parse_mode="Markdown")
 
 
 @admin_only
@@ -283,7 +284,7 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """/export 管理员导出数据"""
     rows = await get_all_files_for_export()
     if not rows:
-        await update.message.reply_text("没有数据可导出。")
+        await _retry_send(update.message.reply_text, "没有数据可导出。")
         return
 
     output = io.StringIO()
@@ -294,7 +295,7 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         output.write(f"{r['code']}\t{r['file_type']}\t{r['file_size']}\t{r['user_id']}\t{r['created_at']}\n")
 
     bytes_io = io.BytesIO(output.getvalue().encode('utf-8'))
-    await context.bot.send_document(
+    await _retry_send(context.bot.send_document, 
         chat_id=update.message.chat_id,
         document=bytes_io,
         filename=f"fileid_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
