@@ -8,13 +8,14 @@ services:
     image: aiastia/fileid-bot:latest
     container_name: fileid-bot
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - ROLE=standalone
       - BOT_MODE=${BOT_MODE:-polling}
       - BOT_TOKEN=${BOT_TOKEN}
       - ADMIN_IDS=${ADMIN_IDS:-}
       - MAX_BOTS_PER_USER=${MAX_BOTS_PER_USER:-1}
-      - BOT_MODE=${BOT_MODE:-polling}
       - WEBHOOK_HOST=${WEBHOOK_HOST:-}
       - WEBHOOK_PORT=${WEBHOOK_PORT:-8080}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
