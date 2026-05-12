@@ -1,14 +1,12 @@
 """消息处理器模块（文本、附件、转发、媒体组）"""
-import re
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from config import MAX_COLLECTION_FILES, GROUP_SEND_SIZE, FILE_TYPE_MAP, SEND_INDIVIDUAL_DELAY, SEND_BATCH_DELAY
+from config import MAX_COLLECTION_FILES, GROUP_SEND_SIZE, FILE_TYPE_MAP
 from config import RATE_LIMIT_WINDOW, RATE_LIMIT_MAX, RATE_LIMIT_MAX_WAIT
 from database import (
     save_file, get_file, get_files_by_codes, get_collection, get_collection_files,
@@ -61,7 +59,11 @@ async def _rate_limit_wait(user_id: int, bot_username: str) -> bool:
 
 
 async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理用户发送的图片/视频/音频/文档"""
+    """处理用户发送的图片/视频/音频/文档
+    
+    当用户快速连续发送多个附件时，会自动合并回复（3秒内所有附件合并为一条消息），
+    避免高频发送 API 导致 Telegram 限流。
+    """
     message = update.message
     user_id = update.effective_user.id
     bot_username = context.bot.username
@@ -86,11 +88,8 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return
 
         type_name = FILE_TYPE_MAP.get(file_type, file_type)
-        uid_info = f" file_unique_id: `{file_unique_id}`" if file_unique_id else ""
-        reply_text = f"✅ {type_name}已保存！{uid_info}\n\n代码: `{code}`"
-        reply_kwargs = {'text': reply_text, 'parse_mode': 'Markdown', 'reply_to_message_id': message.message_id}
 
-        # 如果正在创建集合，追加文件
+        # 如果正在创建集合，追加文件（立即回复，不缓冲）
         if creating_col:
             current_count = context.user_data.get('collection_count', 0)
             if current_count >= MAX_COLLECTION_FILES:
@@ -99,9 +98,73 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             sort_order = current_count + 1
             await add_file_to_collection(creating_col, code, sort_order)
             context.user_data['collection_count'] = sort_order
-            reply_kwargs['text'] += f"\n\n📦 已添加到集合 ({sort_order}/{MAX_COLLECTION_FILES})"
+            uid_info = f" file_unique_id: `{file_unique_id}`" if file_unique_id else ""
+            await _retry_send(message.reply_text,
+                text=f"✅ {type_name}已保存！{uid_info}\n\n代码: `{code}`\n\n📦 已添加到集合 ({sort_order}/{MAX_COLLECTION_FILES})",
+                parse_mode='Markdown', reply_to_message_id=message.message_id)
+            return
 
-        await _retry_send(message.reply_text, **reply_kwargs)
+        # ===== 附件回复缓冲：合并快速连续发送的附件回复 =====
+        if '_attachment_reply_buffer' not in context.bot_data:
+            context.bot_data['_attachment_reply_buffer'] = {}
+
+        chat_id = message.chat_id
+        buffer_key = f"{chat_id}_{user_id}"
+
+        if buffer_key not in context.bot_data['_attachment_reply_buffer']:
+            context.bot_data['_attachment_reply_buffer'][buffer_key] = {
+                'items': [],       # [(type_name, code, message_id), ...]
+                'timer': None,
+                'chat_id': chat_id,
+            }
+
+        buf = context.bot_data['_attachment_reply_buffer'][buffer_key]
+        buf['items'].append((type_name, code, message.message_id))
+
+        # 重置计时器
+        if buf['timer']:
+            buf['timer'].cancel()
+
+        async def flush_attachment_replies():
+            """3秒后合并发送所有附件回复"""
+            try:
+                await asyncio.sleep(3)
+                buf = context.bot_data.get('_attachment_reply_buffer', {}).pop(buffer_key, None)
+                if not buf or not buf['items']:
+                    return
+
+                items = buf['items']
+                chat_id = buf['chat_id']
+
+                if len(items) == 1:
+                    # 单个附件，直接回复
+                    tn, c, mid = items[0]
+                    await _retry_send(context.bot.send_message,
+                        chat_id=chat_id,
+                        text=f"✅ {tn}已保存！\n\n代码: `{c}`",
+                        parse_mode='Markdown',
+                        reply_to_message_id=mid)
+                else:
+                    # 多个附件，合并为一条消息
+                    lines = []
+                    for tn, c, mid in items:
+                        lines.append(f"• {tn}: `{c}`")
+                    reply = f"✅ 已保存 {len(items)} 个文件：\n\n" + "\n".join(lines)
+                    # reply_to 第一条消息
+                    await _retry_send(context.bot.send_message,
+                        chat_id=chat_id,
+                        text=reply,
+                        parse_mode='Markdown',
+                        reply_to_message_id=items[0][2])
+
+                logger.info("附件回复缓冲: 合并发送 %d 个附件到 chat_id=%s", len(items), chat_id)
+
+            except Exception as e:
+                logger.error("flush_attachment_replies 失败: %s", e, exc_info=True)
+                context.bot_data.get('_attachment_reply_buffer', {}).pop(buffer_key, None)
+
+        buf['timer'] = asyncio.create_task(flush_attachment_replies())
+
     except Exception as e:
         logger.error("处理附件失败: %s", e)
         await _retry_send(message.reply_text, f"❌ 处理文件时出错: {e}")
@@ -128,13 +191,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     file_codes = parse_file_code(text, bot_username)
     collection_codes = parse_collection_code(text, bot_username)
 
-    # 旧格式兼容: $p $v $d
-    legacy_file_ids = []
     if not file_codes and not collection_codes:
-        for m in re.compile(r'\$([pvd])(\S+)').finditer(text):
-            legacy_file_ids.append((m.group(1), m.group(2)))
-
-    if not file_codes and not collection_codes and not legacy_file_ids:
         await _retry_send(message.reply_text, "❓ 未识别的输入。\n\n• 发送文件获取代码\n• 发送代码获取文件\n• `/help` 查看帮助")
         return
 
@@ -144,8 +201,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # ===== 消息合并缓冲：收集同一用户短时间内连续发送的代码 =====
     # 当代码数量较多时，Telegram 可能会将一条消息切割成多条
     # 等待 2 秒，收集同一用户的所有代码消息后统一处理
-    has_sendable_codes = bool(file_codes) or bool(legacy_file_ids)
-    if has_sendable_codes:
+    if file_codes:
         if 'pending_code_buffer' not in context.bot_data:
             context.bot_data['pending_code_buffer'] = {}
 
@@ -153,14 +209,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if buffer_key not in context.bot_data['pending_code_buffer']:
             context.bot_data['pending_code_buffer'][buffer_key] = {
                 'file_codes': [],
-                'legacy_file_ids': [],
                 'timer': None,
                 'first_message': message,
             }
 
         buf = context.bot_data['pending_code_buffer'][buffer_key]
         buf['file_codes'].extend(file_codes)
-        buf['legacy_file_ids'].extend(legacy_file_ids)
 
         # 重置计时器
         if buf['timer']:
@@ -176,17 +230,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     return
 
                 all_file_codes = buf['file_codes']
-                all_legacy = buf['legacy_file_ids']
                 ref_message = buf['first_message']
 
-                logger.info("合并处理: %d 个文件代码, %d 个旧格式代码 (来自用户 %s)",
-                            len(all_file_codes), len(all_legacy), user_id)
+                logger.info("合并处理: %d 个文件代码 (来自用户 %s)",
+                            len(all_file_codes), user_id)
 
                 await _process_file_codes(context, chat_id, ref_message, all_file_codes)
-
-                # 处理旧格式
-                if all_legacy:
-                    await _process_legacy_codes(context, chat_id, all_legacy)
 
             except Exception as e:
                 logger.error("process_buffered_codes 失败: %s", e, exc_info=True)
@@ -308,25 +357,6 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
             keyboard.append([InlineKeyboardButton("📖 分页浏览", callback_data=f"p|{sk}|1")])
 
         await _retry_send(message.reply_text, col_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _process_legacy_codes(context, chat_id, legacy_file_ids: list) -> None:
-    """处理旧格式代码（带重试和限速）"""
-    total_sent = 0
-    for idx, (prefix, fid) in enumerate(legacy_file_ids):
-        try:
-            if prefix == 'p':
-                await _retry_send(context.bot.send_photo, chat_id=chat_id, photo=fid, read_timeout=30, write_timeout=30)
-            elif prefix == 'v':
-                await _retry_send(context.bot.send_video, chat_id=chat_id, video=fid, read_timeout=30, write_timeout=30)
-            elif prefix == 'd':
-                await _retry_send(context.bot.send_document, chat_id=chat_id, document=fid, read_timeout=30, write_timeout=30)
-            total_sent += 1
-            # 滑动限速
-            if idx < len(legacy_file_ids) - 1:
-                await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
-        except Exception as e:
-            logger.error("旧格式发送失败（已重试）: %s", e)
 
 
 async def handle_forward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

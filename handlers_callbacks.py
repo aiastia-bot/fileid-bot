@@ -1,7 +1,6 @@
 """回调按钮处理器模块"""
 import asyncio
 import logging
-import traceback
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -10,7 +9,6 @@ from config import AUTO_SEND_INTERVAL, GROUP_SEND_SIZE, FILE_TYPE_MAP
 from database import get_collection, get_collection_files
 from utils import escape_markdown
 from senders import send_file_group, _retry_send
-from send_queue import get_queue_from_context, split_files_to_batches
 
 logger = logging.getLogger(__name__)
 
@@ -213,43 +211,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await _send_page_files(context, chat_id, col_code, page, query)
                 logger.info("发送本页文件完成: col_code=%s, page=%d", col_code, page)
 
-        # 旧格式兼容
-        elif data.startswith("col_send|"):
-            col_code = data.split("|", 1)[1]
-            logger.info("旧格式全部发送: col_code=%s", col_code)
-            # 防重复提交
-            sending_tasks = _get_sending_tasks(context)
-            task_key = f"{chat_id}_{col_code}_all"
-            if task_key in sending_tasks:
-                await _safe_edit_query(query, context, chat_id, "⚠️ 该集合正在发送中，请勿重复操作。")
-                return
-            asyncio.create_task(_send_all_bg(context, chat_id, col_code, query, task_key))
-
-        elif data.startswith("col_auto|"):
-            col_code = data.split("|", 1)[1]
-            logger.info("旧格式自动发送: col_code=%s", col_code)
-            # 防重复提交
-            sending_tasks = _get_sending_tasks(context)
-            task_key = f"{chat_id}_{col_code}"
-            if task_key in sending_tasks:
-                await _safe_edit_query(query, context, chat_id, "⚠️ 该集合正在发送中，请勿重复操作。")
-                return
-            asyncio.create_task(_auto_send_bg(context, chat_id, col_code, user_id, query, task_key))
-
-        elif data.startswith("col_page|"):
-            first_pipe = data.index("|", len("col_page|"))
-            col_code = data[len("col_page|"):first_pipe]
-            page = int(data[first_pipe + 1:])
-            logger.info("旧格式分页: col_code=%s, page=%d", col_code, page)
-            await _send_page(context, chat_id, col_code, page, query)
-
-        elif data.startswith("page_send|"):
-            first_pipe = data.index("|", len("page_send|"))
-            col_code = data[len("page_send|"):first_pipe]
-            page = int(data[first_pipe + 1:])
-            logger.info("旧格式发送本页: col_code=%s, page=%d", col_code, page)
-            await _send_page_files(context, chat_id, col_code, page, query)
-
         elif data == "stop_auto":
             logger.info("处理停止自动发送: user_id=%s", user_id)
             context.user_data['stop_auto_send'] = True
@@ -385,52 +346,6 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
 
     reply_markup = InlineKeyboardMarkup(buttons)
     await _safe_edit_query(query, context, chat_id, text, parse_mode="Markdown", reply_markup=reply_markup)
-
-
-async def _send_all(context, chat_id, col_code, query=None):
-    """发送集合全部文件（通过统一发送队列）"""
-    logger.info("_send_all: col_code=%s", col_code)
-
-    files = await get_collection_files(col_code)
-    if not files:
-        await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 集合为空或不存在。")
-        return
-
-    total = len(files)
-    queue = get_queue_from_context(context)
-    batches = split_files_to_batches(files)
-
-    info = queue.queue_info(chat_id)
-    status_msg = await _retry_send(context.bot.send_message, 
-        chat_id=chat_id,
-        text=f"📤 已排队 {total} 个文件（{len(batches)} 批）\n"
-             f"📋 队列中共 {info['total_pending'] + len(batches)} 批等待发送"
-    )
-
-    sent_count = 0
-    for i, batch in enumerate(batches):
-        try:
-            sent = await queue.submit_batch(chat_id, batch)
-            sent_count += sent
-        except Exception as e:
-            logger.error("_send_all 批次发送失败: %s", e)
-
-        # 每几批更新一次进度
-        if (i + 1) % 3 == 0 or i == len(batches) - 1:
-            try:
-                await _retry_send(context.bot.edit_message_text,
-                    chat_id=chat_id, message_id=status_msg.message_id,
-                    text=f"📤 发送中… ({sent_count}/{total})"
-                )
-            except Exception:
-                pass
-
-    result_text = f"✅ 发送完成！成功 {sent_count}/{total}"
-    logger.info("_send_all 完成: %s", result_text)
-    try:
-        await _retry_send(context.bot.edit_message_text, chat_id=chat_id, message_id=status_msg.message_id, text=result_text)
-    except Exception:
-        await _retry_send(context.bot.send_message, chat_id=chat_id, text=result_text)
 
 
 async def _auto_send(context, chat_id, col_code, user_id, query=None):
@@ -598,24 +513,3 @@ async def _auto_send_bg(context, chat_id, col_code, user_id, query, task_key: st
         logger.info("后台自动发送任务结束: task_key=%s", task_key)
 
 
-async def _send_all_bg(context, chat_id, col_code, query, task_key: str):
-    """后台全部发送：在 asyncio.Task 中运行，不阻塞 webhook 响应
-    
-    - 注册 task_key 防止重复提交
-    - 发送完成后自动清理 task_key
-    - 异常不会导致未处理的 Task 错误
-    """
-    sending_tasks = _get_sending_tasks(context)
-    sending_tasks[task_key] = True
-    try:
-        await _send_all(context, chat_id, col_code, query)
-    except Exception as e:
-        logger.error("后台全部发送异常: col_code=%s, chat_id=%s, error=%s", col_code, chat_id, e, exc_info=True)
-        try:
-            await _retry_send(context.bot.send_message, chat_id=chat_id,
-                              text=f"❌ 全部发送失败: {e}")
-        except Exception:
-            pass
-    finally:
-        sending_tasks.pop(task_key, None)
-        logger.info("后台全部发送任务结束: task_key=%s", task_key)
