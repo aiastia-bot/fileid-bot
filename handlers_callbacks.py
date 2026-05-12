@@ -112,7 +112,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             logger.info("短格式回调: action=%s, rest=%s", action, rest)
 
             if action == 'sn':
-                # 下一页发送: sn|key|page
+                # 下一页发送: sn|key|page（后台发送避免队列拥堵超时）
                 parts = rest.split("|")
                 logger.info("处理下一页发送: parts=%s", parts)
                 if len(parts) < 2:
@@ -131,9 +131,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     logger.warning("下一页发送失败: sk=%s 无法解析", sk)
                     await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
-                logger.info("开始下一页发送: col_code=%s, page=%d", col_code, page)
-                await _send_paginated(context, chat_id, col_code, sk, page=page, query=query)
-                logger.info("下一页发送完成: col_code=%s, page=%d", col_code, page)
+                logger.info("启动后台下一页发送: col_code=%s, page=%d", col_code, page)
+                # 先更新状态消息，再后台发送
+                await _safe_edit_query(query, context, chat_id, f"📤 正在发送第 {page} 页…")
+                asyncio.create_task(_send_paginated(context, chat_id, col_code, sk, page=page))
 
             elif action == 's':
                 # 分页发送: s|key (从第1页开始)
@@ -144,9 +145,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     logger.warning("分页发送失败: sk=%s 无法解析, cb_map=%s", sk, list(context.bot_data.get('cb_map', {}).keys()))
                     await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
-                logger.info("开始分页发送: col_code=%s, chat_id=%s", col_code, chat_id)
-                await _send_paginated(context, chat_id, col_code, sk, page=1, query=query)
-                logger.info("分页发送第1页完成: col_code=%s", col_code)
+                logger.info("启动后台分页发送: col_code=%s, chat_id=%s", col_code, chat_id)
+                await _safe_edit_query(query, context, chat_id, "📤 正在发送第 1 页…")
+                asyncio.create_task(_send_paginated(context, chat_id, col_code, sk, page=1))
 
             elif action == 'a':
                 # 自动发送: a|key（异步后台发送，避免 webhook 超时）
@@ -192,7 +193,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 logger.info("分页浏览完成: col_code=%s, page=%d", col_code, page)
 
             elif action == 'ps':
-                # 发送本页文件: ps|key|page
+                # 发送本页文件: ps|key|page（后台发送避免队列拥堵超时）
                 parts = rest.split("|")
                 if len(parts) < 2:
                     await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 数据格式错误。")
@@ -207,9 +208,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 if not col_code:
                     await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
-                logger.info("开始发送本页文件: col_code=%s, page=%d", col_code, page)
-                await _send_page_files(context, chat_id, col_code, page, query)
-                logger.info("发送本页文件完成: col_code=%s, page=%d", col_code, page)
+                logger.info("启动后台发送本页文件: col_code=%s, page=%d", col_code, page)
+                await _safe_edit_query(query, context, chat_id, f"📤 正在发送第 {page} 页文件…")
+                asyncio.create_task(_send_page_files(context, chat_id, col_code, page))
 
         elif data == "stop_auto":
             logger.info("处理停止自动发送: user_id=%s", user_id)
