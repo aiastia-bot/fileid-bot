@@ -19,19 +19,22 @@ from config import (
     BOT_TOKEN, ADMIN_IDS, MAX_BOTS_PER_USER,
     API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT,
     BOT_MODE, WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET,
-    ROLE, WORKER_SECRET, REDIS_URL
+    ROLE, WORKER_SECRET, REDIS_URL, LOG_LEVEL
 )
 from database import init_db
 from bot_manager import BotManager, MasterScheduler
 
 # ==================== 日志配置 ====================
+_log_level = getattr(logging, LOG_LEVEL.upper(), logging.WARNING)
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=_log_level
 )
+# 第三方库始终只显示 WARNING 以上
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+logger.info("📋 日志级别: %s", LOG_LEVEL.upper())
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

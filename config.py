@@ -96,6 +96,11 @@ FILE_TYPE_PREFIX = {
 # 节点角色：standalone（单机，默认）/ master（主控节点）/ worker（工作节点）
 ROLE = os.environ.get('ROLE', 'standalone')
 
+# ===== 日志级别 =====
+# 可选: DEBUG, INFO, WARNING, ERROR
+# 日常推荐 WARNING（只显示警告和错误），排查问题时用 INFO 或 DEBUG
+LOG_LEVEL = os.environ.get('LOG_LEVEL', 'WARNING')
+
 # Master 节点地址（Worker 需要配置，用于向 Master 汇报状态）
 MASTER_URL = os.environ.get('MASTER_URL', '')  # 如 https://1.1.1.1:8080
 
