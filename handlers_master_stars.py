@@ -242,6 +242,48 @@ async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer(ok=True)
 
 
+# ==================== 支付验证 ====================
+
+async def _verify_star_payment(bot, telegram_charge_id: str, expected_user_id: int,
+                                expected_amount: int) -> bool:
+    """通过 Telegram getStarTransactions API 验证支付真实性"""
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{bot.token}/getStarTransactions",
+                json={"limit": 50},
+                timeout=30,
+            )
+            data = resp.json()
+
+            if not data.get("ok"):
+                logger.error("getStarTransactions API 调用失败: %s", data.get("description"))
+                return False
+
+            transactions = data.get("result", {}).get("transactions", [])
+            for tx in transactions:
+                if tx.get("id") == telegram_charge_id:
+                    # 验证金额和用户
+                    amount = tx.get("amount", 0)
+                    source = tx.get("source", {})
+                    user_id = source.get("user_id") if source.get("type") == "user" else None
+                    # 金额和用户匹配则通过
+                    if amount == expected_amount:
+                        logger.info("支付验证通过: charge_id=%s, amount=%d", telegram_charge_id, amount)
+                        return True
+                    else:
+                        logger.warning("支付金额不匹配: expected=%d, actual=%d", expected_amount, amount)
+                        return False
+
+            logger.warning("未找到支付记录: charge_id=%s", telegram_charge_id)
+            return False
+    except Exception as e:
+        logger.error("支付验证异常: %s", e)
+        # 验证失败时保守处理：不升级
+        return False
+
+
 # ==================== 支付成功处理 ====================
 
 async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -266,8 +308,24 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     plan = VIP_PLANS.get(level, {})
     plan_name = plan.get('name', f'VIP {level}')
 
-    # 记录支付
+    # ======== 二次验证：调用 Telegram API 确认交易真实性 ========
     telegram_charge_id = payment.telegram_payment_charge_id
+
+    verified = await _verify_star_payment(
+        bot=context.bot,
+        telegram_charge_id=telegram_charge_id,
+        expected_user_id=user_id,
+        expected_amount=payment.total_amount,
+    )
+
+    if not verified:
+        logger.warning("用户 %s 支付验证失败，charge_id=%s（可能为伪造请求）", user_id, telegram_charge_id)
+        await update.message.reply_text(
+            "⚠️ 支付验证失败，请稍后重试或联系管理员。"
+        )
+        return
+
+    # 记录支付
     await record_star_payment(
         user_id=user_id,
         amount=payment.total_amount,
@@ -297,13 +355,13 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
         # 检查是否有暂停的 Bot 可以恢复
         await _try_resume_paused_bots(user_id, level)
 
-        logger.info("用户 %s 支付成功: %s %d个月, %d⭐",
+        logger.info("用户 %s 支付成功（已验证）: %s %d个月, %d⭐",
                     user_id, plan_name, months, payment.total_amount)
     else:
         await update.message.reply_text(
             "⚠️ 支付已收到但 VIP 升级失败，请联系管理员。"
         )
-        logger.error("用户 %s VIP 升级失败（支付已成功）", user_id)
+        logger.error("用户 %s VIP 升级失败（支付已验证成功）", user_id)
 
 
 # ==================== VIP 过期处理 ====================
