@@ -151,7 +151,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 logger.info("分页发送第1页完成: col_code=%s", col_code)
 
             elif action == 'a':
-                # 自动发送: a|key
+                # 自动发送: a|key（异步后台发送，避免 webhook 超时）
                 sk = rest
                 logger.info("处理自动发送: sk=%s", sk)
                 col_code = await _resolve_key(context, sk)
@@ -159,9 +159,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     logger.warning("自动发送失败: sk=%s 无法解析", sk)
                     await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
-                logger.info("开始自动发送: col_code=%s, chat_id=%s, user_id=%s", col_code, chat_id, user_id)
-                await _auto_send(context, chat_id, col_code, user_id, query)
-                logger.info("自动发送完成: col_code=%s", col_code)
+                # 防重复提交检查
+                sending_tasks = _get_sending_tasks(context)
+                task_key = f"{chat_id}_{col_code}"
+                if task_key in sending_tasks:
+                    logger.warning("自动发送重复提交: task_key=%s", task_key)
+                    await _safe_edit_query(query, context, chat_id, "⚠️ 该集合正在发送中，请勿重复操作。")
+                    return
+                logger.info("启动后台自动发送: col_code=%s, chat_id=%s, user_id=%s", col_code, chat_id, user_id)
+                asyncio.create_task(_auto_send_bg(context, chat_id, col_code, user_id, query, task_key))
 
             elif action == 'p':
                 # 分页浏览: p|key|page
@@ -211,12 +217,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif data.startswith("col_send|"):
             col_code = data.split("|", 1)[1]
             logger.info("旧格式全部发送: col_code=%s", col_code)
-            await _send_all(context, chat_id, col_code, query)
+            # 防重复提交
+            sending_tasks = _get_sending_tasks(context)
+            task_key = f"{chat_id}_{col_code}_all"
+            if task_key in sending_tasks:
+                await _safe_edit_query(query, context, chat_id, "⚠️ 该集合正在发送中，请勿重复操作。")
+                return
+            asyncio.create_task(_send_all_bg(context, chat_id, col_code, query, task_key))
 
         elif data.startswith("col_auto|"):
             col_code = data.split("|", 1)[1]
             logger.info("旧格式自动发送: col_code=%s", col_code)
-            await _auto_send(context, chat_id, col_code, user_id, query)
+            # 防重复提交
+            sending_tasks = _get_sending_tasks(context)
+            task_key = f"{chat_id}_{col_code}"
+            if task_key in sending_tasks:
+                await _safe_edit_query(query, context, chat_id, "⚠️ 该集合正在发送中，请勿重复操作。")
+                return
+            asyncio.create_task(_auto_send_bg(context, chat_id, col_code, user_id, query, task_key))
 
         elif data.startswith("col_page|"):
             first_pipe = data.index("|", len("col_page|"))
@@ -267,6 +285,13 @@ async def _safe_edit_query(query, context, chat_id, text, **kwargs):
         except Exception:
             pass
     await _retry_send(context.bot.send_message, chat_id=chat_id, text=text, **kwargs)
+
+
+def _get_sending_tasks(context) -> dict:
+    """获取正在发送的任务记录（防重复提交）"""
+    if '_sending_tasks' not in context.bot_data:
+        context.bot_data['_sending_tasks'] = {}
+    return context.bot_data['_sending_tasks']
 
 
 async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
@@ -546,3 +571,51 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
     result_text = f"✅ 已发送第{page}页文件 ({sent}/{len(page_files)})"
     logger.info("_send_page_files 完成: %s", result_text)
     await _safe_edit_query(query, context, chat_id, result_text)
+
+
+# ===== 后台发送任务（避免 webhook 超时） =====
+
+async def _auto_send_bg(context, chat_id, col_code, user_id, query, task_key: str):
+    """后台自动发送：在 asyncio.Task 中运行，不阻塞 webhook 响应
+    
+    - 注册 task_key 防止重复提交
+    - 发送完成后自动清理 task_key
+    - 异常不会导致未处理的 Task 错误
+    """
+    sending_tasks = _get_sending_tasks(context)
+    sending_tasks[task_key] = True
+    try:
+        await _auto_send(context, chat_id, col_code, user_id, query)
+    except Exception as e:
+        logger.error("后台自动发送异常: col_code=%s, chat_id=%s, error=%s", col_code, chat_id, e, exc_info=True)
+        try:
+            await _retry_send(context.bot.send_message, chat_id=chat_id,
+                              text=f"❌ 自动发送失败: {e}")
+        except Exception:
+            pass
+    finally:
+        sending_tasks.pop(task_key, None)
+        logger.info("后台自动发送任务结束: task_key=%s", task_key)
+
+
+async def _send_all_bg(context, chat_id, col_code, query, task_key: str):
+    """后台全部发送：在 asyncio.Task 中运行，不阻塞 webhook 响应
+    
+    - 注册 task_key 防止重复提交
+    - 发送完成后自动清理 task_key
+    - 异常不会导致未处理的 Task 错误
+    """
+    sending_tasks = _get_sending_tasks(context)
+    sending_tasks[task_key] = True
+    try:
+        await _send_all(context, chat_id, col_code, query)
+    except Exception as e:
+        logger.error("后台全部发送异常: col_code=%s, chat_id=%s, error=%s", col_code, chat_id, e, exc_info=True)
+        try:
+            await _retry_send(context.bot.send_message, chat_id=chat_id,
+                              text=f"❌ 全部发送失败: {e}")
+        except Exception:
+            pass
+    finally:
+        sending_tasks.pop(task_key, None)
+        logger.info("后台全部发送任务结束: task_key=%s", task_key)
