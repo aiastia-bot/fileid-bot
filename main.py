@@ -34,7 +34,8 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
-logger.info("📋 日志级别: %s", LOG_LEVEL.upper())
+# 始终打印日志级别（不受级别过滤），方便确认配置生效
+print(f"[启动] 日志级别: {LOG_LEVEL.upper()} (来自 LOG_LEVEL 环境变量)")
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
