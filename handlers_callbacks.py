@@ -75,12 +75,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     logger.info("用户信息: user_id=%s, chat_id=%s, chat_type=%s", user_id, chat_id, chat_type)
     logger.info("bot_data cb_map 大小: %d", len(context.bot_data.get('cb_map', {})))
 
-    # === answer 回调 ===
+    # === answer 回调（带超时，避免阻塞） ===
     try:
-        await query.answer()
+        await _retry_send(query.answer)
         logger.debug("query.answer() 成功")
     except Exception as e:
         logger.error("query.answer() 失败 (可能回调已过期): %s, data=%s", e, data)
+
+    # === 防止重复点击：立即移除原消息按钮 ===
+    if data != "noop":
+        try:
+            await _retry_send(query.edit_message_reply_markup, reply_markup=None)
+        except Exception:
+            pass  # 消息无法编辑（可能是太旧），忽略
 
     # === 数据为空检查 ===
     if not data:
@@ -229,7 +236,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             logger.info("处理停止自动发送: user_id=%s", user_id)
             context.user_data['stop_auto_send'] = True
             try:
-                await query.edit_message_reply_markup(reply_markup=None)
+                await _retry_send(query.edit_message_reply_markup, reply_markup=None)
             except Exception as e:
                 logger.warning("停止按钮: 编辑消息失败 (可忽略): %s", e)
             await _retry_send(context.bot.send_message, chat_id=chat_id, text="⏹ 已停止自动发送。")
@@ -251,6 +258,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     logger.info("========== 按钮回调结束 ==========")
 
 
+async def _safe_edit_query(query, context, chat_id, text, **kwargs):
+    """安全编辑回调消息：先尝试 query.edit_message_text，失败则发新消息"""
+    if query:
+        try:
+            await _retry_send(query.edit_message_text, text, **kwargs)
+            return
+        except Exception:
+            pass
+    await _retry_send(context.bot.send_message, chat_id=chat_id, text=text, **kwargs)
+
+
 async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
     """分页发送集合文件：每次发送 PER_PAGE 个，带页码按钮，已发送页显示✅"""
     logger.info("_send_paginated: col_code=%s, sk=%s, page=%d", col_code, sk, page)
@@ -260,11 +278,7 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
 
     if not files or not col_info:
         msg = "⚠️ 集合为空或不存在。"
-        if query:
-            try:
-                await query.edit_message_text(msg)
-            except Exception:
-                await _retry_send(context.bot.send_message, chat_id=chat_id, text=msg)
+        await _safe_edit_query(query, context, chat_id, msg)
         return
 
     total = len(files)
@@ -345,14 +359,7 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
         buttons.append(page_buttons)
 
     reply_markup = InlineKeyboardMarkup(buttons)
-
-    if query:
-        try:
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=reply_markup)
-        except Exception:
-            await _retry_send(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
-    else:
-        await _retry_send(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
+    await _safe_edit_query(query, context, chat_id, text, parse_mode="Markdown", reply_markup=reply_markup)
 
 
 async def _send_all(context, chat_id, col_code, query=None):
@@ -386,7 +393,7 @@ async def _send_all(context, chat_id, col_code, query=None):
         # 每几批更新一次进度
         if (i + 1) % 3 == 0 or i == len(batches) - 1:
             try:
-                await context.bot.edit_message_text(
+                await _retry_send(context.bot.edit_message_text,
                     chat_id=chat_id, message_id=status_msg.message_id,
                     text=f"📤 发送中… ({sent_count}/{total})"
                 )
@@ -396,7 +403,7 @@ async def _send_all(context, chat_id, col_code, query=None):
     result_text = f"✅ 发送完成！成功 {sent_count}/{total}"
     logger.info("_send_all 完成: %s", result_text)
     try:
-        await context.bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text=result_text)
+        await _retry_send(context.bot.edit_message_text, chat_id=chat_id, message_id=status_msg.message_id, text=result_text)
     except Exception:
         await _retry_send(context.bot.send_message, chat_id=chat_id, text=result_text)
 
@@ -408,11 +415,7 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
     logger.info("_auto_send: 查询到 %d 个文件", len(files) if files else 0)
     if not files:
         msg = "⚠️ 集合为空。"
-        if query:
-            try:
-                await query.edit_message_text(msg)
-            except Exception:
-                await _retry_send(context.bot.send_message, chat_id=chat_id, text=msg)
+        await _safe_edit_query(query, context, chat_id, msg)
         return
 
     total = len(files)
@@ -446,7 +449,7 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
             logger.error("自动发送组失败: %s", e)
 
         try:
-            await context.bot.edit_message_text(
+            await _retry_send(context.bot.edit_message_text,
                 chat_id=chat_id, message_id=status_msg.message_id,
                 text=f"▶️ 自动发送中... ({sent_count}/{total})",
                 reply_markup=reply_markup
@@ -458,7 +461,7 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
             await asyncio.sleep(AUTO_SEND_INTERVAL)
 
     try:
-        await context.bot.edit_message_text(
+        await _retry_send(context.bot.edit_message_text,
             chat_id=chat_id, message_id=status_msg.message_id,
             text=f"✅ 自动发送完成！成功 {sent_count}/{total}",
             reply_markup=None
@@ -475,11 +478,7 @@ async def _send_page(context, chat_id, col_code, page, query=None):
     logger.info("_send_page: files=%d, col_info=%s", len(files) if files else 0, bool(col_info))
     if not files or not col_info:
         msg = "⚠️ 集合为空或不存在。"
-        if query:
-            try:
-                await query.edit_message_text(msg)
-            except Exception:
-                await _retry_send(context.bot.send_message, chat_id=chat_id, text=msg)
+        await _safe_edit_query(query, context, chat_id, msg)
         return
 
     total = len(files)
@@ -522,13 +521,7 @@ async def _send_page(context, chat_id, col_code, page, query=None):
     ])
 
     reply_markup = InlineKeyboardMarkup(buttons)
-    if query:
-        try:
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=reply_markup)
-        except Exception:
-            await _retry_send(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
-    else:
-        await _retry_send(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
+    await _safe_edit_query(query, context, chat_id, text, parse_mode="Markdown", reply_markup=reply_markup)
 
 
 async def _send_page_files(context, chat_id, col_code, page, query=None):
@@ -538,30 +531,18 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
     logger.info("_send_page_files: files=%d", len(files) if files else 0)
     if not files:
         msg = "⚠️ 集合为空。"
-        if query:
-            try:
-                await query.edit_message_text(msg)
-            except Exception:
-                await _retry_send(context.bot.send_message, chat_id=chat_id, text=msg)
+        await _safe_edit_query(query, context, chat_id, msg)
         return
 
     start = (page - 1) * PER_PAGE
     page_files = files[start:start + PER_PAGE]
     if not page_files:
         msg = "⚠️ 该页没有文件。"
-        if query:
-            try:
-                await query.edit_message_text(msg)
-            except Exception:
-                await _retry_send(context.bot.send_message, chat_id=chat_id, text=msg)
+        await _safe_edit_query(query, context, chat_id, msg)
         return
 
     logger.info("_send_page_files: 准备发送 %d 个文件", len(page_files))
     sent = await send_file_group(context, chat_id, page_files)
     result_text = f"✅ 已发送第{page}页文件 ({sent}/{len(page_files)})"
     logger.info("_send_page_files 完成: %s", result_text)
-    if query:
-        try:
-            await query.edit_message_text(result_text)
-        except Exception:
-            await _retry_send(context.bot.send_message, chat_id=chat_id, text=result_text)
+    await _safe_edit_query(query, context, chat_id, result_text)

@@ -42,6 +42,28 @@ class SendBlockedError(Exception):
     pass
 
 
+def _extract_bot_name(send_func) -> str:
+    """从 send_func 中尝试提取 Bot 用户名，用于日志标识"""
+    try:
+        bound_self = getattr(send_func, '__self__', None)
+        if bound_self is None:
+            return ''
+        # Bot 对象（如 bot.send_photo）
+        username = getattr(bound_self, 'username', None)
+        if username:
+            return f'@{username}'
+        # Message 对象（如 message.reply_text）→ 通过 get_bot() 获取
+        get_bot = getattr(bound_self, 'get_bot', None)
+        if get_bot:
+            bot = get_bot()
+            username = getattr(bot, 'username', None)
+            if username:
+                return f'@{username}'
+    except Exception:
+        pass
+    return ''
+
+
 async def _retry_send(send_func, *args, **kwargs):
     """
     通用重试包装器：带指数退避的重试机制
@@ -50,6 +72,7 @@ async def _retry_send(send_func, *args, **kwargs):
     - BadRequest（file_id无效）不重试
     - 最多重试 SEND_RETRY_COUNT 次
     """
+    bot_label = _extract_bot_name(send_func)
     last_exception = None
     for attempt in range(SEND_RETRY_COUNT + 1):
         try:
@@ -60,19 +83,19 @@ async def _retry_send(send_func, *args, **kwargs):
             raise
         except RetryAfter as e:
             wait = e.retry_after if hasattr(e, 'retry_after') and e.retry_after else SEND_RETRY_DELAY * 4
-            logger.warning("触发限流 (RetryAfter)，等待 %.1f 秒后重试 (第 %d/%d 次)",
-                           wait, attempt + 1, SEND_RETRY_COUNT)
+            logger.warning("触发限流 (RetryAfter)，等待 %.1f 秒后重试 (第 %d/%d 次) [%s]",
+                           wait, attempt + 1, SEND_RETRY_COUNT, bot_label)
             await asyncio.sleep(wait)
             last_exception = e
         except (TimedOut, NetworkError) as e:
             if attempt < SEND_RETRY_COUNT:
                 delay = SEND_RETRY_DELAY * (2 ** attempt)
-                logger.warning("发送超时/网络错误: %s，等待 %.1f 秒后重试 (第 %d/%d 次)",
-                               type(e).__name__, delay, attempt + 1, SEND_RETRY_COUNT)
+                logger.warning("发送超时/网络错误: %s，等待 %.1f 秒后重试 (第 %d/%d 次) [%s]",
+                               type(e).__name__, delay, attempt + 1, SEND_RETRY_COUNT, bot_label)
                 await asyncio.sleep(delay)
                 last_exception = e
             else:
-                logger.error("发送失败，已重试 %d 次: %s", SEND_RETRY_COUNT, e)
+                logger.error("发送失败，已重试 %d 次: %s [%s]", SEND_RETRY_COUNT, e, bot_label)
                 raise
         except Exception:
             raise

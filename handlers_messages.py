@@ -215,21 +215,21 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
             except Exception as e:
                 logger.error("队列发送失败: %s", e)
 
-            # 定期更新进度
-            if status_msg and ((i + 1) % 5 == 0 or i == len(batches) - 1):
-                try:
-                    await context.bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=status_msg.message_id,
-                        text=f"📤 发送中… ({total_sent}/{total})"
-                    )
-                except Exception:
-                    pass
+        # 定期更新进度
+        if status_msg and ((i + 1) % 5 == 0 or i == len(batches) - 1):
+            try:
+                await _retry_send(context.bot.edit_message_text,
+                    chat_id=chat_id,
+                    message_id=status_msg.message_id,
+                    text=f"📤 发送中… ({total_sent}/{total})"
+                )
+            except Exception:
+                pass
 
         # 完成提示
         if status_msg:
             try:
-                await context.bot.edit_message_text(
+                await _retry_send(context.bot.edit_message_text,
                     chat_id=chat_id,
                     message_id=status_msg.message_id,
                     text=f"✅ 发送完成！共 {total_sent}/{total} 个文件"

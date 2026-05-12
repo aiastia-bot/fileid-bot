@@ -19,6 +19,7 @@ from database import (
     update_user_bot_node, get_active_bots_by_node, get_user_bot_by_id,
     update_user_bot_status
 )
+from senders import _retry_send
 from config import (
     API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT,
     BOT_MODE, WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET,
@@ -177,6 +178,13 @@ class BotManager:
             error_str = str(context.error)
             error_type = type(context.error).__name__
 
+            # Flood control / 限流：仅记录 warning，不需要额外处理
+            from telegram.error import RetryAfter
+            if isinstance(context.error, RetryAfter) or "Flood control" in error_str or "RetryAfter" in error_type:
+                retry_secs = context.error.retry_after if hasattr(context.error, 'retry_after') else '未知'
+                logger.warning("用户Bot @%s 触发限流 (RetryAfter %ss)，已忽略", context.bot.username, retry_secs)
+                return
+
             # 可忽略的错误：权限不足、消息未修改、消息删除等
             silent_errors = (
                 "Not enough rights",           # Bot 在群组中没有发言权限
@@ -216,6 +224,7 @@ class BotManager:
                 chat_type = update.effective_message.chat.type if update.effective_message.chat else ""
                 if chat_type == "private":
                     try:
+                        from senders import _retry_send
                         await _retry_send(update.effective_message.reply_text, "❌ 处理请求时发生内部错误，请稍后重试。")
                     except Exception:
                         pass
