@@ -50,6 +50,18 @@ WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', '')  # 可选的 webhook secre
 # ===== 群组支持 =====
 ALLOW_GROUP = os.environ.get('ALLOW_GROUP', 'false').lower() in ('true', '1', 'yes')  # 是否允许群组使用（默认仅私聊）
 
+# ===== VIP 等级配置 =====
+# VIP等级: {level: {name, max_bots, monthly_price, yearly_price}}
+VIP_PLANS = {
+    0: {'name': '免费用户', 'max_bots': int(os.environ.get('MAX_BOTS_PER_USER', '1')), 'monthly_price': 0, 'yearly_price': 0},
+    1: {'name': 'VIP 1', 'max_bots': 3, 'monthly_price': 50, 'yearly_price': 500},
+    2: {'name': 'VIP 2', 'max_bots': 5, 'monthly_price': 100, 'yearly_price': 1000},
+    3: {'name': 'VIP 3', 'max_bots': 10, 'monthly_price': 500, 'yearly_price': 5000},
+}
+
+# VIP 到期提醒提前天数
+VIP_EXPIRE_NOTICE_DAYS = 3
+
 FILE_TYPE_MAP = {
     'photo': '🖼 图片',
     'video': '🎬 视频',

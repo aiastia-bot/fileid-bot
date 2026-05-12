@@ -152,6 +152,11 @@ async def init_db():
             if 'bot_db_id' not in columns:
                 await conn.execute(text("ALTER TABLE collections ADD COLUMN bot_db_id INTEGER"))
 
+            # 创建 users 表索引
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_users_user_id ON users(user_id)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_sp_user ON star_payments(user_id)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_sp_payload ON star_payments(payload)"))
+
             # 创建索引
             await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_ub_owner ON user_bots(owner_id)"))
             await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_ub_bot_id ON user_bots(bot_id)"))

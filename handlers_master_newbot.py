@@ -11,6 +11,7 @@ from database import (
     get_user_bot_by_token, get_user_bot_by_telegram_id,
     get_user_bot_by_id,
 )
+from db_vip import get_max_bots_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +34,12 @@ async def new_bot_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     """/newbot 开始交互式创建 Bot"""
     user_id = update.effective_user.id
 
-    from config import MAX_BOTS_PER_USER
+    max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
-    if len(user_bots) >= MAX_BOTS_PER_USER:
-        existing = user_bots[0]
+    if len(user_bots) >= max_bots:
         await update.message.reply_text(
-            f"⚠️ 你已有一个 Bot：@{escape(existing['bot_username'])}\n\n"
-            f"请先使用 /delbot 删除后再创建新 Bot。"
+            f"⚠️ 你已达到 Bot 数量上限（{max_bots} 个）。\n\n"
+            f"💡 使用 /vip 升级 VIP 可创建更多 Bot，或使用 /delbot 删除已有 Bot。"
         )
         return ConversationHandler.END
 
@@ -163,12 +163,12 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.pop('new_bot_name', None)
         return ConversationHandler.END
 
-    from config import MAX_BOTS_PER_USER
+    max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
-    if len(user_bots) >= MAX_BOTS_PER_USER:
+    if len(user_bots) >= max_bots:
         await status_msg.edit_text(
-            f"⚠️ 每个用户最多添加 {MAX_BOTS_PER_USER} 个 Bot。\n\n"
-            f"请先使用 /delbot 删除已有 Bot。"
+            f"⚠️ 你已达到 Bot 数量上限（{max_bots} 个）。\n\n"
+            f"💡 使用 /vip 升级 VIP 可创建更多 Bot，或使用 /delbot 删除已有 Bot。"
         )
         context.user_data.pop('new_bot_username', None)
         context.user_data.pop('new_bot_name', None)
@@ -227,13 +227,12 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_id = update.effective_user.id
 
     # 检查已有 Bot 数量
-    from config import MAX_BOTS_PER_USER
+    max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
-    if len(user_bots) >= MAX_BOTS_PER_USER:
-        existing = user_bots[0]
+    if len(user_bots) >= max_bots:
         await update.message.reply_text(
-            f"⚠️ 你已有一个 Bot：@{escape(existing['bot_username'])}\n\n"
-            f"请先使用 /delbot 删除后再添加新 Bot。"
+            f"⚠️ 你已达到 Bot 数量上限（{max_bots} 个）。\n\n"
+            f"💡 使用 /vip 升级 VIP 可创建更多 Bot，或使用 /delbot 删除已有 Bot。"
         )
         return
 
@@ -286,12 +285,12 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    from config import MAX_BOTS_PER_USER
+    max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
-    if len(user_bots) >= MAX_BOTS_PER_USER:
+    if len(user_bots) >= max_bots:
         await status_msg.edit_text(
-            f"⚠️ 每个用户最多添加 {MAX_BOTS_PER_USER} 个 Bot。\n\n"
-            f"请先使用 /delbot 删除已有 Bot。"
+            f"⚠️ 你已达到 Bot 数量上限（{max_bots} 个）。\n\n"
+            f"💡 使用 /vip 升级 VIP 可创建更多 Bot，或使用 /delbot 删除已有 Bot。"
         )
         return
 

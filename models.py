@@ -85,6 +85,30 @@ class PlatformSetting(Base):
     value: Mapped[str] = mapped_column(String, nullable=False)
 
 
+class User(Base):
+    """用户 VIP 记录"""
+    __tablename__ = 'users'
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    vip_level: Mapped[int] = mapped_column(Integer, default=0)
+    vip_expire_at: Mapped[str] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, nullable=True)
+
+
+class StarPayment(Base):
+    """星星支付记录"""
+    __tablename__ = 'star_payments'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    vip_level: Mapped[int] = mapped_column(Integer, nullable=False)
+    months: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[str] = mapped_column(String, nullable=False)
+    telegram_charge_id: Mapped[str] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, nullable=True)
+
+
 class WorkerNode(Base):
     """Worker 节点"""
     __tablename__ = 'worker_nodes'

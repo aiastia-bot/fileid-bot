@@ -31,3 +31,10 @@ from db_stats import (  # noqa: F401
     get_stats, get_platform_stats, get_platform_bot_details,
     get_platform_export_data,
 )
+from db_vip import (  # noqa: F401
+    get_or_create_user, get_user_vip_level, get_user_vip_info,
+    get_max_bots_for_user, update_user_vip, record_star_payment,
+    get_payment_history, get_active_bots_count_by_owner,
+    get_active_bots_by_owner, pause_user_bot, resume_user_bot,
+    get_paused_bots_by_owner, get_expiring_users, get_expired_users,
+)

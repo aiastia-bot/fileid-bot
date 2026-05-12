@@ -35,6 +35,7 @@ async def master_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "我可以帮你创建属于自己的 FileID Bot！\n"
         "每个 Bot 都有完整的文件ID互转功能。\n\n"
         "📌 <b>管理命令：</b>\n"
+        "• /vip — VIP 会员 / 升级 Bot 数量上限\n"
         "• /newbot — 一键创建你的 Bot\n"
         "• /addbot — 添加你的 Bot（提供 Token）\n"
         "• /mybots — 查看我的 Bot 列表\n"
@@ -42,7 +43,8 @@ async def master_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• /botstatus — 查看 Bot 运行状态\n\n"
         "💡 <b>使用方法：</b>\n"
         "1. 使用 /newbot 一键创建 Bot\n"
-        "2. 或直接 /addbot 添加已有 Bot\n\n"
+        "2. 或直接 /addbot 添加已有 Bot\n"
+        "3. 使用 /vip 升级会员可创建更多 Bot\n\n"
         "所有 Bot 共享服务器资源，你无需部署！"
     )
     await update.message.reply_text(text, parse_mode="HTML")
@@ -69,11 +71,12 @@ async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error("managed_bot 更新缺少 bot id: %s", managed_info)
         return
 
-    # 检查用户 Bot 数量
-    from config import MAX_BOTS_PER_USER
+    # 检查用户 Bot 数量（使用 VIP 限制）
+    from db_vip import get_max_bots_for_user
+    max_bots = await get_max_bots_for_user(owner_id)
     user_bots = await get_user_bots_by_owner(owner_id)
-    if len(user_bots) >= MAX_BOTS_PER_USER:
-        logger.warning("用户 %s 已达最大 Bot 数量", owner_id)
+    if len(user_bots) >= max_bots:
+        logger.warning("用户 %s 已达最大 Bot 数量 (%d)", owner_id, max_bots)
         return
 
     # 检查 Bot 是否已添加

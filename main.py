@@ -11,7 +11,8 @@ import sys
 from telegram import Update
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler, ContextTypes,
-    ConversationHandler, MessageHandler, CallbackQueryHandler, TypeHandler, filters
+    ConversationHandler, MessageHandler, CallbackQueryHandler,
+    PreCheckoutQueryHandler, TypeHandler, filters
 )
 
 from config import (
@@ -43,6 +44,7 @@ async def post_init(application: Application) -> None:
     # 注册主Bot命令
     commands = [
         ("start", "开始使用 / 查看帮助"),
+        ("vip", "VIP 会员 / 购买星星"),
         ("newbot", "一键创建你的 Bot"),
         ("addbot", "添加你的 Bot"),
         ("mybots", "查看我的 Bot 列表"),
@@ -68,6 +70,9 @@ async def post_init(application: Application) -> None:
         bot_manager.master_bot_username = application.bot.username
     if scheduler:
         scheduler.master_bot_username = application.bot.username
+
+    # 启动 VIP 过期检查定时任务
+    _start_vip_expire_job(application)
 
     # 加载用户 Bot
     if ROLE == 'master' and scheduler:
@@ -361,6 +366,35 @@ def run_worker():
 
 # ==================== 通用函数 ====================
 
+async def _payment_filter_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """过滤并处理 successful_payment 类型的 Update"""
+    if update.message and update.message.successful_payment:
+        from handlers_master_stars import successful_payment_handler
+        await successful_payment_handler(update, context)
+
+
+def _start_vip_expire_job(application: Application):
+    """启动 VIP 过期检查定时任务"""
+    from handlers_master_stars import handle_expired_vips, send_expire_reminders
+
+    async def _vip_expire_check(context: ContextTypes.DEFAULT_TYPE):
+        """每小时检查过期VIP"""
+        await handle_expired_vips()
+
+    async def _vip_expire_reminder(context: ContextTypes.DEFAULT_TYPE):
+        """每天发送过期提醒"""
+        await send_expire_reminders()
+
+    try:
+        # 每 1 小时检查过期
+        application.job_queue.run_repeating(_vip_expire_check, interval=3600, first=60)
+        # 每天发送到期提醒
+        application.job_queue.run_repeating(_vip_expire_reminder, interval=86400, first=120)
+        logger.info("✅ VIP 过期检查定时任务已启动")
+    except Exception as e:
+        logger.warning("VIP 定时任务启动失败（可能未安装 job_queue 依赖）: %s", e)
+
+
 def _register_master_handlers(application: Application):
     """注册主Bot的管理命令处理器"""
     from handlers_master import (
@@ -416,6 +450,17 @@ def _register_master_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(restart_bot_callback, pattern=r'^restart_bot\|'))
     application.add_handler(CallbackQueryHandler(update_token_callback, pattern=r'^update_token\|'))
     application.add_handler(CommandHandler("updatetoken", update_token_cmd))
+
+    # VIP / 星星支付
+    from handlers_master_stars import (
+        vip_command, vip_callback_router, pre_checkout_handler,
+        successful_payment_handler,
+    )
+    application.add_handler(CommandHandler("vip", vip_command))
+    application.add_handler(CallbackQueryHandler(vip_callback_router, pattern=r'^(buy_vip|vip_history)'))
+    application.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
+    application.add_handler(TypeHandler(Update, _payment_filter_handler), group=10)
+
     application.add_error_handler(error_handler)
 
 
