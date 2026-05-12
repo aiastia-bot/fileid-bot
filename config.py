@@ -36,9 +36,13 @@ SEND_BATCH_DELAY = float(os.environ.get('SEND_BATCH_DELAY', '1.0'))   # 每组�
 SEND_INDIVIDUAL_DELAY = float(os.environ.get('SEND_INDIVIDUAL_DELAY', '0.5'))  # 单个文件发送之间的延迟（秒）
 SEND_MAX_FILES_PER_REQUEST = int(os.environ.get('SEND_MAX_FILES_PER_REQUEST', '30'))  # 单次请求最大发送文件数
 SEND_MIN_INTERVAL = float(os.environ.get('SEND_MIN_INTERVAL', '1.0'))  # 每 Bot 最小发送间隔（秒），避免并发叠加
-API_READ_TIMEOUT = float(os.environ.get('API_READ_TIMEOUT', '60.0'))   # Telegram API 读取超时（秒）
-API_WRITE_TIMEOUT = float(os.environ.get('API_WRITE_TIMEOUT', '60.0')) # Telegram API 写入超时（秒）
-API_CONNECT_TIMEOUT = float(os.environ.get('API_CONNECT_TIMEOUT', '30.0'))  # Telegram API 连接超时（秒）
+API_READ_TIMEOUT = float(os.environ.get('API_READ_TIMEOUT', '30.0'))   # Telegram API 读取超时（秒）
+API_WRITE_TIMEOUT = float(os.environ.get('API_WRITE_TIMEOUT', '30.0')) # Telegram API 写入超时（秒）
+API_CONNECT_TIMEOUT = float(os.environ.get('API_CONNECT_TIMEOUT', '10.0'))  # Telegram API 连接超时（秒）
+
+# ===== 单机防雪崩配置 =====
+WEBHOOK_UPDATE_TIMEOUT = float(os.environ.get('WEBHOOK_UPDATE_TIMEOUT', '120.0'))  # 单个 webhook 更新最大处理时间（秒）
+PER_BOT_CONCURRENCY = int(os.environ.get('PER_BOT_CONCURRENCY', '3'))  # 每个 Bot 最大并发处理数
 
 # ===== Webhook 模式配置 =====
 BOT_MODE = os.environ.get('BOT_MODE', 'polling')  # 'polling' 或 'webhook'

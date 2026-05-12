@@ -24,7 +24,7 @@ from config import (
     API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT,
     BOT_MODE, WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET,
     ALLOW_GROUP, ROLE, WORKER_SECRET, WORKER_WEBHOOK_HOST,
-    MAX_BOTS_PER_WORKER
+    MAX_BOTS_PER_WORKER, WEBHOOK_UPDATE_TIMEOUT, PER_BOT_CONCURRENCY
 )
 
 # 启动并发数限制，避免同时发起过多 Telegram API 请求
@@ -95,6 +95,8 @@ class BotManager:
         self._apps: Dict[int, Application] = {}  # bot_db_id -> Application
         self.master_bot_username: str = ""  # 主Bot用户名，由 main.py 设置
         self._webhook_monitor_task: Optional[asyncio.Task] = None  # webhook 监控任务
+        # 防雪崩：每个 Bot 独立的并发信号量
+        self._bot_semaphores: Dict[int, asyncio.Semaphore] = {}
 
     def _create_user_bot_app(self, token: str) -> Application:
         """为用户Bot创建 Application 实例，注册所有 FileID 处理器"""
@@ -353,20 +355,39 @@ class BotManager:
             logger.error("停止用户Bot失败: %s", e)
             return False
 
+    def _get_semaphore(self, bot_db_id: int) -> asyncio.Semaphore:
+        """获取或创建每个 Bot 的并发信号量"""
+        if bot_db_id not in self._bot_semaphores:
+            self._bot_semaphores[bot_db_id] = asyncio.Semaphore(PER_BOT_CONCURRENCY)
+        return self._bot_semaphores[bot_db_id]
+
     async def handle_webhook_update(self, bot_db_id: int, update_data: dict) -> bool:
-        """处理收到的 webhook 更新，分发给对应的 Bot"""
+        """处理收到的 webhook 更新，带并发限制和超时保护"""
         app = self._apps.get(bot_db_id)
         if not app:
             logger.warning("收到未知 bot_db_id=%s 的 webhook 更新", bot_db_id)
             return False
 
-        try:
-            update = Update.de_json(update_data, app.bot)
-            await app.process_update(update)
-            return True
-        except Exception as e:
-            logger.error("处理 webhook 更新失败 (bot_db_id=%s): %s", bot_db_id, e)
+        sem = self._get_semaphore(bot_db_id)
+        if sem.locked():
+            logger.warning("Bot (db_id=%s) 并发已满 (%d)，丢弃更新", bot_db_id, PER_BOT_CONCURRENCY)
             return False
+
+        async with sem:
+            try:
+                update = Update.de_json(update_data, app.bot)
+                # 超时保护：单个更新处理不超过指定时间
+                await asyncio.wait_for(
+                    app.process_update(update),
+                    timeout=WEBHOOK_UPDATE_TIMEOUT
+                )
+                return True
+            except asyncio.TimeoutError:
+                logger.error("Bot (db_id=%s) 更新处理超时 (%.0fs)，已取消", bot_db_id, WEBHOOK_UPDATE_TIMEOUT)
+                return False
+            except Exception as e:
+                logger.error("处理 webhook 更新失败 (bot_db_id=%s): %s", bot_db_id, e)
+                return False
 
     async def load_all(self) -> int:
         """从数据库加载所有活跃的用户Bot（限制并发数启动）"""
