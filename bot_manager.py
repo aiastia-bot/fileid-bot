@@ -362,17 +362,18 @@ class BotManager:
         return self._bot_semaphores[bot_db_id]
 
     async def handle_webhook_update(self, bot_db_id: int, update_data: dict) -> bool:
-        """处理收到的 webhook 更新，带并发限制和超时保护"""
+        """处理收到的 webhook 更新，带并发限制和超时保护
+
+        - 并发限制：每个 Bot 同时最多 PER_BOT_CONCURRENCY 个处理，超出排队等待
+        - 超时保护：单个更新处理超过 WEBHOOK_UPDATE_TIMEOUT 秒自动取消
+        - 失败时返回 False，由 main.py 返回 503 让 Telegram 自动重试
+        """
         app = self._apps.get(bot_db_id)
         if not app:
             logger.warning("收到未知 bot_db_id=%s 的 webhook 更新", bot_db_id)
             return False
 
         sem = self._get_semaphore(bot_db_id)
-        if sem.locked():
-            logger.warning("Bot (db_id=%s) 并发已满 (%d)，丢弃更新", bot_db_id, PER_BOT_CONCURRENCY)
-            return False
-
         async with sem:
             try:
                 update = Update.de_json(update_data, app.bot)

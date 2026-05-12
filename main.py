@@ -208,9 +208,12 @@ def _run_webhook_master(application: Application, bot_manager: BotManager, sched
         if len(parts) >= 2:
             try:
                 bot_db_id = int(parts[-1])
-                await bot_manager.handle_webhook_update(bot_db_id, body)
+                success = await bot_manager.handle_webhook_update(bot_db_id, body)
+                if not success:
+                    return web.Response(status=503)  # Telegram 自动重试
             except (ValueError, Exception) as e:
                 logger.error("用户Bot webhook 处理失败: %s", e)
+                return web.Response(status=503)
             return web.Response(status=200)
 
         return web.Response(status=404)
@@ -498,9 +501,12 @@ def _run_webhook(application: Application, bot_manager: BotManager):
         if len(parts) >= 2:
             try:
                 bot_db_id = int(parts[-1])
-                await bot_manager.handle_webhook_update(bot_db_id, body)
+                success = await bot_manager.handle_webhook_update(bot_db_id, body)
+                if not success:
+                    return web.Response(status=503)  # Telegram 自动重试
             except (ValueError, Exception) as e:
                 logger.error("用户Bot webhook 处理失败: %s", e)
+                return web.Response(status=503)
             return web.Response(status=200)
 
         return web.Response(status=404)
