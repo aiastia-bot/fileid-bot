@@ -73,12 +73,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     logger.info("用户信息: user_id=%s, chat_id=%s, chat_type=%s", user_id, chat_id, chat_type)
     logger.info("bot_data cb_map 大小: %d", len(context.bot_data.get('cb_map', {})))
 
-    # === answer 回调（带超时，避免阻塞） ===
+    # === answer 回调（消除按钮 loading 动画，失败不影响功能） ===
     try:
         await _retry_send(query.answer)
-        logger.debug("query.answer() 成功")
     except Exception as e:
-        logger.error("query.answer() 失败 (可能回调已过期): %s, data=%s", e, data)
+        logger.debug("query.answer() 失败 (回调已过期，可忽略): %s", e)
 
     # === 防止重复点击：立即移除原消息按钮 ===
     if data != "noop":
