@@ -144,6 +144,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     logger.warning("分页发送失败: sk=%s 无法解析, cb_map=%s", sk, list(context.bot_data.get('cb_map', {}).keys()))
                     await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
+                # 清除旧的发送记录，允许重新发送
+                sent_key = f"sent_pages_{sk}"
+                context.user_data.pop(sent_key, None)
                 logger.info("启动后台分页发送: col_code=%s, chat_id=%s", col_code, chat_id)
                 await _safe_edit_query(query, context, chat_id, "📤 正在发送第 1 页…")
                 asyncio.create_task(_send_paginated(context, chat_id, col_code, sk, page=1))
