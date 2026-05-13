@@ -276,6 +276,21 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
     # 记录已发送的页面
     sent_key = f"sent_pages_{sk}"
     sent_pages = context.user_data.get(sent_key, set())
+
+    # 如果该页已发送，不重复发送，只更新状态
+    if page in sent_pages:
+        safe_name = escape_markdown(col_info['name'])
+        text = f"📦 *{safe_name}*\n"
+        text += f"⚠️ 第 {page}/{total_pages} 页已发送过，请勿重复操作。\n"
+        text += f"📊 进度: {len(sent_pages)}/{total_pages} 页"
+        if len(sent_pages) >= total_pages:
+            text += "\n\n🎉 所有文件已发送完毕！"
+            await _safe_edit_query(query, context, chat_id, text, parse_mode="Markdown")
+        else:
+            # 只显示未发送页的按钮
+            await _safe_edit_query(query, context, chat_id, text, parse_mode="Markdown")
+        return
+
     sent_pages.add(page)
     context.user_data[sent_key] = sent_pages
 
@@ -294,11 +309,13 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
     text += f"✅ 第 {page}/{total_pages} 页已发送 ({sent}/{len(page_files)})\n"
     text += f"📊 进度: {len(sent_pages)}/{total_pages} 页"
 
-    # 全部发送完毕
+    # 全部发送完毕：不显示任何按钮，防止重复操作
     if len(sent_pages) >= total_pages:
         text += "\n\n🎉 所有文件已发送完毕！"
+        await _safe_edit_query(query, context, chat_id, text, parse_mode="Markdown")
+        return
 
-    # 导航行：上一页 / 页码 / 下一页
+    # 未发送完：显示导航按钮
     buttons = []
     nav = []
     if page > 1:
@@ -311,7 +328,6 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
     # 页码按钮行：最多显示当前页前后5页，每行5个按钮
     page_range_start = max(1, page - 5)
     page_range_end = min(total_pages, page + 5)
-    # 如果范围不满10页，向另一侧扩展
     if page_range_end - page_range_start < 10:
         if page_range_start == 1:
             page_range_end = min(total_pages, page_range_start + 10)
@@ -319,7 +335,6 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
             page_range_start = max(1, page_range_end - 10)
 
     page_buttons = []
-    # 如果前面还有更多页，显示 << 翻页按钮
     if page_range_start > 1:
         page_buttons.append(InlineKeyboardButton("<<", callback_data=f"sn|{sk}|{page_range_start - 1}"))
 
@@ -331,16 +346,13 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
         else:
             label = f"{p}"
         page_buttons.append(InlineKeyboardButton(label, callback_data=f"sn|{sk}|{p}"))
-        # 每行5个按钮时换行
         if len(page_buttons) == 5:
             buttons.append(page_buttons)
             page_buttons = []
 
-    # 如果后面还有更多页，显示 >> 翻页按钮
     if page_range_end < total_pages:
         page_buttons.append(InlineKeyboardButton(">>", callback_data=f"sn|{sk}|{page_range_end + 1}"))
 
-    # 添加剩余按钮
     if page_buttons:
         buttons.append(page_buttons)
 
