@@ -1,6 +1,7 @@
 """消息处理器模块（文本、附件、转发、媒体组）"""
 import asyncio
 import logging
+import time as _time
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -64,6 +65,7 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     当用户快速连续发送多个附件时，会自动合并回复（3秒内所有附件合并为一条消息），
     避免高频发送 API 导致 Telegram 限流。
     """
+    t0 = _time.monotonic()
     message = update.message
     user_id = update.effective_user.id
     bot_username = context.bot.username
@@ -71,7 +73,10 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # 用户级限流（排队等待）
     if not await _rate_limit_wait(user_id, bot_username):
         await _retry_send(message.reply_text, "⚠️ 操作太频繁，请稍后再试。")
+        logger.warning("⏱ handle_attachment 限流拒绝 user=%s bot=%s 耗时%.1fs", user_id, bot_username, _time.monotonic() - t0)
         return
+    logger.debug("⏱ handle_attachment rate_limit user=%s 耗时%.3fs", user_id, _time.monotonic() - t0)
+
     code_prefix = get_code_prefix(bot_username)
     creating_col = context.user_data.get('creating_collection')
 
@@ -81,8 +86,10 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await _retry_send(message.reply_text, "❌ 不支持的文件类型。支持: 图片、视频、音频、文档。")
             return
 
+        t1 = _time.monotonic()
         bot_db_id = context.bot_data.get('bot_record', {}).get('id')
         code = await save_file(user_id, file_type, file_id, file_size, file_unique_id, bot_username, code_prefix, bot_db_id=bot_db_id)
+        logger.debug("⏱ handle_attachment save_file user=%s 耗时%.3fs", user_id, _time.monotonic() - t1)
         if not code:
             await _retry_send(message.reply_text, "❌ 保存失败，请重试。")
             return
@@ -96,7 +103,9 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 await _retry_send(message.reply_text, f"⚠️ 集合已满 {MAX_COLLECTION_FILES} 个文件，请发送 `/done` 完成。")
                 return
             sort_order = current_count + 1
+            t2 = _time.monotonic()
             await add_file_to_collection(creating_col, code, sort_order)
+            logger.debug("⏱ handle_attachment add_file_to_collection 耗时%.3fs", _time.monotonic() - t2)
             context.user_data['collection_count'] = sort_order
             uid_info = f" file_unique_id: `{file_unique_id}`" if file_unique_id else ""
             await _retry_send(message.reply_text,
@@ -164,6 +173,7 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 context.bot_data.get('_attachment_reply_buffer', {}).pop(buffer_key, None)
 
         buf['timer'] = asyncio.create_task(flush_attachment_replies())
+        logger.debug("⏱ handle_attachment 总耗时%.3fs user=%s bot=%s", _time.monotonic() - t0, user_id, bot_username)
 
     except Exception as e:
         logger.error("处理附件失败: %s", e)
@@ -176,6 +186,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     当 Telegram 将用户的长消息切割成多条时，
     会自动收集同一用户短时间内连续发送的代码消息，合并后统一处理。
     """
+    t0 = _time.monotonic()
     message = update.message
     if not message or not message.text:
         return
@@ -187,7 +198,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # 用户级限流（排队等待）
     if not await _rate_limit_wait(user_id, bot_username):
         await _retry_send(message.reply_text, "⚠️ 操作太频繁，请稍后再试。")
+        logger.warning("⏱ handle_text 限流拒绝 user=%s bot=%s 耗时%.1fs", user_id, bot_username, _time.monotonic() - t0)
         return
+    logger.debug("⏱ handle_text rate_limit user=%s 耗时%.3fs", user_id, _time.monotonic() - t0)
+
     file_codes = parse_file_code(text, bot_username)
     collection_codes = parse_collection_code(text, bot_username)
 
@@ -222,8 +236,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         async def process_buffered_codes():
             """处理合并后的所有代码"""
+            t1 = _time.monotonic()
             try:
                 await asyncio.sleep(2)  # 等待2秒收集可能的后续消息
+                logger.debug("⏱ process_buffered_codes sleep后 耗时%.3fs", _time.monotonic() - t1)
 
                 buf = context.bot_data.get('pending_code_buffer', {}).pop(buffer_key, None)
                 if not buf:
@@ -232,10 +248,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 all_file_codes = buf['file_codes']
                 ref_message = buf['first_message']
 
-                logger.info("合并处理: %d 个文件代码 (来自用户 %s)",
-                            len(all_file_codes), user_id)
+                logger.info("合并处理: %d 个文件代码 (来自用户 %s)", len(all_file_codes), user_id)
 
                 await _process_file_codes(context, chat_id, ref_message, all_file_codes)
+                logger.info("⏱ process_buffered_codes 总耗时%.3fs user=%s codes=%d", _time.monotonic() - t1, user_id, len(all_file_codes))
 
             except Exception as e:
                 logger.error("process_buffered_codes 失败: %s", e, exc_info=True)
@@ -246,13 +262,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         # 集合代码不需要缓冲，立即处理
         if collection_codes:
+            t2 = _time.monotonic()
             await _process_collection_codes(context, chat_id, message, collection_codes)
+            logger.debug("⏱ handle_text _process_collection_codes 耗时%.3fs", _time.monotonic() - t2)
 
+        logger.debug("⏱ handle_text(缓冲路径) 总耗时%.3fs user=%s", _time.monotonic() - t0, user_id)
         return  # 文件代码已缓冲，等待后续消息
 
     # ===== 无文件代码，只有集合代码，直接处理 =====
     if collection_codes:
+        t3 = _time.monotonic()
         await _process_collection_codes(context, chat_id, message, collection_codes)
+        logger.debug("⏱ handle_text _process_collection_codes 耗时%.3fs", _time.monotonic() - t3)
+
+    logger.debug("⏱ handle_text 总耗时%.3fs user=%s bot=%s", _time.monotonic() - t0, user_id, bot_username)
 
 
 async def _process_file_codes(context, chat_id, message, file_codes: list) -> None:
@@ -261,11 +284,16 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
     ⚠️ 使用 submit_batch_async 而非 submit_batch，避免队列消费耗时阻塞
     process_update 导致 webhook 超时(503)。
     """
+    t0 = _time.monotonic()
     if not file_codes:
         return
 
     current_bot_db_id = context.bot_data.get("bot_record", {}).get("id")
+
+    t1 = _time.monotonic()
     found_files = await get_files_by_codes(file_codes, current_bot_db_id)
+    logger.debug("⏱ _process_file_codes get_files_by_codes(%d codes) 耗时%.3fs", len(file_codes), _time.monotonic() - t1)
+
     found_codes = {f['code'] for f in found_files}
     not_found = [c for c in file_codes if c not in found_codes]
 
@@ -275,13 +303,16 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
         batches = split_files_to_batches(found_files)
 
         # 异步提交所有批次到队列（不等待发送完成，避免阻塞 webhook）
+        t2 = _time.monotonic()
         for batch in batches:
             try:
                 queue.submit_batch_async(chat_id, batch)
             except Exception as e:
                 logger.error("队列提交失败: %s", e)
+        logger.debug("⏱ _process_file_codes queue提交(%d 批) 耗时%.3fs", len(batches), _time.monotonic() - t2)
 
         # 发送排队提示后立即返回，webhook 快速响应
+        t3 = _time.monotonic()
         if total > GROUP_SEND_SIZE:
             try:
                 await _retry_send(message.reply_text,
@@ -296,24 +327,34 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
                 )
             except Exception:
                 pass
+        logger.debug("⏱ _process_file_codes _retry_send(提示) 耗时%.3fs", _time.monotonic() - t3)
 
         logger.info("_process_file_codes: 已异步提交 %d 个文件（%d 批）", total, len(batches))
 
     if not_found:
+        t4 = _time.monotonic()
         max_show = 20
         shown = not_found[:max_show]
         not_found_text = "\n".join(f"• `{c}`" for c in shown)
         if len(not_found) > max_show:
             not_found_text += f"\n... 等 {len(not_found)} 个"
         await _retry_send(message.reply_text, f"⚠️ 以下代码未找到 ({len(not_found)} 个):\n" + not_found_text, parse_mode="Markdown")
+        logger.debug("⏱ _process_file_codes _retry_send(not_found) 耗时%.3fs", _time.monotonic() - t4)
+
+    logger.info("⏱ _process_file_codes 总耗时%.3fs codes=%d found=%d not_found=%d",
+                _time.monotonic() - t0, len(file_codes), len(found_files), len(not_found))
 
 
 async def _process_collection_codes(context, chat_id, message, collection_codes: list) -> None:
     """处理集合代码"""
+    t0 = _time.monotonic()
     for col_code in collection_codes:
+        t1 = _time.monotonic()
         col_info = await get_collection(col_code)
+        logger.debug("⏱ _process_collection_codes get_collection(%s) 耗时%.3fs", col_code, _time.monotonic() - t1)
+
         current_bot_db_id_col = context.bot_data.get("bot_record", {}).get("id")
-        if not col_info or (current_bot_db_id_col and col_info.get("bot_db_id") and col_info["bot_db_id"] != current_bot_db_id_col):
+        if not col_info or (current_bot_db_id_col and col_info.get('bot_db_id') and col_info["bot_db_id"] != current_bot_db_id_col):
             await _retry_send(message.reply_text, f"❌ 集合不存在: `{col_code}`", parse_mode="Markdown")
             continue
 
@@ -322,7 +363,10 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
             await _retry_send(message.reply_text, f"⚠️ 集合「{safe_name}」尚未完成。")
             continue
 
+        t2 = _time.monotonic()
         files = await get_collection_files(col_code)
+        logger.debug("⏱ _process_collection_codes get_collection_files(%s) 耗时%.3fs files=%d", col_code, _time.monotonic() - t2, len(files) if files else 0)
+
         if not files:
             await _retry_send(message.reply_text, f"⚠️ 集合「{safe_name}」为空。")
             continue
@@ -333,7 +377,10 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
             type_counts[f['file_type']] = type_counts.get(f['file_type'], 0) + 1
         type_stats_text = " ".join(f"{FILE_TYPE_MAP.get(k, k)}x{v}" for k, v in type_counts.items())
 
+        t3 = _time.monotonic()
         sk = await _short_key(context, col_code)
+        logger.debug("⏱ _process_collection_codes _short_key 耗时%.3fs", _time.monotonic() - t3)
+
         col_text = f"📦 *集合「{safe_name}」*\n\n📊 共 {total_files} 个文件\n📋 {type_stats_text}\n\n请选择操作："
         keyboard = [
             [InlineKeyboardButton("📖 分页发送", callback_data=f"s|{sk}")],
@@ -342,7 +389,11 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
         if total_files > GROUP_SEND_SIZE:
             keyboard.append([InlineKeyboardButton("📖 分页浏览", callback_data=f"p|{sk}|1")])
 
+        t4 = _time.monotonic()
         await _retry_send(message.reply_text, col_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        logger.debug("⏱ _process_collection_codes _retry_send(集合) 耗时%.3fs", _time.monotonic() - t4)
+
+    logger.info("⏱ _process_collection_codes 总耗时%.3fs codes=%d", _time.monotonic() - t0, len(collection_codes))
 
 
 async def handle_forward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
