@@ -350,7 +350,7 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
         sk = await _short_key(context, col_code)
         col_text = f"📦 *集合「{safe_name}」*\n\n📊 共 {total_files} 个文件\n📋 {type_stats_text}\n\n请选择操作："
         keyboard = [
-            [InlineKeyboardButton("⬇️ 全部发送", callback_data=f"s|{sk}")],
+            [InlineKeyboardButton("📖 分页发送", callback_data=f"s|{sk}")],
             [InlineKeyboardButton("▶️ 自动发送", callback_data=f"a|{sk}")],
         ]
         if total_files > GROUP_SEND_SIZE:
@@ -499,7 +499,7 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
             reply = f"✅ 转发媒体组已保存并自动创建集合！\n\n📦 集合: *{safe_name}*\n📊 共 {len(codes)} 个文件\n📦 集合代码: `{full_col_code}`\n\n单个文件代码：\n"
             reply += "\n".join(f"`{c}`" for c in codes)
             sk = await _short_key(context, full_col_code)
-            keyboard = [[InlineKeyboardButton("⬇️ 全部发送", callback_data=f"s|{sk}"), InlineKeyboardButton("▶️ 自动发送", callback_data=f"a|{sk}")]]
+            keyboard = [[InlineKeyboardButton("📖 分页发送", callback_data=f"s|{sk}"), InlineKeyboardButton("▶️ 自动发送", callback_data=f"a|{sk}")]]
             try:
                 await _retry_send(msgs[0].reply_text, reply, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
             except Exception:
