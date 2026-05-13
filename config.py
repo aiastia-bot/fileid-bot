@@ -66,11 +66,12 @@ ALLOW_GROUP = os.environ.get('ALLOW_GROUP', 'false').lower() in ('true', '1', 'y
 
 # ===== VIP 等级配置 =====
 # VIP等级: {level: {name, max_bots, monthly_price, yearly_price}}
+# max_bots 均可通过环境变量配置，如 VIP0_MAX_BOTS, VIP1_MAX_BOTS 等
 VIP_PLANS = {
-    0: {'name': '免费用户', 'max_bots': int(os.environ.get('MAX_BOTS_PER_USER', '1')), 'monthly_price': 0, 'yearly_price': 0},
-    1: {'name': 'VIP 1', 'max_bots': 3, 'monthly_price': 50, 'yearly_price': 500},
-    2: {'name': 'VIP 2', 'max_bots': 5, 'monthly_price': 100, 'yearly_price': 1000},
-    3: {'name': 'VIP 3', 'max_bots': 10, 'monthly_price': 500, 'yearly_price': 5000},
+    0: {'name': '免费用户', 'max_bots': int(os.environ.get('VIP0_MAX_BOTS', os.environ.get('MAX_BOTS_PER_USER', '1'))), 'monthly_price': 0, 'yearly_price': 0},
+    1: {'name': 'VIP 1', 'max_bots': int(os.environ.get('VIP1_MAX_BOTS', '3')), 'monthly_price': 50, 'yearly_price': 500},
+    2: {'name': 'VIP 2', 'max_bots': int(os.environ.get('VIP2_MAX_BOTS', '5')), 'monthly_price': 100, 'yearly_price': 1000},
+    3: {'name': 'VIP 3', 'max_bots': int(os.environ.get('VIP3_MAX_BOTS', '10')), 'monthly_price': 500, 'yearly_price': 5000},
 }
 
 # VIP 到期提醒提前天数
