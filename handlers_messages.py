@@ -256,7 +256,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def _process_file_codes(context, chat_id, message, file_codes: list) -> None:
-    """处理文件代码：查 DB → 拆分批次 → 提交到发送队列"""
+    """处理文件代码：查 DB → 拆分批次 → 异步提交到发送队列（不阻塞 webhook）
+    
+    ⚠️ 使用 submit_batch_async 而非 submit_batch，避免队列消费耗时阻塞
+    process_update 导致 webhook 超时(503)。
+    """
     if not file_codes:
         return
 
@@ -270,48 +274,30 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
         queue = get_queue_from_context(context)
         batches = split_files_to_batches(found_files)
 
-        # 初始提示
-        status_msg = None
+        # 异步提交所有批次到队列（不等待发送完成，避免阻塞 webhook）
+        for batch in batches:
+            try:
+                queue.submit_batch_async(chat_id, batch)
+            except Exception as e:
+                logger.error("队列提交失败: %s", e)
+
+        # 发送排队提示后立即返回，webhook 快速响应
         if total > GROUP_SEND_SIZE:
             try:
-                status_msg = await _retry_send(message.reply_text, 
-                    f"📤 已排队 {total} 个文件（{len(batches)} 批），发送中…"
+                await _retry_send(message.reply_text,
+                    f"📤 已排队 {total} 个文件（{len(batches)} 批），正在后台发送…"
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                await _retry_send(message.reply_text,
+                    f"📤 正在发送 {total} 个文件…"
                 )
             except Exception:
                 pass
 
-        # 提交所有批次到队列，等待完成
-        total_sent = 0
-        for i, batch in enumerate(batches):
-            try:
-                sent = await queue.submit_batch(chat_id, batch)
-                total_sent += sent
-            except Exception as e:
-                logger.error("队列发送失败: %s", e)
-
-        # 定期更新进度
-        if status_msg and ((i + 1) % 5 == 0 or i == len(batches) - 1):
-            try:
-                await _retry_send(context.bot.edit_message_text,
-                    chat_id=chat_id,
-                    message_id=status_msg.message_id,
-                    text=f"📤 发送中… ({total_sent}/{total})"
-                )
-            except Exception:
-                pass
-
-        # 完成提示
-        if status_msg:
-            try:
-                await _retry_send(context.bot.edit_message_text,
-                    chat_id=chat_id,
-                    message_id=status_msg.message_id,
-                    text=f"✅ 发送完成！共 {total_sent}/{total} 个文件"
-                )
-            except Exception:
-                pass
-
-        logger.info("_process_file_codes: 完成 %d/%d", total_sent, total)
+        logger.info("_process_file_codes: 已异步提交 %d 个文件（%d 批）", total, len(batches))
 
     if not_found:
         max_show = 20
