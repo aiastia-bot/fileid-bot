@@ -78,6 +78,7 @@ class SendQueue:
         self._event = asyncio.Event()
         self._last_send = 0.0
         self._total_sent = 0
+        self._rate_limit_until = 0.0  # Bot 级别限流截止时间（monotonic）
 
     def set_bot(self, bot):
         """设置 bot 实例（用于发送）"""
@@ -178,6 +179,14 @@ class SendQueue:
                 if not self._running:
                     break
 
+            # Bot 级别限流检查：任何用户触发限流后，整个 Bot 队列暂停
+            now = time.monotonic()
+            if self._rate_limit_until > now:
+                wait = self._rate_limit_until - now
+                logger.info("SendQueue(@%s): Bot 限流中，等待 %.0fs (剩余队列=%d)",
+                            self.bot_name, wait, self.pending)
+                await asyncio.sleep(wait)
+
             # Round-Robin: 从每个用户取一个任务
             processed_any = False
             chat_ids = list(self._queues.keys())
@@ -215,16 +224,16 @@ class SendQueue:
                     from senders import SendBlockedError
 
                     if isinstance(e, RetryAfter):
-                        # 限流：等待 TG 要求的时间后重新入队，不丢弃任务
+                        # Bot 级别限流：设置整个队列的暂停时间
                         wait = (e.retry_after if hasattr(e, 'retry_after') and e.retry_after else 30) + 3
-                        logger.warning("SendQueue(@%s): 限流等待 %.0fs 后重试 (chat_id=%s, 剩余队列=%d)",
+                        self._rate_limit_until = time.monotonic() + wait
+                        logger.warning("SendQueue(@%s): Bot 限流 %.0fs，暂停整个队列 (触发者 chat_id=%s, 剩余队列=%d)",
                                        self.bot_name, wait, task.chat_id, self.pending)
-                        await asyncio.sleep(wait)
-                        # 重新入队到该用户队列头部
+                        # 将任务放回队列头部
                         if chat_id not in self._queues:
                             self._queues[chat_id] = []
                         self._queues[chat_id].insert(0, task)
-                        continue  # 跳过批次间隔，直接进入下一轮
+                        break  # 跳出用户循环，整个 Bot 队列等待
                     elif isinstance(e, SendBlockedError):
                         # 用户已拉黑 Bot：取消该用户所有剩余任务
                         cancelled = 0
