@@ -1,7 +1,7 @@
 version: '3.8'
 
 # ==================== 单机部署（默认） ====================
-# docker compose up -d
+# 所有配置项在 .env 文件中设置，运行: docker compose up -d
 
 services:
   bot:
@@ -10,16 +10,6 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    environment:
-      - ROLE=standalone
-      - BOT_MODE=${BOT_MODE:-polling}
-      - BOT_TOKEN=${BOT_TOKEN}
-      - ADMIN_IDS=${ADMIN_IDS:-}
-      - MAX_BOTS_PER_USER=${MAX_BOTS_PER_USER:-1}
-      - WEBHOOK_HOST=${WEBHOOK_HOST:-}
-      - WEBHOOK_PORT=${WEBHOOK_PORT:-8080}
-      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
-      - ALLOW_GROUP=${ALLOW_GROUP:-false}
     volumes:
       - ./data:/app/data
     ports:
@@ -39,17 +29,11 @@ services:
 #     image: aiastia/fileid-bot:latest
 #     container_name: fileid-master
 #     restart: unless-stopped
+#     env_file:
+#       - .env
 #     environment:
 #       - ROLE=master
 #       - BOT_MODE=webhook
-#       - BOT_TOKEN=${BOT_TOKEN}
-#       - ADMIN_IDS=${ADMIN_IDS:-}
-#       - MAX_BOTS_PER_USER=${MAX_BOTS_PER_USER:-1}
-#       - WEBHOOK_HOST=${WEBHOOK_HOST}
-#       - WEBHOOK_PORT=8080
-#       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
-#       - WORKER_SECRET=${WORKER_SECRET:-changeme123}
-#       - ALLOW_GROUP=${ALLOW_GROUP:-false}
 #     volumes:
 #       - ./data:/app/data
 #     ports:
@@ -65,18 +49,13 @@ services:
 #     image: aiastia/fileid-bot:latest
 #     container_name: fileid-worker-1
 #     restart: unless-stopped
+#     env_file:
+#       - .env
 #     environment:
 #       - ROLE=worker
 #       - BOT_MODE=webhook
 #       - NODE_ID=worker-1
 #       - MASTER_URL=http://master:8080
-#       - WORKER_SECRET=${WORKER_SECRET:-changeme123}
-#       - WORKER_PORT=8081
-#       - WORKER_WEBHOOK_HOST=${WORKER1_HOST:-node1.example.com}
-#       - MAX_BOTS_PER_WORKER=${MAX_BOTS_PER_WORKER:-100}
-#       - WEBHOOK_PATH=/webhook
-#       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
-#       - ALLOW_GROUP=${ALLOW_GROUP:-false}
 #     volumes:
 #       - ./data:/app/data
 #     ports:
@@ -94,18 +73,13 @@ services:
 #     image: aiastia/fileid-bot:latest
 #     container_name: fileid-worker-2
 #     restart: unless-stopped
+#     env_file:
+#       - .env
 #     environment:
 #       - ROLE=worker
 #       - BOT_MODE=webhook
 #       - NODE_ID=worker-2
 #       - MASTER_URL=http://master:8080
-#       - WORKER_SECRET=${WORKER_SECRET:-changeme123}
-#       - WORKER_PORT=8082
-#       - WORKER_WEBHOOK_HOST=${WORKER2_HOST:-node2.example.com}
-#       - MAX_BOTS_PER_WORKER=${MAX_BOTS_PER_WORKER:-100}
-#       - WEBHOOK_PATH=/webhook
-#       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
-#       - ALLOW_GROUP=${ALLOW_GROUP:-false}
 #     volumes:
 #       - ./data:/app/data
 #     ports:
