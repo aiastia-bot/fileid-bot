@@ -7,7 +7,7 @@ from sqlalchemy import select, update, func, text
 
 from db_core import get_session, _model_to_dict
 from models import User, StarPayment, UserBot
-from config import VIP_PLANS
+from config import VIP_PLANS, MAX_VIP0_USERS
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +306,37 @@ async def resume_user_bot(bot_db_id: int) -> bool:
         except Exception as e:
             logger.error("恢复Bot失败: %s", e)
             return False
+
+
+async def get_vip0_user_count() -> int:
+    """获取当前 VIP 0（免费）用户数量（有 Bot 的用户）"""
+    async with get_session() as session:
+        result = await session.execute(
+            select(func.count(func.distinct(UserBot.owner_id))).select_from(UserBot)
+            .where(UserBot.status != 'deleted')
+        )
+        return result.scalar() or 0
+
+
+async def check_vip0_capacity(user_id: int) -> bool:
+    """检查 VIP 0 用户是否还能创建 Bot（受 MAX_VIP0_USERS 限制）
+    返回 True 表示可以创建，False 表示已满
+    已有 Bot 的老用户不受此限制
+    """
+    if MAX_VIP0_USERS <= 0:
+        return True  # 不限制
+
+    level = await get_user_vip_level(user_id)
+    if level > 0:
+        return True  # VIP 用户不受此限制
+
+    # 已有 Bot 的用户不受限制（已占用名额，允许在其 max_bots 内继续操作）
+    existing_bots = await get_active_bots_count_by_owner(user_id)
+    if existing_bots > 0:
+        return True
+
+    count = await get_vip0_user_count()
+    return count < MAX_VIP0_USERS
 
 
 async def get_paused_bots_by_owner(owner_id: int) -> List[Dict]:

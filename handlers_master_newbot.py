@@ -12,7 +12,7 @@ from database import (
     get_user_bot_by_token, get_user_bot_by_telegram_id,
     get_user_bot_by_id,
 )
-from db_vip import get_max_bots_for_user
+from db_vip import get_max_bots_for_user, check_vip0_capacity
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,14 @@ def escape(text: str) -> str:
 async def new_bot_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """/newbot 开始交互式创建 Bot"""
     user_id = update.effective_user.id
+
+    # 检查 VIP 0 用户数量限制
+    if not await check_vip0_capacity(user_id):
+        await _retry_send(update.message.reply_text,
+            "⚠️ 系统资源紧张，当前暂不接受新用户创建 Bot。\n\n"
+            "💡 请升级 VIP 即可继续使用：/vip"
+        )
+        return ConversationHandler.END
 
     max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
@@ -164,6 +172,16 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.pop('new_bot_name', None)
         return ConversationHandler.END
 
+    # 检查 VIP 0 用户数量限制
+    if not await check_vip0_capacity(user_id):
+        await status_msg.edit_text(
+            "⚠️ 系统资源紧张，当前暂不接受新用户创建 Bot。\n\n"
+            "💡 请升级 VIP 即可继续使用：/vip"
+        )
+        context.user_data.pop('new_bot_username', None)
+        context.user_data.pop('new_bot_name', None)
+        return ConversationHandler.END
+
     max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
     if len(user_bots) >= max_bots:
@@ -227,6 +245,14 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """/addbot 添加用户Bot"""
     user_id = update.effective_user.id
 
+    # 检查 VIP 0 用户数量限制
+    if not await check_vip0_capacity(user_id):
+        await _retry_send(update.message.reply_text,
+            "⚠️ 系统资源紧张，当前暂不接受新用户创建 Bot。\n\n"
+            "💡 请升级 VIP 即可继续使用：/vip"
+        )
+        return
+
     # 检查已有 Bot 数量
     max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
@@ -283,6 +309,14 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await status_msg.edit_text(
             f"⚠️ Bot @{escape(bot_info.username)} 已被添加。",
             parse_mode="HTML"
+        )
+        return
+
+    # 检查 VIP 0 用户数量限制
+    if not await check_vip0_capacity(user_id):
+        await status_msg.edit_text(
+            "⚠️ 系统资源紧张，当前暂不接受新用户创建 Bot。\n\n"
+            "💡 请升级 VIP 即可继续使用：/vip"
         )
         return
 

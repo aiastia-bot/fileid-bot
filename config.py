@@ -74,6 +74,9 @@ VIP_PLANS = {
     3: {'name': 'VIP 3', 'max_bots': int(os.environ.get('VIP3_MAX_BOTS', '10')), 'monthly_price': 500, 'yearly_price': 5000},
 }
 
+# VIP 0（免费）用户最大数量限制，超过后提示升级 VIP
+MAX_VIP0_USERS = int(os.environ.get('MAX_VIP0_USERS', '0'))  # 0 = 不限制
+
 # VIP 到期提醒提前天数
 VIP_EXPIRE_NOTICE_DAYS = 3
 
