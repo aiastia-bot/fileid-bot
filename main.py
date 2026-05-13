@@ -34,6 +34,7 @@ logging.basicConfig(
 )
 # 第三方库始终只显示 WARNING 以上
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 # 始终打印日志级别（不受级别过滤），方便确认配置生效
