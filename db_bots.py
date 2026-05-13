@@ -65,12 +65,21 @@ async def get_all_active_user_bots() -> List[Dict]:
         return [_model_to_dict(b) for b in bots]
 
 
-async def get_all_owner_ids() -> List[int]:
-    """获取所有Bot所有者ID（去重）"""
+async def get_all_owner_ids(status: str = None) -> List[int]:
+    """获取Bot所有者ID（去重）
+    
+    Args:
+        status: 筛选状态，如 'active'。不传则返回所有非删除的。
+    """
     async with get_session() as session:
-        result = await session.execute(
-            select(UserBot.owner_id).where(UserBot.status != 'deleted').distinct()
-        )
+        if status:
+            result = await session.execute(
+                select(UserBot.owner_id).where(UserBot.status == status).distinct()
+            )
+        else:
+            result = await session.execute(
+                select(UserBot.owner_id).where(UserBot.status != 'deleted').distinct()
+            )
         return [r[0] for r in result.fetchall()]
 
 

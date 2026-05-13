@@ -43,9 +43,12 @@ async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
         return
 
-    # 检查是否有参数，如 /platform bots 显示详细 Bot 列表
+    # 检查是否有参数: /platform bots [revoked|all]
     args = context.args or []
     show_bots = args and args[0] in ('bots', 'bot', 'detail', 'details')
+    bot_status = 'active'
+    if show_bots and len(args) > 1:
+        bot_status = args[1] if args[1] in ('revoked', 'banned', 'all') else 'active'
 
     stats = await get_platform_stats()
     mgr = get_bot_manager()
@@ -64,9 +67,10 @@ async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # 如果指定了 bots 参数，显示每个 Bot 的详细信息
     if show_bots:
-        bot_details = await get_platform_bot_details()
-        # 隐藏文件数为 0 的 Bot
-        bot_details = [b for b in bot_details if b['file_count'] > 0] if bot_details else []
+        bot_details = await get_platform_bot_details(status=bot_status)
+        # active 状态下隐藏文件数为 0 的 Bot，其他状态全部显示
+        if bot_status == 'active' and bot_details:
+            bot_details = [b for b in bot_details if b['file_count'] > 0]
         if not bot_details:
             text += "\n📭 暂无 Bot。"
         else:
@@ -92,7 +96,9 @@ async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         # 默认只显示摘要，提示可以查看详情
         text += (
-            f"\n💡 使用 <code>/platform bots</code> 查看每个 Bot 的详细信息"
+            f"\n💡 使用 <code>/platform bots</code> 查看 Active Bot\n"
+            f"使用 <code>/platform bots revoked</code> 查看 Revoked Bot\n"
+            f"使用 <code>/platform bots all</code> 查看全部"
         )
 
     # Telegram 消息长度限制为 4096 字符，需要分段发送
@@ -358,14 +364,18 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _retry_send(update.message.reply_text, 
             "📢 <b>广播命令</b>\n\n"
             "用法：<code>/broadcast 消息内容</code>\n\n"
-            "消息将发送给所有 Bot 所有者。",
+            "消息将发送给所有活跃 Bot 所有者。",
             parse_mode="HTML"
         )
         return
 
     text = " ".join(context.args)
-    owner_ids = await get_all_owner_ids()
-    status_msg = await _retry_send(update.message.reply_text, f"⏳ 正在广播给 {len(owner_ids)} 位用户...")
+    # 只发给 active 状态 Bot 的所有者
+    owner_ids = await get_all_owner_ids(status='active')
+    if not owner_ids:
+        await _retry_send(update.message.reply_text, "📭 没有活跃 Bot 的所有者可广播。")
+        return
+    status_msg = await _retry_send(update.message.reply_text, f"⏳ 正在广播给 {len(owner_ids)} 位活跃用户...")
 
     success = 0
     fail = 0

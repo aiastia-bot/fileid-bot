@@ -99,11 +99,19 @@ async def get_platform_stats() -> Dict:
         }
 
 
-async def get_platform_bot_details() -> List[Dict]:
-    """获取平台级 Bot 详情列表（含文件数统计）"""
+async def get_platform_bot_details(status: str = 'active') -> List[Dict]:
+    """获取平台级 Bot 详情列表（含文件数统计）
+    
+    Args:
+        status: 筛选状态，默认 'active'。传 'all' 显示所有非删除的。
+    """
     async with get_session() as session:
+        if status == 'all':
+            query = select(UserBot).where(UserBot.status != 'deleted')
+        else:
+            query = select(UserBot).where(UserBot.status == status)
         result = await session.execute(
-            select(UserBot).where(UserBot.status != 'deleted').order_by(UserBot.bot_username)
+            query.order_by(UserBot.bot_username)
         )
         bots = result.scalars().all()
 
