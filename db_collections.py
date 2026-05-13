@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 from typing import Optional, List, Dict
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_
 
 from db_core import get_session, _model_to_dict
 from models import Collection, CollectionItem, FileMapping
@@ -46,7 +46,7 @@ async def get_collection_by_id(col_id: int) -> Optional[Dict]:
 
 
 async def get_collection_files(code: str) -> List[Dict]:
-    """获取集合中的所有文件，带缓存"""
+    """获取集合中的所有文件（过滤已失效的文件），带缓存"""
     r = await _get_redis()
     cached = await r.cache_get_json(f"col_files:{code}")
     if cached:
@@ -56,7 +56,10 @@ async def get_collection_files(code: str) -> List[Dict]:
         result = await session.execute(
             select(FileMapping)
             .join(CollectionItem, FileMapping.code == CollectionItem.file_code)
-            .where(CollectionItem.collection_code == code)
+            .where(
+                CollectionItem.collection_code == code,
+                or_(FileMapping.is_valid.is_(None), FileMapping.is_valid == 1)
+            )
             .order_by(CollectionItem.sort_order)
         )
         files = result.scalars().all()

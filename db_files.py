@@ -128,12 +128,15 @@ async def get_file(code: str) -> Optional[Dict]:
 
 
 async def get_files_by_codes(codes: list, bot_db_id: int = None) -> list:
-    """批量根据代码获取文件信息"""
+    """批量根据代码获取文件信息（自动过滤已失效的文件）"""
     if not codes:
         return []
     async with get_session() as session:
         result = await session.execute(
-            select(FileMapping).where(FileMapping.code.in_(codes))
+            select(FileMapping).where(
+                FileMapping.code.in_(codes),
+                or_(FileMapping.is_valid.is_(None), FileMapping.is_valid == 1)
+            )
         )
         rows = result.scalars().all()
         results = []
