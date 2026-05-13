@@ -216,7 +216,7 @@ class SendQueue:
 
                     if isinstance(e, RetryAfter):
                         # 限流：等待 TG 要求的时间后重新入队，不丢弃任务
-                        wait = e.retry_after if hasattr(e, 'retry_after') and e.retry_after else 30
+                        wait = (e.retry_after if hasattr(e, 'retry_after') and e.retry_after else 30) + 3
                         logger.warning("SendQueue(@%s): 限流等待 %.0fs 后重试 (chat_id=%s, 剩余队列=%d)",
                                        self.bot_name, wait, task.chat_id, self.pending)
                         await asyncio.sleep(wait)
