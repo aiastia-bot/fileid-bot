@@ -4,14 +4,16 @@
   Handler 层 → 拆分文件为批次 → submit 到队列 → 等待完成
   队列消费者 → Round-Robin 取各用户的批次 → 调 send_batch → 固定间隔
 
-好处:
-  - 天然限速: 单消费者 + 固定间隔 = 恒定发送速率
-  - 公平调度: 多用户交替发送，不会一个用户占满整个 Bot
-  - 代码简洁: 发送逻辑集中在一处
+持久化:
+  配置 REDIS_URL 时，任务同时写入 Redis，发送成功后移除
+  进程重启时从 Redis 恢复未完成任务
+  未配置 Redis 时纯内存，零影响
 """
 import asyncio
+import json
 import logging
 import time
+import uuid
 from collections import OrderedDict
 from typing import List, Dict, Optional
 
@@ -53,15 +55,38 @@ async def stop_all_queues():
 
 class SendTask:
     """一个发送批次"""
-    __slots__ = ('chat_id', 'files', 'caption', 'future', 'auto_id')
+    __slots__ = ('task_id', 'chat_id', 'files', 'caption', 'future', 'auto_id')
 
     def __init__(self, chat_id: int, files: List[Dict], caption: str = "",
-                 auto_id: str = None):
+                 auto_id: str = None, task_id: str = None):
+        self.task_id = task_id or uuid.uuid4().hex[:12]
         self.chat_id = chat_id
         self.files = files
         self.caption = caption
         self.future: asyncio.Future = asyncio.get_running_loop().create_future()
         self.auto_id = auto_id  # 用于 auto_send 取消
+
+    def to_json(self) -> str:
+        """序列化为 JSON（用于 Redis 持久化）"""
+        return json.dumps({
+            'id': self.task_id,
+            'chat_id': self.chat_id,
+            'files': self.files,
+            'caption': self.caption,
+            'auto_id': self.auto_id,
+        }, ensure_ascii=False, default=str)
+
+    @classmethod
+    def from_json(cls, data: str) -> "SendTask":
+        """从 JSON 反序列化"""
+        d = json.loads(data)
+        return cls(
+            chat_id=d['chat_id'],
+            files=d['files'],
+            caption=d.get('caption', ''),
+            auto_id=d.get('auto_id'),
+            task_id=d.get('id'),
+        )
 
 
 # ===== 队列 =====
@@ -79,6 +104,85 @@ class SendQueue:
         self._last_send = 0.0
         self._total_sent = 0
         self._rate_limit_until = 0.0  # Bot 级别限流截止时间（monotonic）
+        self._redis = None  # 延迟获取 RedisManager
+
+    @property
+    def _redis_key(self) -> str:
+        """Redis 队列 key"""
+        return f"sq:{self.bot_name}"
+
+    async def _get_redis(self):
+        """获取 Redis 实例（延迟导入）"""
+        if self._redis is None:
+            try:
+                from redis_manager import get_redis
+                r = await get_redis()
+                if r.available:
+                    self._redis = r
+                else:
+                    self._redis = False  # 标记不可用，不再重试
+            except Exception:
+                self._redis = False
+        return self._redis if self._redis is not False else None
+
+    async def _persist_task(self, task: SendTask):
+        """将任务持久化到 Redis"""
+        r = await self._get_redis()
+        if r:
+            try:
+                await r.queue_push(self._redis_key, task.to_json())
+            except Exception as e:
+                logger.warning("SendQueue(@%s): Redis 持久化失败: %s", self.bot_name, e)
+
+    async def _remove_task(self, task: SendTask):
+        """从 Redis 移除已完成的任务"""
+        r = await self._get_redis()
+        if r:
+            try:
+                # LREM count=1 删除第一个匹配的元素
+                await r._redis.lrem(self._redis_key, 1, task.to_json())
+            except Exception as e:
+                logger.warning("SendQueue(@%s): Redis 移除任务失败: %s", self.bot_name, e)
+
+    async def _restore_from_redis(self):
+        """从 Redis 恢复未完成的任务（启动时调用）"""
+        r = await self._get_redis()
+        if not r:
+            return 0
+
+        try:
+            # 获取所有待处理任务
+            key = self._redis_key
+            items = await r._redis.lrange(key, 0, -1)
+            if not items:
+                return 0
+
+            # 清空 Redis 队列（恢复后会重新持久化）
+            await r._redis.delete(key)
+
+            restored = 0
+            for item in items:
+                try:
+                    task = SendTask.from_json(item)
+                    if task.chat_id not in self._queues:
+                        self._queues[task.chat_id] = []
+                    self._queues[task.chat_id].append(task)
+                    restored += 1
+                except Exception as e:
+                    logger.warning("SendQueue(@%s): 恢复任务失败: %s", self.bot_name, e)
+
+            if restored > 0:
+                logger.info("SendQueue(@%s): 从 Redis 恢复 %d 个任务", self.bot_name, restored)
+                # 重新持久化到 Redis（干净的列表）
+                for tasks in self._queues.values():
+                    for t in tasks:
+                        await r.queue_push(key, t.to_json())
+                self._event.set()
+
+            return restored
+        except Exception as e:
+            logger.warning("SendQueue(@%s): Redis 恢复失败: %s", self.bot_name, e)
+            return 0
 
     def set_bot(self, bot):
         """设置 bot 实例（用于发送）"""
@@ -135,6 +239,7 @@ class SendQueue:
         if chat_id not in self._queues:
             self._queues[chat_id] = []
         self._queues[chat_id].append(task)
+        await self._persist_task(task)
         self._event.set()
         return await task.future
 
@@ -145,6 +250,8 @@ class SendQueue:
         if chat_id not in self._queues:
             self._queues[chat_id] = []
         self._queues[chat_id].append(task)
+        # 异步持久化
+        asyncio.create_task(self._persist_task(task))
         self._event.set()
         return task
 
@@ -158,6 +265,8 @@ class SendQueue:
                     t.future.cancel()
                 tasks.remove(t)
                 removed += 1
+                # 异步从 Redis 移除
+                asyncio.create_task(self._remove_task(t))
         if not tasks and chat_id in self._queues:
             del self._queues[chat_id]
         if removed:
@@ -170,6 +279,9 @@ class SendQueue:
     async def _consume_loop(self):
         """消费者主循环：Round-Robin 从各用户取任务"""
         from senders import send_batch
+
+        # 启动时从 Redis 恢复未完成任务
+        await self._restore_from_redis()
 
         while self._running:
             # 等待任务
@@ -219,6 +331,8 @@ class SendQueue:
                     self._total_sent += sent
                     if not task.future.done():
                         task.future.set_result(sent)
+                    # 发送成功，从 Redis 移除
+                    await self._remove_task(task)
                 except Exception as e:
                     from telegram.error import RetryAfter
                     from senders import SendBlockedError
@@ -229,7 +343,7 @@ class SendQueue:
                         self._rate_limit_until = time.monotonic() + wait
                         logger.warning("SendQueue(@%s): Bot 限流 %.0fs，暂停整个队列 (触发者 chat_id=%s, 剩余队列=%d)",
                                        self.bot_name, wait, task.chat_id, self.pending)
-                        # 将任务放回队列头部
+                        # 将任务放回队列头部（Redis 中不移除）
                         if chat_id not in self._queues:
                             self._queues[chat_id] = []
                         self._queues[chat_id].insert(0, task)
@@ -242,15 +356,19 @@ class SendQueue:
                             if not t.future.done():
                                 t.future.cancel()
                                 cancelled += 1
+                            await self._remove_task(t)
                         logger.warning("SendQueue(@%s): chat_id=%s 已拉黑 Bot，取消剩余 %d 个任务",
                                        self.bot_name, chat_id, cancelled)
                         if not task.future.done():
                             task.future.set_exception(e)
+                        await self._remove_task(task)
                     else:
                         logger.error("SendQueue(@%s): 发送失败 chat_id=%s: %s",
                                      self.bot_name, task.chat_id, e)
                         if not task.future.done():
                             task.future.set_exception(e)
+                        # 非限流失败也从 Redis 移除（避免重启后反复重试）
+                        await self._remove_task(task)
 
                 # 批次间固定间隔
                 await asyncio.sleep(SEND_BATCH_DELAY)
