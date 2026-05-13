@@ -65,6 +65,8 @@ async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # 如果指定了 bots 参数，显示每个 Bot 的详细信息
     if show_bots:
         bot_details = await get_platform_bot_details()
+        # 隐藏文件数为 0 的 Bot
+        bot_details = [b for b in bot_details if b['file_count'] > 0] if bot_details else []
         if not bot_details:
             text += "\n📭 暂无 Bot。"
         else:

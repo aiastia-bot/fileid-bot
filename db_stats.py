@@ -103,7 +103,7 @@ async def get_platform_bot_details() -> List[Dict]:
     """获取平台级 Bot 详情列表（含文件数统计）"""
     async with get_session() as session:
         result = await session.execute(
-            select(UserBot).where(UserBot.status != 'deleted').order_by(UserBot.created_at.desc())
+            select(UserBot).where(UserBot.status != 'deleted').order_by(UserBot.bot_username)
         )
         bots = result.scalars().all()
 
