@@ -211,9 +211,23 @@ class SendQueue:
                     if not task.future.done():
                         task.future.set_result(sent)
                 except Exception as e:
-                    # 用户已拉黑 Bot：取消该用户所有剩余任务
+                    from telegram.error import RetryAfter
                     from senders import SendBlockedError
-                    if isinstance(e, SendBlockedError):
+
+                    if isinstance(e, RetryAfter):
+                        # 限流：等待后重新入队，不丢弃任务
+                        wait = e.retry_after if hasattr(e, 'retry_after') and e.retry_after else 30
+                        wait = min(wait, 120)  # 单次最多等 120 秒
+                        logger.warning("SendQueue(@%s): 限流等待 %.0fs 后重试 (chat_id=%s, 剩余队列=%d)",
+                                       self.bot_name, wait, task.chat_id, self.pending)
+                        await asyncio.sleep(wait)
+                        # 重新入队到该用户队列头部
+                        if chat_id not in self._queues:
+                            self._queues[chat_id] = []
+                        self._queues[chat_id].insert(0, task)
+                        continue  # 跳过批次间隔，直接进入下一轮
+                    elif isinstance(e, SendBlockedError):
+                        # 用户已拉黑 Bot：取消该用户所有剩余任务
                         cancelled = 0
                         remaining = self._queues.pop(chat_id, [])
                         for t in remaining:
@@ -222,11 +236,13 @@ class SendQueue:
                                 cancelled += 1
                         logger.warning("SendQueue(@%s): chat_id=%s 已拉黑 Bot，取消剩余 %d 个任务",
                                        self.bot_name, chat_id, cancelled)
+                        if not task.future.done():
+                            task.future.set_exception(e)
                     else:
                         logger.error("SendQueue(@%s): 发送失败 chat_id=%s: %s",
                                      self.bot_name, task.chat_id, e)
-                    if not task.future.done():
-                        task.future.set_exception(e)
+                        if not task.future.done():
+                            task.future.set_exception(e)
 
                 # 批次间固定间隔
                 await asyncio.sleep(SEND_BATCH_DELAY)

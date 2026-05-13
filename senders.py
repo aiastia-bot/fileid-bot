@@ -189,6 +189,9 @@ async def _send_single(bot, chat_id, f, caption, bot_name) -> int:
         else:
             await _retry_send(bot.send_document, chat_id=chat_id, document=fid, caption=cap, **timeout)
         return 1
+    except RetryAfter:
+        # 限流直接上抛，让队列等待重试
+        raise
     except Exception as e:
         # 用户已拉黑 Bot，立即中止整个发送任务
         if _is_blocked_error(e):
@@ -229,7 +232,13 @@ async def _send_media_group(bot, chat_id, files, caption, type_key, bot_name) ->
     try:
         await _retry_send(bot.send_media_group, chat_id=chat_id, media=media_list, **timeout)
         return len(media_list)
+    except RetryAfter as e:
+        # 限流不降级逐个发送，直接上抛让队列等待重试
+        raise
+    except SendBlockedError:
+        raise
     except Exception as e:
+        # 非限流错误：降级为逐个发送
         logger.warning("媒体组发送失败，降级逐个发送: %s", e)
 
     # 降级：逐个发送
