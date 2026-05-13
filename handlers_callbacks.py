@@ -9,6 +9,7 @@ from config import AUTO_SEND_INTERVAL, GROUP_SEND_SIZE, FILE_TYPE_MAP
 from database import get_collection, get_collection_files
 from utils import escape_markdown
 from senders import send_file_group, _retry_send
+from send_queue import get_queue_from_context
 
 logger = logging.getLogger(__name__)
 
@@ -297,10 +298,11 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
     sent_pages.add(page)
     context.user_data[sent_key] = sent_pages
 
-    # 发送本页文件
+    # 通过 SendQueue 发送本页文件（享受 Bot 级别限流保护 + Redis 持久化）
     logger.info("_send_paginated: 发送第 %d 页, %d 个文件", page, len(page_files))
     try:
-        sent = await send_file_group(context, chat_id, page_files)
+        queue = get_queue_from_context(context)
+        sent = await queue.submit_batch(chat_id, page_files)
         logger.info("_send_paginated: 第 %d 页发送完成, sent=%d", page, sent)
     except Exception as e:
         logger.error("_send_paginated: 第 %d 页发送失败: %s", page, e, exc_info=True)
@@ -393,13 +395,15 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
             all_groups.append(lst[i:i + GROUP_SEND_SIZE])
 
     sent_count = 0
+    queue = get_queue_from_context(context)
     for idx, group in enumerate(all_groups):
         if context.user_data.get('stop_auto_send'):
+            # 取消队列中该用户剩余的 auto_send 任务
             await _retry_send(context.bot.send_message, chat_id=chat_id, text=f"⏹ 已停止。成功发送 {sent_count}/{total} 个文件。")
             return
 
         try:
-            sent_count += await send_file_group(context, chat_id, group)
+            sent_count += await queue.submit_batch(chat_id, group)
         except Exception as e:
             logger.error("自动发送组失败: %s", e)
 
@@ -497,7 +501,8 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
         return
 
     logger.info("_send_page_files: 准备发送 %d 个文件", len(page_files))
-    sent = await send_file_group(context, chat_id, page_files)
+    queue = get_queue_from_context(context)
+    sent = await queue.submit_batch(chat_id, page_files)
     result_text = f"✅ 已发送第{page}页文件 ({sent}/{len(page_files)})"
     logger.info("_send_page_files 完成: %s", result_text)
     await _safe_edit_query(query, context, chat_id, result_text)
