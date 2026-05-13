@@ -469,15 +469,30 @@ class BotManager:
         self._webhook_monitor_task = asyncio.create_task(_monitor_loop())
 
     async def _verify_all_webhooks(self):
-        """验证所有用户 Bot 的 webhook 是否指向正确地址，被篡改则恢复"""
+        """验证所有用户 Bot：getMe 心跳检查 Token 有效性 + webhook 地址校验"""
         if not WEBHOOK_HOST:
             return
 
         checked = 0
         recovered = 0
+        revoked_bots = []
 
         for bot_db_id, app in list(self._apps.items()):
             try:
+                # 1. getMe 心跳检查 Token 是否有效
+                try:
+                    await app.bot.get_me()
+                except Exception as e:
+                    err_str = str(e)
+                    if "Unauthorized" in err_str or "401" in err_str:
+                        logger.warning("💔 心跳检测: Bot @%s (db_id=%s) Token 已失效", app.bot.username, bot_db_id)
+                        revoked_bots.append((bot_db_id, app.bot.username, app.bot_data))
+                        continue
+                    else:
+                        logger.error("心跳检测 Bot (db_id=%s) getMe 异常: %s", bot_db_id, err_str)
+                        continue
+
+                # 2. webhook 地址验证
                 info = await app.bot.get_webhook_info()
                 expected_url = self._get_webhook_url(bot_db_id)
 
@@ -497,10 +512,14 @@ class BotManager:
                     logger.info("✅ Bot @%s (db_id=%s) 的 webhook 已恢复", app.bot.username, bot_db_id)
                 checked += 1
             except Exception as e:
-                logger.error("验证 Bot (db_id=%s) webhook 失败: %s", bot_db_id, e)
+                logger.error("验证 Bot (db_id=%s) 失败: %s", bot_db_id, e)
 
-        if checked > 0:
-            logger.info("🔍 Webhook 验证完成：检查 %d 个 Bot，恢复 %d 个", checked, recovered)
+        # 处理被 revoked 的 Bot
+        for bot_db_id, bot_username, bot_data in revoked_bots:
+            await _auto_stop_revoked_bot(bot_username, bot_data)
+
+        if checked > 0 or revoked_bots:
+            logger.info("🔍 Webhook + 心跳验证完成：检查 %d 个 Bot，恢复 %d 个 webhook，revoked %d 个", checked, recovered, len(revoked_bots))
 
 
 class MasterScheduler:
