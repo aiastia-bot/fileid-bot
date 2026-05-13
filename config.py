@@ -15,7 +15,7 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
 ADMIN_IDS = [int(x) for x in os.environ.get('ADMIN_IDS', '').split(',') if x.strip().isdigit()]
 CODE_PREFIX = os.environ.get('CODE_PREFIX', '')  # 自定义代码前缀，默认使用 bot 用户名（不带@）
 
-MAX_COLLECTION_FILES = 1500
+MAX_COLLECTION_FILES = 999
 AUTO_SEND_INTERVAL = 5  # 秒
 GROUP_SEND_SIZE = 10  # 每组最多10个
 CODE_LENGTH = 32  # 随机码长度
