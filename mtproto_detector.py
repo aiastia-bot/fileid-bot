@@ -7,10 +7,14 @@ MTProto 异常行为检测器（独立中间件插件）
   正常情况下，Webhook 永远不会收到 Bot 自身发的消息。
   一旦收到 = 有人在用 MTProto 客户端操作该 Bot Token。
 
+  注意：用户转发 Bot 的消息给 Bot 不会触发误报，
+  因为 from_user 是转发者（用户），不是 Bot 自身。
+
 双模式：
   strict（严格模式，默认，推荐）：
-    任何来自 Bot 自身的消息都触发封禁，不依赖关键词。
-    最强检测，MTProto 一活跃就立刻发现。
+    任何来自 Bot 自身的消息都触发。
+    累积 3 次触发后执行封禁（停止 Bot + 标记 compromised）。
+    每次触发都会通知管理员（包含当前计数）。
 
   keyword（关键词模式）：
     Bot 自身消息需包含预设关键词才触发。
@@ -31,6 +35,9 @@ from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
+# 严格模式触发阈值
+STRICT_THRESHOLD = 3
+
 
 class MTProtoDetector:
     """MTProto 异常行为检测器"""
@@ -38,6 +45,8 @@ class MTProtoDetector:
     def __init__(self):
         self._keywords_cache: List[str] = []
         self._cache_loaded: bool = False
+        # 严格模式触发计数器 {bot_db_id: count}
+        self._strike_counts: dict[int, int] = {}
 
     async def _ensure_cache(self):
         """确保关键词缓存已加载"""
@@ -68,15 +77,25 @@ class MTProtoDetector:
         mode = await get_platform_setting('mtproto_mode', 'strict')
         return mode if mode in ('strict', 'keyword') else 'strict'
 
+    def get_strike_count(self, bot_db_id: int) -> int:
+        """获取指定 Bot 的当前触发计数"""
+        return self._strike_counts.get(bot_db_id, 0)
+
+    def reset_strike_count(self, bot_db_id: int):
+        """重置指定 Bot 的触发计数（管理员恢复 Bot 时调用）"""
+        self._strike_counts.pop(bot_db_id, None)
+
     async def check(self, bot_db_id: int, app, update_data: dict) -> bool:
         """
         检查 webhook update 是否触发 MTProto 异常检测。
 
-        返回 True 表示检测到异常，调用方应执行封禁。
+        返回 True 表示达到封禁阈值，调用方应执行封禁。
 
         检测逻辑：
-        1. 严格模式：只要消息来自 Bot 自身就触发（最强）
-        2. 关键词模式：Bot 自身消息 + 关键词匹配才触发
+        1. 严格模式：消息来自 Bot 自身就计数，累积 3 次封禁
+        2. 关键词模式：Bot 自身消息 + 关键词匹配立即封禁
+
+        注意：用户转发 Bot 的消息不会触发（from_user 是用户不是 Bot）
         """
         # 1. 检查是否已开启
         if not await self.is_enabled():
@@ -111,15 +130,34 @@ class MTProtoDetector:
 
         mode = await self.get_mode()
 
-        # 5. 严格模式：直接触发
+        # 5. 严格模式：累积计数
         if mode == 'strict':
-            logger.warning(
-                "🚨 MTProto 严格模式触发！Bot @%s (db_id=%s) 收到自身消息（MTProto 登录）",
-                getattr(app.bot, 'username', '?'), bot_db_id
-            )
-            return True
+            current_count = self._strike_counts.get(bot_db_id, 0) + 1
+            self._strike_counts[bot_db_id] = current_count
 
-        # 6. 关键词模式：需匹配关键词
+            bot_username = getattr(app.bot, 'username', '?')
+            logger.warning(
+                "🚨 MTProto 严格模式触发！Bot @%s (db_id=%s) 收到自身消息 "
+                "(%d/%d)",
+                bot_username, bot_db_id, current_count, STRICT_THRESHOLD
+            )
+
+            # 每次触发都通知管理员
+            await self._notify_admin_strike(
+                bot_username, bot_db_id, bot_record.get('owner_id', '?'),
+                update_data, current_count, STRICT_THRESHOLD
+            )
+
+            # 达到阈值才执行封禁
+            if current_count >= STRICT_THRESHOLD:
+                logger.warning(
+                    "🚨 Bot @%s (db_id=%s) 已达 %d 次触发阈值，执行封禁！",
+                    bot_username, bot_db_id, STRICT_THRESHOLD
+                )
+                return True
+            return False
+
+        # 6. 关键词模式：需匹配关键词（立即封禁，不累积）
         text = message_data.get('text', '') or ''
         caption = message_data.get('caption', '') or ''
         full_text = f"{text} {caption}".strip()
@@ -165,22 +203,31 @@ class MTProtoDetector:
         # 1. 更新数据库状态为 compromised
         await update_user_bot_status(bot_db_id, 'compromised')
 
-        # 2. 停止 Bot
+        # 2. 重置计数器
+        self.reset_strike_count(bot_db_id)
+
+        # 3. 停止 Bot
         if bot_manager:
             await bot_manager.stop_bot(bot_db_id)
 
-        # 3. 通知管理员
-        await self._notify_admins(bot_username, bot_db_id, owner_id, update_data, mode)
+        # 4. 通知管理员 - 最终封禁通知
+        await self._notify_admin_banned(bot_username, bot_db_id, owner_id, update_data, mode)
 
-    async def _notify_admins(self, bot_username: str, bot_db_id: int, owner_id, update_data: dict, mode: str = 'strict'):
-        """通知管理员检测到异常"""
+    async def _notify_admin_strike(self, bot_username: str, bot_db_id: int, owner_id,
+                                     update_data: dict, current: int, threshold: int):
+        """每次严格模式触发都通知管理员"""
         try:
             from config import BOT_TOKEN, ADMIN_IDS
             import httpx
 
             message_data = update_data.get('message', {})
             sample_text = (message_data.get('text', '') or '')[:100]
-            mode_text = "严格模式（任何自身消息）" if mode == 'strict' else "关键词模式"
+
+            remaining = threshold - current
+            if remaining > 0:
+                level = "⚠️ 警告" if current == 1 else "🟠 严重警告" if current == 2 else "🔴"
+            else:
+                level = "🔴 即将封禁"
 
             async with httpx.AsyncClient() as client:
                 for admin_id in ADMIN_IDS:
@@ -189,20 +236,51 @@ class MTProtoDetector:
                         json={
                             "chat_id": admin_id,
                             "text": (
-                                f"🚨 <b>MTProto 异常行为检测触发！</b>\n\n"
+                                f"{level} <b>MTProto 异常行为 [{current}/{threshold}]</b>\n\n"
+                                f"🤖 Bot：@{bot_username} (db_id: {bot_db_id})\n"
+                                f"👤 所有者：<code>{owner_id}</code>\n"
+                                f"🔍 模式：严格模式\n\n"
+                                f"📝 消息样本：\n<code>{sample_text}</code>\n\n"
+                                f"{'还差 ' + str(remaining) + ' 次触发将自动封禁。' if remaining > 0 else '已达阈值，即将执行封禁！'}"
+                            ),
+                            "parse_mode": "HTML",
+                        }
+                    )
+        except Exception as e:
+            logger.error("通知管理员 MTProto 触发失败: %s", e)
+
+    async def _notify_admin_banned(self, bot_username: str, bot_db_id: int, owner_id,
+                                    update_data: dict, mode: str = 'strict'):
+        """最终封禁通知"""
+        try:
+            from config import BOT_TOKEN, ADMIN_IDS
+            import httpx
+
+            message_data = update_data.get('message', {})
+            sample_text = (message_data.get('text', '') or '')[:100]
+            mode_text = "严格模式（累积触发）" if mode == 'strict' else "关键词模式"
+
+            async with httpx.AsyncClient() as client:
+                for admin_id in ADMIN_IDS:
+                    await client.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                        json={
+                            "chat_id": admin_id,
+                            "text": (
+                                f"🚨 <b>MTProto 检测 — Bot 已封禁！</b>\n\n"
                                 f"🤖 Bot：@{bot_username} (db_id: {bot_db_id})\n"
                                 f"👤 所有者：<code>{owner_id}</code>\n"
                                 f"🔍 检测模式：{mode_text}\n\n"
-                                f"📝 消息样本：\n<code>{sample_text}</code>\n\n"
+                                f"📝 最后消息样本：\n<code>{sample_text}</code>\n\n"
                                 f"⚠️ 该 Bot 已自动停止并标记为 <b>compromised</b>。\n"
                                 f"使用 <code>/startbot @{bot_username}</code> 可手动恢复。"
                             ),
                             "parse_mode": "HTML",
                         }
                     )
-            logger.info("已通知管理员 Bot @%s 的 MTProto 异常", bot_username)
+            logger.info("已通知管理员 Bot @%s 的 MTProto 封禁", bot_username)
         except Exception as e:
-            logger.error("通知管理员 MTProto 检测失败: %s", e)
+            logger.error("通知管理员 MTProto 封禁失败: %s", e)
 
     def get_keywords(self) -> List[str]:
         """获取当前缓存的关键词列表"""
