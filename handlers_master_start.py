@@ -46,7 +46,11 @@ async def master_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "1. 使用 /newbot 一键创建 Bot\n"
         "2. 或直接 /addbot 添加已有 Bot\n"
         "3. 使用 /vip 升级会员可创建更多 Bot\n\n"
-        "所有 Bot 共享服务器资源，你无需部署！"
+        "所有 Bot 共享服务器资源，你无需部署！\n\n"
+        "⚠️ <b>重要警告：</b>\n"
+        "请勿将 Bot Token 在其他平台或客户端同时使用（如 MTProto 客户端、"
+        "其他 Bot 框架等）。多处使用同一个 Token 会导致冲突，"
+        "可能造成 Bot 被自动封禁或 Token 失效。"
     )
     await _retry_send(update.message.reply_text, text, parse_mode="HTML")
 
