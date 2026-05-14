@@ -364,8 +364,8 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 重置 MTProto 检测计数器
     mgr = get_bot_manager()
-    if mgr and hasattr(mgr, 'mtproto_detector') and mgr.mtproto_detector:
-        mgr.mtproto_detector.reset_strike_count(bot_record['id'])
+    if mgr and hasattr(mgr, '_mtproto_detector') and mgr._mtproto_detector:
+        mgr._mtproto_detector.reset_strike_count(bot_record['id'])
 
     # 先停止旧实例（无论是否在运行都尝试停止）
     if mgr:
@@ -467,7 +467,7 @@ async def stop_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ==================== MTProto 检测管理 ====================
 
 async def mtproto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/mtproto 管理员管理 MTProto 异常行为检测"""
+    """/mtproto 管理员管理 MTProto 异常行为检测（消息ID连续性分析）"""
     from config import ADMIN_IDS
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
@@ -476,17 +476,11 @@ async def mtproto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     args = context.args or []
 
-    # 无参数：显示当前状态和关键词列表
+    # 无参数：显示当前状态
     if not args or args[0] in ('list', 'status'):
         from config import MTPROTO_DETECTION
         db_enabled = await get_platform_setting('mtproto_detection', 'on')
-        mode = await get_platform_setting('mtproto_mode', 'strict')
-        if mode not in ('strict', 'keyword'):
-            mode = 'strict'
-        keywords_raw = await get_platform_setting('mtproto_keywords', '')
-        keywords = [k.strip() for k in keywords_raw.split('||') if k.strip()] if keywords_raw else []
-
-        mode_text = "🔒 严格模式（任何自身消息都触发）" if mode == 'strict' else "🔑 关键词模式（需匹配关键词）"
+        gap_threshold = await get_platform_setting('mtproto_gap_threshold', '2')
 
         # 真实状态 = 环境变量 AND 数据库 都开启
         actually_on = MTPROTO_DETECTION and db_enabled == 'on'
@@ -501,30 +495,33 @@ async def mtproto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         else:
             overall = "🔴 <b>已暂停</b> — 数据库已关闭"
 
+        # 检测器统计
+        mgr = get_bot_manager()
+        detector_stats = ""
+        if mgr and hasattr(mgr, '_mtproto_detector') and mgr._mtproto_detector:
+            det = mgr._mtproto_detector
+            tracked_chats = len(det._last_msg_ids)
+            detector_stats = f"\n📊 跟踪聊天数：{tracked_chats}\n"
+
         text = (
-            f"🛡️ <b>MTProto 异常行为检测</b>\n\n"
+            f"🛡️ <b>MTProto 异常行为检测</b>\n"
+            f"<i>基于消息ID连续性分析</i>\n\n"
             f"有效状态：{overall}\n\n"
             f"⚙️ 环境变量：{env_status}\n"
             f"⚙️ 数据库开关：{db_status}\n"
-            f"🔍 检测模式：{mode_text}\n"
-            f"📝 关键词数量：{len(keywords)} 个\n\n"
-        )
-
-        if keywords:
-            text += "<b>当前关键词：</b>\n"
-            for i, kw in enumerate(keywords, 1):
-                text += f"  {i}. <code>{escape(kw[:60])}</code>\n"
-        else:
-            text += "📭 暂未配置检测关键词。\n"
-
-        text += (
-            f"\n{'='*20}\n"
+            f"📏 跳跃阈值：gap > {escape(gap_threshold)}"
+            f"（message_id 间隙超过此值视为可疑）"
+            f"{detector_stats}\n"
+            f"{'='*20}\n"
+            f"<b>检测原理：</b>\n"
+            f"当有人通过 MTProto 使用 Bot Token 时，\n"
+            f"其回复会占用 message_id 序号。\n"
+            f"正常消息 ID 连续递增（gap=1），\n"
+            f"出现跳跃说明有第三方在发消息。\n\n"
             f"<b>可用命令：</b>\n"
             f"• <code>/mtproto on</code> — 开启检测\n"
             f"• <code>/mtproto off</code> — 关闭检测\n"
-            f"• <code>/mtproto mode strict|keyword</code> — 切换模式\n"
-            f"• <code>/mtproto add 关键词</code> — 添加关键词\n"
-            f"• <code>/mtproto del 编号</code> — 删除关键词"
+            f"• <code>/mtproto threshold 数字</code> — 设置跳跃阈值（默认2）"
         )
 
         await _retry_send(update.message.reply_text, text, parse_mode="HTML")
@@ -546,86 +543,32 @@ async def mtproto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.info("管理员 %s 关闭了 MTProto 检测", user_id)
         return
 
-    # /mtproto mode strict|keyword
-    if action == 'mode':
-        if len(args) < 2 or args[1].lower() not in ('strict', 'keyword'):
-            await _retry_send(update.message.reply_text, 
-                "❌ 请指定模式。\n\n"
-                "• <code>/mtproto mode strict</code> — 严格模式（任何自身消息都触发，推荐）\n"
-                "• <code>/mtproto mode keyword</code> — 关键词模式（需匹配关键词）",
-                parse_mode="HTML"
-            )
-            return
-
-        new_mode = args[1].lower()
-        await set_platform_setting('mtproto_mode', new_mode)
-        mode_text = "🔒 严格模式" if new_mode == 'strict' else "🔑 关键词模式"
-        await _retry_send(update.message.reply_text, 
-            f"✅ 检测模式已切换为 <b>{mode_text}</b>。",
-            parse_mode="HTML"
-        )
-        logger.info("管理员 %s 切换 MTProto 检测模式为 %s", user_id, new_mode)
-        return
-
-    # /mtproto add 关键词
-    if action == 'add':
+    # /mtproto threshold 数字
+    if action == 'threshold':
         if len(args) < 2:
             await _retry_send(update.message.reply_text, 
-                "❌ 请提供关键词。\n用法：<code>/mtproto add 关键词内容</code>",
-                parse_mode="HTML"
-            )
-            return
-
-        keyword = " ".join(args[1:]).strip()
-        if not keyword:
-            await _retry_send(update.message.reply_text, "❌ 关键词不能为空。")
-            return
-
-        keywords_raw = await get_platform_setting('mtproto_keywords', '')
-        keywords = [k.strip() for k in keywords_raw.split('||') if k.strip()] if keywords_raw else []
-
-        if keyword in keywords:
-            await _retry_send(update.message.reply_text, "⚠️ 该关键词已存在。")
-            return
-
-        keywords.append(keyword)
-        await set_platform_setting('mtproto_keywords', '||'.join(keywords))
-        await _retry_send(update.message.reply_text, 
-            f"✅ 已添加关键词：<code>{escape(keyword[:60])}</code>\n当前共 {len(keywords)} 个关键词。",
-            parse_mode="HTML"
-        )
-        logger.info("管理员 %s 添加了 MTProto 检测关键词: %s", user_id, keyword[:50])
-        return
-
-    # /mtproto del 编号
-    if action == 'del':
-        if len(args) < 2:
-            await _retry_send(update.message.reply_text, 
-                "❌ 请提供编号。\n用法：<code>/mtproto del 编号</code>",
+                "❌ 请提供阈值。\n用法：<code>/mtproto threshold 2</code>\n\n"
+                "阈值含义：message_id 间隙超过此值视为可疑。\n"
+                "默认 2（即 gap≥3 触发）。",
                 parse_mode="HTML"
             )
             return
 
         try:
-            idx = int(args[1]) - 1
+            val = int(args[1])
+            if val < 1:
+                raise ValueError
         except ValueError:
-            await _retry_send(update.message.reply_text, "❌ 编号必须是数字。")
+            await _retry_send(update.message.reply_text, "❌ 阈值必须是正整数（建议 1-5）。")
             return
 
-        keywords_raw = await get_platform_setting('mtproto_keywords', '')
-        keywords = [k.strip() for k in keywords_raw.split('||') if k.strip()] if keywords_raw else []
-
-        if idx < 0 or idx >= len(keywords):
-            await _retry_send(update.message.reply_text, f"❌ 编号超出范围（1-{len(keywords)}）。")
-            return
-
-        removed = keywords.pop(idx)
-        await set_platform_setting('mtproto_keywords', '||'.join(keywords))
+        await set_platform_setting('mtproto_gap_threshold', str(val))
         await _retry_send(update.message.reply_text, 
-            f"✅ 已删除关键词：<code>{escape(removed[:60])}</code>\n剩余 {len(keywords)} 个关键词。",
+            f"✅ 跳跃阈值已设置为 <b>{val}</b>。\n"
+            f"message_id 间隙 > {val} 时视为可疑。",
             parse_mode="HTML"
         )
-        logger.info("管理员 %s 删除了 MTProto 检测关键词: %s", user_id, removed[:50])
+        logger.info("管理员 %s 设置 MTProto 跳跃阈值为 %d", user_id, val)
         return
 
     # 未知子命令
@@ -634,8 +577,7 @@ async def mtproto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "可用命令：\n"
         "• <code>/mtproto</code> — 查看状态\n"
         "• <code>/mtproto on/off</code> — 开关\n"
-        "• <code>/mtproto add 关键词</code> — 添加\n"
-        "• <code>/mtproto del 编号</code> — 删除",
+        "• <code>/mtproto threshold 数字</code> — 设置跳跃阈值",
         parse_mode="HTML"
     )
 
