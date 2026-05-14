@@ -26,6 +26,7 @@ def run_webhook_master(application: Application, bot_manager: BotManager, schedu
         if WEBHOOK_SECRET:
             secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token', '')
             if secret != WEBHOOK_SECRET:
+                logger.warning("webhook secret 验证失败: %s", path)
                 return web.Response(status=403)
 
         # 分发到主Bot
@@ -139,7 +140,9 @@ def run_webhook_master(application: Application, bot_manager: BotManager, schedu
             ("blacklist", "黑名单管理（管理员）"),
             ("export", "导出数据（管理员）"),
             ("broadcast", "广播消息（管理员）"),
-            ("startbot", "启动指定Bot（管理员）"),
+            ("startbot", "重启/启动Bot（管理员）"),
+            ("stopbot", "停止指定Bot（管理员）"),
+            ("mtproto", "MTProto检测（管理员）"),
         ]
         try:
             await application.bot.set_my_commands(commands)
@@ -256,7 +259,9 @@ def run_webhook(application: Application, bot_manager: BotManager):
             ("blacklist", "黑名单管理（管理员）"),
             ("export", "导出数据（管理员）"),
             ("broadcast", "广播消息（管理员）"),
-            ("startbot", "启动指定Bot（管理员）"),
+            ("startbot", "重启/启动Bot（管理员）"),
+            ("stopbot", "停止指定Bot（管理员）"),
+            ("mtproto", "MTProto检测（管理员）"),
         ]
         try:
             await application.bot.set_my_commands(commands)

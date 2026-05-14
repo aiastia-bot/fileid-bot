@@ -1,4 +1,4 @@
-"""管理员命令 - /platform, /export, /startbot, /broadcast"""
+"""管理员命令 - /platform, /export, /startbot, /stopbot, /mtproto, /broadcast"""
 import html
 import io
 import json
@@ -19,6 +19,7 @@ from database import (
     get_active_bot_files,
     get_files_by_bot_db_id,
     get_blacklist_count,
+    get_platform_setting, set_platform_setting,
 )
 
 logger = logging.getLogger(__name__)
@@ -139,8 +140,52 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     args = context.args or []
 
+    # /export txt @bot_username — 纯文本导出指定Bot的code列表
+    if args and len(args) >= 2 and args[0] == 'txt':
+        export_arg = args[1].strip().lstrip('@')
+        status_msg = await _retry_send(update.message.reply_text, "⏳ 正在导出 TXT...")
+
+        try:
+            bot_record = None
+            try:
+                bot_record = await get_user_bot_by_id(int(export_arg))
+            except ValueError:
+                pass
+            if not bot_record:
+                bot_record = await get_user_bot_by_username(export_arg)
+            if not bot_record:
+                await status_msg.edit_text(f"❌ 未找到 Bot：{escape(export_arg)}")
+                return
+            bot_db_id_export = bot_record['id']
+            bot_username = bot_record['bot_username']
+            files = await get_files_by_bot_db_id(bot_db_id_export)
+            if not files:
+                await status_msg.edit_text(f"📭 Bot @{escape(bot_username)} (ID:{bot_db_id_export}) 没有文件记录。")
+                return
+
+            # 生成纯文本（每行一个code）
+            output = io.StringIO()
+            for f in files:
+                output.write(f"{f['code']}\n")
+            export_text = output.getvalue()
+            filename = f"{bot_username}_{bot_db_id_export}_codes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
+            bytes_io = io.BytesIO(export_text.encode('utf-8'))
+            await _retry_send(context.bot.send_document, 
+                chat_id=update.message.chat_id,
+                document=bytes_io,
+                filename=filename,
+                caption=f"📄 @{escape(bot_username)} (ID:{bot_db_id_export}) 纯文本 code 导出，共 {len(files)} 条。",
+            )
+            await status_msg.delete()
+            logger.info("管理员 %s 导出了 Bot @%s (ID:%d) 的 TXT code (%d 条)", user_id, bot_username, bot_db_id_export, len(files))
+        except Exception as e:
+            await status_msg.edit_text(f"❌ 导出失败: {escape(str(e))}")
+            logger.error("导出Bot TXT数据失败: %s", e, exc_info=True)
+        return
+
     # /export <bot_username|db_id> — 导出指定Bot的文件代码CSV（支持同名Bot）
-    if args and args[0] not in ('json', 'csv', 'bots', 'code'):
+    if args and args[0] not in ('json', 'csv', 'bots', 'code', 'txt'):
         export_arg = args[0].strip().lstrip('@')
         status_msg = await _retry_send(update.message.reply_text, "⏳ 正在导出...")
 
@@ -194,7 +239,8 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "• <code>/export json</code> — 完整 JSON 数据\n"
             "• <code>/export csv [日期]</code> — 活跃Bot文件 CSV（如 /export csv 2026-05-05）\n"
             "• <code>/export bots</code> — Bot 列表 CSV\n"
-            "• <code>/export @bot_username</code> — 指定Bot文件代码 CSV",
+            "• <code>/export @bot_username</code> — 指定Bot文件代码 CSV\n"
+            "• <code>/export txt @bot_username</code> — 指定Bot纯文本 code 列表",
             parse_mode="HTML"
         )
         return
@@ -260,10 +306,23 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error("导出数据失败: %s", e, exc_info=True)
 
 
-# ==================== 管理员启动Bot ====================
+# ==================== 管理员重启/启动Bot ====================
+
+async def _find_bot_record(arg: str):
+    """辅助函数：按数据库ID或用户名查找Bot记录"""
+    bot_record = None
+    try:
+        bot_record = await get_user_bot_by_id(int(arg))
+    except ValueError:
+        pass
+    if not bot_record:
+        username = arg.lstrip('@')
+        bot_record = await get_user_bot_by_username(username)
+    return bot_record
+
 
 async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/startbot 管理员启动指定Bot（支持 revoked 状态的Bot重新尝试启动）"""
+    """/startbot 管理员重启/启动指定Bot（始终先停止再启动）"""
     from config import ADMIN_IDS
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
@@ -272,39 +331,19 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if not context.args:
         await _retry_send(update.message.reply_text, 
-            "🚀 <b>启动指定 Bot</b>\n\n"
+            "🔄 <b>重启/启动 Bot</b>\n\n"
             "用法：<code>/startbot @用户名</code> 或 <code>/startbot 数据库ID</code>\n\n"
-            "可用于启动已停止或 revoked 状态的 Bot。\n"
-            "使用 /platform bots 查看所有 Bot。",
+            "无论 Bot 是否在运行，都会先停止再重新启动。\n"
+            "可用于重启运行中的 Bot，或启动已停止/revoked 的 Bot。",
             parse_mode="HTML"
         )
         return
 
     arg = context.args[0].strip()
-    bot_record = None
-
-    # 按数据库ID查找
-    try:
-        bot_db_id = int(arg)
-        bot_record = await get_user_bot_by_id(bot_db_id)
-    except ValueError:
-        pass
-
-    # 按用户名查找
-    if not bot_record:
-        username = arg.lstrip('@')
-        bot_record = await get_user_bot_by_username(username)
+    bot_record = await _find_bot_record(arg)
 
     if not bot_record:
         await _retry_send(update.message.reply_text, f"❌ 未找到 Bot：{escape(arg)}")
-        return
-
-    # 检查是否已在运行
-    mgr = get_bot_manager()
-    if mgr and bot_record['id'] in mgr.get_all_apps():
-        await _retry_send(update.message.reply_text, 
-            f"ℹ️ Bot @{escape(bot_record['bot_username'])} 已在运行中，无需启动。"
-        )
         return
 
     # 检查是否被封禁
@@ -315,14 +354,16 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
+    action_text = "重启" if mgr_running_check(bot_record['id']) else "启动"
     status_msg = await _retry_send(update.message.reply_text, 
-        f"⏳ 正在启动 @{escape(bot_record['bot_username'])}..."
+        f"⏳ 正在{action_text} @{escape(bot_record['bot_username'])}..."
     )
 
-    # 更新数据库状态为 active
+    # 更新数据库状态为 active（包括从 compromised 恢复）
     await update_user_bot_status(bot_record['id'], 'active')
 
-    # 先停止旧实例（如果存在）
+    # 先停止旧实例（无论是否在运行都尝试停止）
+    mgr = get_bot_manager()
     if mgr:
         await mgr.stop_bot(bot_record['id'])
 
@@ -332,22 +373,224 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if success:
         await status_msg.edit_text(
-            f"✅ <b>Bot 启动成功！</b>\n\n"
+            f"✅ <b>Bot {action_text}成功！</b>\n\n"
             f"🤖 @{escape(bot_record['bot_username'])}\n"
             f"🆔 Bot ID：<code>{bot_record['bot_id']}</code>\n"
             f"👤 所有者：<code>{bot_record['owner_id']}</code>",
             parse_mode="HTML"
         )
-        logger.info("管理员 %s 启动了 Bot @%s", user_id, bot_record['bot_username'])
+        logger.info("管理员 %s %s了 Bot @%s", user_id, action_text, bot_record['bot_username'])
     else:
         await status_msg.edit_text(
-            f"❌ <b>启动失败</b>\n\n"
+            f"❌ <b>{action_text}失败</b>\n\n"
             f"Bot @{escape(bot_record['bot_username'])} 启动失败。\n"
             f"可能原因：Token 已失效。\n\n"
             f"💡 让用户使用 /updatetoken 更新 Token，\n"
             f"或使用 /delbot 删除后重建。",
             parse_mode="HTML"
         )
+
+
+def mgr_running_check(bot_db_id: int) -> bool:
+    """检查 Bot 是否在 BotManager 中运行"""
+    mgr = get_bot_manager()
+    return mgr is not None and bot_db_id in mgr.get_all_apps()
+
+
+# ==================== 管理员停止Bot ====================
+
+async def stop_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/stopbot 管理员停止指定Bot"""
+    from config import ADMIN_IDS
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
+        return
+
+    if not context.args:
+        await _retry_send(update.message.reply_text, 
+            "🛑 <b>停止指定 Bot</b>\n\n"
+            "用法：<code>/stopbot @用户名</code> 或 <code>/stopbot 数据库ID</code>\n\n"
+            "停止后的 Bot 只有管理员可通过 /startbot 重新启动。\n"
+            "使用 /platform bots 查看所有 Bot。",
+            parse_mode="HTML"
+        )
+        return
+
+    arg = context.args[0].strip()
+    bot_record = await _find_bot_record(arg)
+
+    if not bot_record:
+        await _retry_send(update.message.reply_text, f"❌ 未找到 Bot：{escape(arg)}")
+        return
+
+    mgr = get_bot_manager()
+    was_running = mgr and bot_record['id'] in mgr.get_all_apps()
+
+    if not was_running:
+        # 即使没在运行，也更新数据库状态为 paused
+        if bot_record['status'] == 'active':
+            await update_user_bot_status(bot_record['id'], 'paused')
+        await _retry_send(update.message.reply_text, 
+            f"ℹ️ Bot @{escape(bot_record['bot_username'])} 当前未在运行。数据库状态已更新。"
+        )
+        return
+
+    # 停止运行中的实例
+    success = False
+    if mgr:
+        success = await mgr.stop_bot(bot_record['id'])
+
+    # 更新数据库状态为 paused
+    await update_user_bot_status(bot_record['id'], 'paused')
+
+    if success:
+        await _retry_send(update.message.reply_text, 
+            f"✅ <b>Bot 已停止</b>\n\n"
+            f"🤖 @{escape(bot_record['bot_username'])}\n"
+            f"🆔 Bot ID：<code>{bot_record['bot_id']}</code>\n"
+            f"👤 所有者：<code>{bot_record['owner_id']}</code>\n\n"
+            f"💡 使用 <code>/startbot @{escape(bot_record['bot_username'])}</code> 可重新启动。",
+            parse_mode="HTML"
+        )
+        logger.info("管理员 %s 停止了 Bot @%s", user_id, bot_record['bot_username'])
+    else:
+        await _retry_send(update.message.reply_text, 
+            f"⚠️ 停止 Bot @{escape(bot_record['bot_username'])} 时出现问题，但数据库状态已更新。"
+        )
+
+
+# ==================== MTProto 检测管理 ====================
+
+async def mtproto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/mtproto 管理员管理 MTProto 异常行为检测"""
+    from config import ADMIN_IDS
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
+        return
+
+    args = context.args or []
+
+    # 无参数：显示当前状态和关键词列表
+    if not args or args[0] in ('list', 'status'):
+        enabled = await get_platform_setting('mtproto_detection', 'on')
+        keywords_raw = await get_platform_setting('mtproto_keywords', '')
+        keywords = [k.strip() for k in keywords_raw.split('||') if k.strip()] if keywords_raw else []
+
+        text = (
+            f"🛡️ <b>MTProto 异常行为检测</b>\n\n"
+            f"状态：{'🟢 已开启' if enabled == 'on' else '🔴 已关闭'}\n"
+            f"关键词数量：{len(keywords)} 个\n\n"
+        )
+
+        if keywords:
+            text += "<b>当前关键词：</b>\n"
+            for i, kw in enumerate(keywords, 1):
+                text += f"  {i}. <code>{escape(kw[:60])}</code>\n"
+        else:
+            text += "📭 暂未配置检测关键词。\n"
+
+        text += (
+            f"\n{'='*20}\n"
+            f"<b>可用命令：</b>\n"
+            f"• <code>/mtproto on</code> — 开启检测\n"
+            f"• <code>/mtproto off</code> — 关闭检测\n"
+            f"• <code>/mtproto add 关键词</code> — 添加关键词\n"
+            f"• <code>/mtproto del 编号</code> — 删除关键词\n"
+            f"• <code>/mtproto test @bot</code> — 测试指定Bot"
+        )
+
+        await _retry_send(update.message.reply_text, text, parse_mode="HTML")
+        return
+
+    action = args[0].lower()
+
+    # /mtproto on
+    if action == 'on':
+        await set_platform_setting('mtproto_detection', 'on')
+        await _retry_send(update.message.reply_text, "✅ MTProto 检测已 <b>开启</b>。", parse_mode="HTML")
+        logger.info("管理员 %s 开启了 MTProto 检测", user_id)
+        return
+
+    # /mtproto off
+    if action == 'off':
+        await set_platform_setting('mtproto_detection', 'off')
+        await _retry_send(update.message.reply_text, "🔴 MTProto 检测已 <b>关闭</b>。", parse_mode="HTML")
+        logger.info("管理员 %s 关闭了 MTProto 检测", user_id)
+        return
+
+    # /mtproto add 关键词
+    if action == 'add':
+        if len(args) < 2:
+            await _retry_send(update.message.reply_text, 
+                "❌ 请提供关键词。\n用法：<code>/mtproto add 关键词内容</code>",
+                parse_mode="HTML"
+            )
+            return
+
+        keyword = " ".join(args[1:]).strip()
+        if not keyword:
+            await _retry_send(update.message.reply_text, "❌ 关键词不能为空。")
+            return
+
+        keywords_raw = await get_platform_setting('mtproto_keywords', '')
+        keywords = [k.strip() for k in keywords_raw.split('||') if k.strip()] if keywords_raw else []
+
+        if keyword in keywords:
+            await _retry_send(update.message.reply_text, "⚠️ 该关键词已存在。")
+            return
+
+        keywords.append(keyword)
+        await set_platform_setting('mtproto_keywords', '||'.join(keywords))
+        await _retry_send(update.message.reply_text, 
+            f"✅ 已添加关键词：<code>{escape(keyword[:60])}</code>\n当前共 {len(keywords)} 个关键词。",
+            parse_mode="HTML"
+        )
+        logger.info("管理员 %s 添加了 MTProto 检测关键词: %s", user_id, keyword[:50])
+        return
+
+    # /mtproto del 编号
+    if action == 'del':
+        if len(args) < 2:
+            await _retry_send(update.message.reply_text, 
+                "❌ 请提供编号。\n用法：<code>/mtproto del 编号</code>",
+                parse_mode="HTML"
+            )
+            return
+
+        try:
+            idx = int(args[1]) - 1
+        except ValueError:
+            await _retry_send(update.message.reply_text, "❌ 编号必须是数字。")
+            return
+
+        keywords_raw = await get_platform_setting('mtproto_keywords', '')
+        keywords = [k.strip() for k in keywords_raw.split('||') if k.strip()] if keywords_raw else []
+
+        if idx < 0 or idx >= len(keywords):
+            await _retry_send(update.message.reply_text, f"❌ 编号超出范围（1-{len(keywords)}）。")
+            return
+
+        removed = keywords.pop(idx)
+        await set_platform_setting('mtproto_keywords', '||'.join(keywords))
+        await _retry_send(update.message.reply_text, 
+            f"✅ 已删除关键词：<code>{escape(removed[:60])}</code>\n剩余 {len(keywords)} 个关键词。",
+            parse_mode="HTML"
+        )
+        logger.info("管理员 %s 删除了 MTProto 检测关键词: %s", user_id, removed[:50])
+        return
+
+    # 未知子命令
+    await _retry_send(update.message.reply_text, 
+        "❓ 未知操作。\n\n"
+        "可用命令：\n"
+        "• <code>/mtproto</code> — 查看状态\n"
+        "• <code>/mtproto on/off</code> — 开关\n"
+        "• <code>/mtproto add 关键词</code> — 添加\n"
+        "• <code>/mtproto del 编号</code> — 删除",
+        parse_mode="HTML"
+    )
 
 
 # ==================== 广播消息 ====================
