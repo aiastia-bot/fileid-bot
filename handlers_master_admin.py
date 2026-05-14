@@ -478,7 +478,8 @@ async def mtproto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # 无参数：显示当前状态和关键词列表
     if not args or args[0] in ('list', 'status'):
-        enabled = await get_platform_setting('mtproto_detection', 'on')
+        from config import MTPROTO_DETECTION
+        db_enabled = await get_platform_setting('mtproto_detection', 'on')
         mode = await get_platform_setting('mtproto_mode', 'strict')
         if mode not in ('strict', 'keyword'):
             mode = 'strict'
@@ -487,11 +488,26 @@ async def mtproto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         mode_text = "🔒 严格模式（任何自身消息都触发）" if mode == 'strict' else "🔑 关键词模式（需匹配关键词）"
 
+        # 真实状态 = 环境变量 AND 数据库 都开启
+        actually_on = MTPROTO_DETECTION and db_enabled == 'on'
+
+        env_status = "🟢 已开启" if MTPROTO_DETECTION else "🔴 已关闭（需在 .env 设置 MTPROTO_DETECTION=true）"
+        db_status = "🟢 已开启" if db_enabled == 'on' else "🔴 已关闭"
+
+        if actually_on:
+            overall = "🟢 <b>检测运行中</b>"
+        elif not MTPROTO_DETECTION:
+            overall = "🔴 <b>未启用</b> — 环境变量未配置"
+        else:
+            overall = "🔴 <b>已暂停</b> — 数据库已关闭"
+
         text = (
             f"🛡️ <b>MTProto 异常行为检测</b>\n\n"
-            f"状态：{'🟢 已开启' if enabled == 'on' else '🔴 已关闭'}\n"
-            f"检测模式：{mode_text}\n"
-            f"关键词数量：{len(keywords)} 个\n\n"
+            f"有效状态：{overall}\n\n"
+            f"⚙️ 环境变量：{env_status}\n"
+            f"⚙️ 数据库开关：{db_status}\n"
+            f"🔍 检测模式：{mode_text}\n"
+            f"📝 关键词数量：{len(keywords)} 个\n\n"
         )
 
         if keywords:
