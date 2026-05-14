@@ -142,7 +142,6 @@ def run_webhook_master(application: Application, bot_manager: BotManager, schedu
             ("broadcast", "广播消息（管理员）"),
             ("startbot", "重启/启动Bot（管理员）"),
             ("stopbot", "停止指定Bot（管理员）"),
-            ("mtproto", "MTProto检测（管理员）"),
         ]
         try:
             await application.bot.set_my_commands(commands)
@@ -261,7 +260,6 @@ def run_webhook(application: Application, bot_manager: BotManager):
             ("broadcast", "广播消息（管理员）"),
             ("startbot", "重启/启动Bot（管理员）"),
             ("stopbot", "停止指定Bot（管理员）"),
-            ("mtproto", "MTProto检测（管理员）"),
         ]
         try:
             await application.bot.set_my_commands(commands)

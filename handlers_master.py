@@ -19,7 +19,6 @@ from handlers_master_manage import (  # noqa: F401
 )
 from handlers_master_admin import (  # noqa: F401
     platform_stats_cmd, export_data_cmd, start_bot_admin_cmd, stop_bot_admin_cmd,
-    mtproto_cmd, broadcast_cmd,
 )
 from handlers_master_blacklist import (  # noqa: F401
     blacklist_cmd,

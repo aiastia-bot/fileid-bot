@@ -1,4 +1,4 @@
-"""管理员命令 - /platform, /export, /startbot, /stopbot, /mtproto, /broadcast"""
+"""管理员命令 - /platform, /export, /startbot, /stopbot, /broadcast"""
 import html
 import io
 import json
@@ -362,10 +362,6 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     # 更新数据库状态为 active（包括从 compromised 恢复）
     await update_user_bot_status(bot_record['id'], 'active')
 
-    # 重置 MTProto 检测计数器
-    mgr = get_bot_manager()
-    if mgr and hasattr(mgr, '_mtproto_detector') and mgr._mtproto_detector:
-        mgr._mtproto_detector.reset_strike_count(bot_record['id'])
 
     # 先停止旧实例（无论是否在运行都尝试停止）
     if mgr:
@@ -464,122 +460,6 @@ async def stop_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
-# ==================== MTProto 检测管理 ====================
-
-async def mtproto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/mtproto 管理员管理 MTProto 异常行为检测（消息ID连续性分析）"""
-    from config import ADMIN_IDS
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
-        await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
-        return
-
-    args = context.args or []
-
-    # 无参数：显示当前状态
-    if not args or args[0] in ('list', 'status'):
-        from config import MTPROTO_DETECTION
-        db_enabled = await get_platform_setting('mtproto_detection', 'on')
-        gap_threshold = await get_platform_setting('mtproto_gap_threshold', '2')
-
-        # 真实状态 = 环境变量 AND 数据库 都开启
-        actually_on = MTPROTO_DETECTION and db_enabled == 'on'
-
-        env_status = "🟢 已开启" if MTPROTO_DETECTION else "🔴 已关闭（需在 .env 设置 MTPROTO_DETECTION=true）"
-        db_status = "🟢 已开启" if db_enabled == 'on' else "🔴 已关闭"
-
-        if actually_on:
-            overall = "🟢 <b>检测运行中</b>"
-        elif not MTPROTO_DETECTION:
-            overall = "🔴 <b>未启用</b> — 环境变量未配置"
-        else:
-            overall = "🔴 <b>已暂停</b> — 数据库已关闭"
-
-        # 检测器统计
-        mgr = get_bot_manager()
-        detector_stats = ""
-        if mgr and hasattr(mgr, '_mtproto_detector') and mgr._mtproto_detector:
-            det = mgr._mtproto_detector
-            tracked_chats = len(det._last_msg_ids)
-            detector_stats = f"\n📊 跟踪聊天数：{tracked_chats}\n"
-
-        text = (
-            f"🛡️ <b>MTProto 异常行为检测</b>\n"
-            f"<i>基于消息ID连续性分析</i>\n\n"
-            f"有效状态：{overall}\n\n"
-            f"⚙️ 环境变量：{env_status}\n"
-            f"⚙️ 数据库开关：{db_status}\n"
-            f"📏 跳跃阈值：gap > {escape(gap_threshold)}"
-            f"（message_id 间隙超过此值视为可疑）"
-            f"{detector_stats}\n"
-            f"{'='*20}\n"
-            f"<b>检测原理：</b>\n"
-            f"当有人通过 MTProto 使用 Bot Token 时，\n"
-            f"其回复会占用 message_id 序号。\n"
-            f"正常消息 ID 连续递增（gap=1），\n"
-            f"出现跳跃说明有第三方在发消息。\n\n"
-            f"<b>可用命令：</b>\n"
-            f"• <code>/mtproto on</code> — 开启检测\n"
-            f"• <code>/mtproto off</code> — 关闭检测\n"
-            f"• <code>/mtproto threshold 数字</code> — 设置跳跃阈值（默认2）"
-        )
-
-        await _retry_send(update.message.reply_text, text, parse_mode="HTML")
-        return
-
-    action = args[0].lower()
-
-    # /mtproto on
-    if action == 'on':
-        await set_platform_setting('mtproto_detection', 'on')
-        await _retry_send(update.message.reply_text, "✅ MTProto 检测已 <b>开启</b>。", parse_mode="HTML")
-        logger.info("管理员 %s 开启了 MTProto 检测", user_id)
-        return
-
-    # /mtproto off
-    if action == 'off':
-        await set_platform_setting('mtproto_detection', 'off')
-        await _retry_send(update.message.reply_text, "🔴 MTProto 检测已 <b>关闭</b>。", parse_mode="HTML")
-        logger.info("管理员 %s 关闭了 MTProto 检测", user_id)
-        return
-
-    # /mtproto threshold 数字
-    if action == 'threshold':
-        if len(args) < 2:
-            await _retry_send(update.message.reply_text, 
-                "❌ 请提供阈值。\n用法：<code>/mtproto threshold 2</code>\n\n"
-                "阈值含义：message_id 间隙超过此值视为可疑。\n"
-                "默认 2（即 gap≥3 触发）。",
-                parse_mode="HTML"
-            )
-            return
-
-        try:
-            val = int(args[1])
-            if val < 1:
-                raise ValueError
-        except ValueError:
-            await _retry_send(update.message.reply_text, "❌ 阈值必须是正整数（建议 1-5）。")
-            return
-
-        await set_platform_setting('mtproto_gap_threshold', str(val))
-        await _retry_send(update.message.reply_text, 
-            f"✅ 跳跃阈值已设置为 <b>{val}</b>。\n"
-            f"message_id 间隙 > {val} 时视为可疑。",
-            parse_mode="HTML"
-        )
-        logger.info("管理员 %s 设置 MTProto 跳跃阈值为 %d", user_id, val)
-        return
-
-    # 未知子命令
-    await _retry_send(update.message.reply_text, 
-        "❓ 未知操作。\n\n"
-        "可用命令：\n"
-        "• <code>/mtproto</code> — 查看状态\n"
-        "• <code>/mtproto on/off</code> — 开关\n"
-        "• <code>/mtproto threshold 数字</code> — 设置跳跃阈值",
-        parse_mode="HTML"
-    )
 
 
 # ==================== 广播消息 ====================

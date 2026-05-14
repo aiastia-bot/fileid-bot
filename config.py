@@ -96,8 +96,6 @@ FILE_TYPE_PREFIX = {
     'voice': 'd',
 }
 
-# ===== MTProto 检测配置 =====
-MTPROTO_DETECTION = os.environ.get('MTPROTO_DETECTION', 'false').lower() in ('true', '1', 'yes')  # 是否开启 MTProto 异常检测
 
 # ===== 分布式架构配置 =====
 # 节点角色：standalone（单机，默认）/ master（主控节点）/ worker（工作节点）

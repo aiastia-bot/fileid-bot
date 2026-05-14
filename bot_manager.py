@@ -95,13 +95,7 @@ class BotManager:
         self._webhook_monitor_task: Optional[asyncio.Task] = None  # webhook 监控任务
         # 防雪崩：每个 Bot 独立的并发信号量
         self._bot_semaphores: Dict[int, asyncio.Semaphore] = {}
-        # MTProto 异常行为检测器（由 main.py 注入）
-        self._mtproto_detector = None
 
-    def set_mtproto_detector(self, detector):
-        """注入 MTProto 检测器实例"""
-        self._mtproto_detector = detector
-        logger.info("MTProto 检测器已注册")
 
     def _create_user_bot_app(self, token: str) -> Application:
         """为用户Bot创建 Application 实例，注册所有 FileID 处理器"""
@@ -369,7 +363,7 @@ class BotManager:
     async def handle_webhook_update(self, bot_db_id: int, update_data: dict) -> bool:
         """处理收到的 webhook 更新，带并发限制和超时保护
 
-        - MTProto 异常行为检测：检测 Bot 自身发送的消息中是否包含可疑关键词
+        
         - 并发限制：每个 Bot 同时最多 PER_BOT_CONCURRENCY 个处理，超出排队等待
         - 超时保护：单个更新处理超过 WEBHOOK_UPDATE_TIMEOUT 秒自动取消
         - 失败时返回 False，由 main.py 返回 503 让 Telegram 自动重试
@@ -379,16 +373,6 @@ class BotManager:
             logger.warning("收到未知 bot_db_id=%s 的 webhook 更新", bot_db_id)
             return False
 
-        # ===== MTProto 异常行为检测 =====
-        if self._mtproto_detector:
-            try:
-                compromised = await self._mtproto_detector.check(bot_db_id, app, update_data)
-                if compromised:
-                    await self._mtproto_detector.handle_compromised(bot_db_id, app, update_data, bot_manager=self)
-                    return True  # 返回 200，不再处理该 update
-            except Exception as e:
-                logger.error("MTProto 检测异常 (bot_db_id=%s): %s", bot_db_id, e)
-                # 检测失败不影响正常流程
 
         sem = self._get_semaphore(bot_db_id)
         async with sem:

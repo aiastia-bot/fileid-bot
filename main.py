@@ -25,7 +25,6 @@ from database import init_db
 from bot_manager import BotManager
 from scheduler import MasterScheduler
 from webhook_server import run_webhook_master, run_webhook
-from config import MTPROTO_DETECTION
 
 # ==================== 日志配置 ====================
 _log_level = getattr(logging, LOG_LEVEL.upper(), logging.WARNING)
@@ -65,7 +64,6 @@ async def post_init(application: Application) -> None:
         ("broadcast", "广播消息（管理员）"),
         ("startbot", "重启/启动Bot（管理员）"),
         ("stopbot", "停止指定Bot（管理员）"),
-        ("mtproto", "MTProto检测（管理员）"),
     ]
     try:
         await application.bot.set_my_commands(commands)
@@ -108,14 +106,6 @@ def run_standalone():
 
     bot_manager = BotManager()
 
-    # MTProto 检测器（环境变量控制是否启用）
-    if MTPROTO_DETECTION:
-        from mtproto_detector import MTProtoDetector
-        detector = MTProtoDetector()
-        bot_manager.set_mtproto_detector(detector)
-        logger.info("🛡️ MTProto 异常检测已启用")
-    else:
-        logger.info("🛡️ MTProto 异常检测未启用（设置 MTPROTO_DETECTION=true 开启）")
 
     application = (
         ApplicationBuilder()
@@ -254,7 +244,6 @@ def _register_master_handlers(application: Application):
         broadcast_cmd,
         restart_bot_callback,
         update_token_callback, update_token_cmd,
-        start_bot_admin_cmd, stop_bot_admin_cmd, mtproto_cmd,
         blacklist_check_handler,
         INPUT_BOT_USERNAME, INPUT_BOT_NAME, INPUT_BOT_TOKEN
     )
@@ -297,7 +286,6 @@ def _register_master_handlers(application: Application):
     application.add_handler(CommandHandler("broadcast", broadcast_cmd))
     application.add_handler(CommandHandler("startbot", start_bot_admin_cmd))
     application.add_handler(CommandHandler("stopbot", stop_bot_admin_cmd))
-    application.add_handler(CommandHandler("mtproto", mtproto_cmd))
     application.add_handler(CallbackQueryHandler(restart_bot_callback, pattern=r'^restart_bot\|'))
     application.add_handler(CallbackQueryHandler(update_token_callback, pattern=r'^update_token\|'))
     application.add_handler(CommandHandler("updatetoken", update_token_cmd))
