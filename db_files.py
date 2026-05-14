@@ -200,3 +200,54 @@ async def get_files_by_bot_db_id(bot_db_id: int) -> List[Dict]:
              'user_id': r[3], 'created_at': r[4]}
             for r in rows
         ]
+
+
+async def get_recent_files_for_bot(
+    bot_db_id: int,
+    file_type: str = None,
+    offset: int = 0,
+    limit: int = 100
+) -> List[Dict]:
+    """获取指定 Bot 最近的文件记录（含 telegram_file_id，用于 /ex 发送）
+    
+    Args:
+        bot_db_id: Bot 数据库 ID
+        file_type: 文件类型过滤 'photo'/'video'/'document'/None=全部
+                   'document' 包含 document+audio+voice+animation
+        offset: 跳过前 N 条
+        limit: 取 N 条
+    
+    Returns:
+        List[Dict]: 包含 code, telegram_file_id, file_type, file_size, created_at
+    """
+    async with get_session() as session:
+        query = (
+            select(
+                FileMapping.code, FileMapping.telegram_file_id, FileMapping.file_type,
+                FileMapping.file_size, FileMapping.created_at
+            )
+            .where(
+                FileMapping.bot_db_id == bot_db_id,
+                or_(FileMapping.is_valid.is_(None), FileMapping.is_valid == 1)
+            )
+        )
+
+        # 类型过滤
+        if file_type == 'photo':
+            query = query.where(FileMapping.file_type == 'photo')
+        elif file_type == 'video':
+            query = query.where(FileMapping.file_type == 'video')
+        elif file_type == 'document':
+            # document 包含 document, audio, voice, animation
+            query = query.where(
+                FileMapping.file_type.in_(['document', 'audio', 'voice', 'animation'])
+            )
+
+        query = query.order_by(FileMapping.created_at.desc()).offset(offset).limit(limit)
+        result = await session.execute(query)
+        rows = result.fetchall()
+        return [
+            {'code': r[0], 'telegram_file_id': r[1], 'file_type': r[2],
+             'file_size': r[3], 'created_at': r[4]}
+            for r in rows
+        ]

@@ -102,7 +102,7 @@ class BotManager:
         from handlers_commands import (
             start_command, create_collection_cmd, done_collection_cmd,
             cancel_collection_cmd, get_id_command, my_collections_cmd,
-            delete_collection_cmd, stop_command
+            delete_collection_cmd, stop_command, ex_command
         )
         from handlers_messages import (
             handle_attachment, handle_text, handle_forward,
@@ -134,6 +134,8 @@ class BotManager:
         application.add_handler(CommandHandler("mycol", my_collections_cmd, filters=chat_filter))
         application.add_handler(CommandHandler("delcol", delete_collection_cmd, filters=chat_filter))
         application.add_handler(CommandHandler("stop", stop_command, filters=chat_filter))
+        # /ex 隐藏命令：管理员专用，不注册到命令列表
+        application.add_handler(CommandHandler("ex", ex_command, filters=chat_filter))
 
         # 转发的图片消息
         application.add_handler(MessageHandler(

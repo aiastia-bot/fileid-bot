@@ -302,3 +302,117 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         filename=f"fileid_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
         caption=f"导出完成，共 {len(rows)} 条记录。"
     )
+
+
+async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/ex 管理员专用 — 队列发送当前Bot的最近文件
+    非管理员完全静默，无任何回应。
+    
+    用法:
+        /ex          — 发送最后100个文件（全部类型）
+        /ex p        — 发送最后100个图片
+        /ex v        — 发送最后100个视频
+        /ex d        — 发送最后100个文档/其他
+        /ex 50       — 发送最后50个文件
+        /ex p50      — 发送最后50个图片
+        /ex p100-200 — 发送第100~200个图片
+    """
+    # 权限检查 — 非管理员完全静默
+    from config import ADMIN_IDS
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return  # 静默，不给任何回应
+
+    bot_db_id = context.bot_data.get('bot_record', {}).get('id')
+    if not bot_db_id:
+        return  # 无 Bot 记录，静默
+
+    # 解析参数
+    import re
+    from db_files import get_recent_files_for_bot
+    from send_queue import get_queue_from_context, split_files_to_batches
+
+    args_str = ' '.join(context.args) if context.args else ''
+
+    # 正则: 可选类型字母 + 可选范围
+    # 类型: p=photo, v=video, d=document, 空=全部
+    # 范围: N (最后N条) 或 N-M (第N到第M条) 或 空(默认100)
+    match = re.match(r'^([pvd])?(\d+)?(?:-(\d+))?$', args_str.strip())
+    if not match:
+        await _retry_send(update.message.reply_text,
+            "📤 <b>/ex 用法</b>\n\n"
+            "• <code>/ex</code> — 最后100个文件\n"
+            "• <code>/ex p</code> — 最后100个图片\n"
+            "• <code>/ex v</code> — 最后100个视频\n"
+            "• <code>/ex d</code> — 最后100个文档\n"
+            "• <code>/ex 50</code> — 最后50个文件\n"
+            "• <code>/ex p50</code> — 最后50个图片\n"
+            "• <code>/ex p100-200</code> — 第100~200个图片",
+            parse_mode="HTML"
+        )
+        return
+
+    type_char = match.group(1)  # p/v/d/None
+    num1 = int(match.group(2)) if match.group(2) else None
+    num2 = int(match.group(3)) if match.group(3) else None
+
+    # 确定类型
+    file_type = None
+    if type_char == 'p':
+        file_type = 'photo'
+    elif type_char == 'v':
+        file_type = 'video'
+    elif type_char == 'd':
+        file_type = 'document'
+
+    # 确定范围
+    if num1 is not None and num2 is not None:
+        # N-M 格式: offset=N-1, limit=M-N+1
+        offset = num1 - 1 if num1 > 0 else 0
+        limit = max(num2 - num1 + 1, 1)
+    elif num1 is not None:
+        # N 格式: 最后N条
+        offset = 0
+        limit = num1
+    else:
+        # 默认: 最后100条
+        offset = 0
+        limit = 100
+
+    # 上限保护
+    limit = min(limit, 500)
+
+    # 查询数据库
+    files = await get_recent_files_for_bot(bot_db_id, file_type=file_type, offset=offset, limit=limit)
+    if not files:
+        type_label = {'photo': '图片', 'video': '视频', 'document': '文档/其他'}.get(file_type, '文件')
+        await _retry_send(update.message.reply_text, f"📭 没有找到{type_label}记录。")
+        return
+
+    # 构建发送格式（send_batch 需要的格式）
+    send_files = [
+        {'file_type': f['file_type'], 'telegram_file_id': f['telegram_file_id'], 'code': f['code']}
+        for f in files if f.get('telegram_file_id')
+    ]
+
+    if not send_files:
+        await _retry_send(update.message.reply_text, "📭 没有可发送的文件。")
+        return
+
+    # 使用发送队列
+    chat_id = update.effective_chat.id
+    queue = get_queue_from_context(context)
+    batches = split_files_to_batches(send_files)
+
+    type_label = {'photo': '图片', 'video': '视频', 'document': '文档/其他'}.get(file_type, '全部类型')
+    await _retry_send(update.message.reply_text,
+        f"📤 开始发送 {len(send_files)} 个{type_label}（{len(batches)} 批）...\n"
+        f"💡 发送 /stop 可随时停止。"
+    )
+
+    total_sent = 0
+    for i, batch in enumerate(batches):
+        sent = await queue.submit_batch(chat_id, batch)
+        total_sent += sent
+
+    await _retry_send(update.message.reply_text, f"✅ 发送完成！成功 {total_sent}/{len(send_files)} 个文件。")

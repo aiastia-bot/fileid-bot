@@ -354,6 +354,7 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
+    mgr = get_bot_manager()
     action_text = "重启" if mgr_running_check(bot_record['id']) else "启动"
     status_msg = await _retry_send(update.message.reply_text, 
         f"⏳ 正在{action_text} @{escape(bot_record['bot_username'])}..."
@@ -361,7 +362,6 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 更新数据库状态为 active（包括从 compromised 恢复）
     await update_user_bot_status(bot_record['id'], 'active')
-
 
     # 先停止旧实例（无论是否在运行都尝试停止）
     if mgr:
