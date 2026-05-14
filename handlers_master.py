@@ -18,7 +18,7 @@ from handlers_master_manage import (  # noqa: F401
     restart_bot_callback, update_token_callback, update_token_cmd,
 )
 from handlers_master_admin import (  # noqa: F401
-    platform_stats_cmd, export_data_cmd, start_bot_admin_cmd, stop_bot_admin_cmd,
+    platform_stats_cmd, export_data_cmd, start_bot_admin_cmd, stop_bot_admin_cmd, broadcast_cmd,
 )
 from handlers_master_blacklist import (  # noqa: F401
     blacklist_cmd,
