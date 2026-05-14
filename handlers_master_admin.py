@@ -475,12 +475,18 @@ async def mtproto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # 无参数：显示当前状态和关键词列表
     if not args or args[0] in ('list', 'status'):
         enabled = await get_platform_setting('mtproto_detection', 'on')
+        mode = await get_platform_setting('mtproto_mode', 'strict')
+        if mode not in ('strict', 'keyword'):
+            mode = 'strict'
         keywords_raw = await get_platform_setting('mtproto_keywords', '')
         keywords = [k.strip() for k in keywords_raw.split('||') if k.strip()] if keywords_raw else []
+
+        mode_text = "🔒 严格模式（任何自身消息都触发）" if mode == 'strict' else "🔑 关键词模式（需匹配关键词）"
 
         text = (
             f"🛡️ <b>MTProto 异常行为检测</b>\n\n"
             f"状态：{'🟢 已开启' if enabled == 'on' else '🔴 已关闭'}\n"
+            f"检测模式：{mode_text}\n"
             f"关键词数量：{len(keywords)} 个\n\n"
         )
 
@@ -496,9 +502,9 @@ async def mtproto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"<b>可用命令：</b>\n"
             f"• <code>/mtproto on</code> — 开启检测\n"
             f"• <code>/mtproto off</code> — 关闭检测\n"
+            f"• <code>/mtproto mode strict|keyword</code> — 切换模式\n"
             f"• <code>/mtproto add 关键词</code> — 添加关键词\n"
-            f"• <code>/mtproto del 编号</code> — 删除关键词\n"
-            f"• <code>/mtproto test @bot</code> — 测试指定Bot"
+            f"• <code>/mtproto del 编号</code> — 删除关键词"
         )
 
         await _retry_send(update.message.reply_text, text, parse_mode="HTML")
@@ -518,6 +524,27 @@ async def mtproto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await set_platform_setting('mtproto_detection', 'off')
         await _retry_send(update.message.reply_text, "🔴 MTProto 检测已 <b>关闭</b>。", parse_mode="HTML")
         logger.info("管理员 %s 关闭了 MTProto 检测", user_id)
+        return
+
+    # /mtproto mode strict|keyword
+    if action == 'mode':
+        if len(args) < 2 or args[1].lower() not in ('strict', 'keyword'):
+            await _retry_send(update.message.reply_text, 
+                "❌ 请指定模式。\n\n"
+                "• <code>/mtproto mode strict</code> — 严格模式（任何自身消息都触发，推荐）\n"
+                "• <code>/mtproto mode keyword</code> — 关键词模式（需匹配关键词）",
+                parse_mode="HTML"
+            )
+            return
+
+        new_mode = args[1].lower()
+        await set_platform_setting('mtproto_mode', new_mode)
+        mode_text = "🔒 严格模式" if new_mode == 'strict' else "🔑 关键词模式"
+        await _retry_send(update.message.reply_text, 
+            f"✅ 检测模式已切换为 <b>{mode_text}</b>。",
+            parse_mode="HTML"
+        )
+        logger.info("管理员 %s 切换 MTProto 检测模式为 %s", user_id, new_mode)
         return
 
     # /mtproto add 关键词
