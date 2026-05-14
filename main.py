@@ -241,6 +241,7 @@ def _register_master_handlers(application: Application):
         new_bot_input_username, new_bot_input_name, new_bot_input_token,
         new_bot_cancel, my_bots_cmd, delete_bot_cmd, bot_status_cmd,
         platform_stats_cmd, blacklist_cmd, export_data_cmd,
+        start_bot_admin_cmd, stop_bot_admin_cmd,
         broadcast_cmd,
         restart_bot_callback,
         update_token_callback, update_token_cmd,
