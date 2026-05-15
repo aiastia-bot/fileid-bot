@@ -289,6 +289,7 @@ class SendQueue:
         stopped = 0
         # 取消当前正在发送的任务（如果有）
         if self._current_chat_id == chat_id and self._current_send_task and not self._current_send_task.done():
+            logger.info("SendQueue(@%s): cancel_chat 取消当前正在发送的 chat_id=%s", self.bot_name, chat_id)
             self._current_send_task.cancel()
             if self._current_task and not self._current_task.future.done():
                 self._current_task.future.cancel()

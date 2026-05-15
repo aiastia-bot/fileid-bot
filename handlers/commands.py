@@ -93,12 +93,17 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context.user_data['stop_auto_send'] = True
 
     # 2. 通过 cancel_chat 取消队列中该用户所有任务 + 标记取消（阻止正在发送的后续任务）
-    from send_queue import get_queue
+    from send_queue import get_queue_from_context
     try:
-        queue = get_queue(bot_username)
+        queue = get_queue_from_context(context)
+        current_chat = getattr(queue, '_current_chat_id', None)
+        current_send = getattr(queue, '_current_send_task', None)
+        current_done = current_send.done() if current_send else None
+        logger.info("/stop: @%s queue pending=%s current_chat=%s current_done=%s",
+                    bot_username, queue.pending, current_chat, current_done)
         stopped_count = queue.cancel_chat(chat_id)
         if stopped_count > 0:
-            logger.info("/stop: @%s 取消了 chat_id=%s 的 %d 个队列任务", bot_username, chat_id, stopped_count)
+            logger.info("/stop: @%s 取消了 chat_id=%s 的 %d 个任务", bot_username, chat_id, stopped_count)
     except Exception as e:
         logger.warning("/stop: 取消队列任务失败: %s", e)
 
