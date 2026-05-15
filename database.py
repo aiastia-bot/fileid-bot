@@ -9,7 +9,7 @@ from db_files import (  # noqa: F401
 from db_collections import (  # noqa: F401
     get_collection, get_collection_by_id, get_collection_files, create_collection,
     add_file_to_collection, complete_collection, delete_collection,
-    get_user_collections,
+    get_user_collections, batch_add_codes_to_collection,
 )
 from db_bots import (  # noqa: F401
     add_user_bot, get_user_bots_by_owner, get_user_bot_by_id,

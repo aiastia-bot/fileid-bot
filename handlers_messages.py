@@ -202,6 +202,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     logger.debug("⏱ handle_text rate_limit user=%s 耗时%.3fs", user_id, _time.monotonic() - t0)
 
+    # ===== 打包模式：优先处理代码打包 =====
+    pack_code = context.user_data.get('packing_collection')
+    if pack_code:
+        await _handle_pack_text(update, context, text)
+        return
+
     file_codes = parse_file_code(text, bot_username)
     collection_codes = parse_collection_code(text, bot_username)
 
@@ -594,3 +600,82 @@ async def _add_to_collection(context, col_code, codes):
         await add_file_to_collection(col_code, code, current_count + i + 1)
     new_count = min(current_count + len(codes), MAX_COLLECTION_FILES)
     context.user_data['collection_count'] = new_count
+
+
+async def _handle_pack_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    """处理打包模式下的文本消息：解析代码并批量添加到集合"""
+    message = update.message
+    bot_db_id = context.bot_data.get('bot_record', {}).get('id')
+    pack_code = context.user_data['packing_collection']
+    packing_count = context.user_data.get('packing_count', 0)
+    packing_codes = context.user_data.get('packing_codes', set())
+    max_pack_files = MAX_COLLECTION_FILES * 2
+
+    # 按行分割，去除空行
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    if not lines:
+        await _retry_send(message.reply_text, "⚠️ 请发送文件代码（一行一个）。")
+        return
+
+    # 限制单次最多 500 个
+    if len(lines) > 500:
+        lines = lines[:500]
+        await _retry_send(message.reply_text, "⚠️ 单次最多处理 500 个代码，已截取前 500 个。")
+
+    # 步骤1: 去除本条消息内的重复代码
+    unique_codes = list(dict.fromkeys(lines))  # 保持顺序去重
+
+    # 步骤2: 与已添加的代码对比（内存去重）
+    new_codes = [c for c in unique_codes if c not in packing_codes]
+
+    if not new_codes:
+        # 全部重复，无需查询数据库
+        await _retry_send(message.reply_text,
+            f"📋 全部重复，0 个新增。\n\n"
+            f"📊 当前集合: {packing_count}/{max_pack_files}\n"
+            f"继续发送代码，或 `/done` 完成",
+        )
+        return
+
+    # 步骤3: 检查是否超过容量
+    remaining = max_pack_files - packing_count
+    if remaining <= 0:
+        await _retry_send(message.reply_text,
+            f"⚠️ 集合已满 {max_pack_files} 个文件！\n请发送 `/done` 完成打包。"
+        )
+        return
+
+    if len(new_codes) > remaining:
+        new_codes = new_codes[:remaining]
+        await _retry_send(message.reply_text,
+            f"⚠️ 容量不足，仅取前 {remaining} 个代码。"
+        )
+
+    # 步骤4: 批量验证并添加到数据库（3次查询优化）
+    from database import batch_add_codes_to_collection
+    result = await batch_add_codes_to_collection(
+        col_code=pack_code,
+        codes=new_codes,
+        bot_db_id=bot_db_id,
+        start_sort=packing_count
+    )
+
+    added = result['added']
+    invalid = result['invalid']
+    duplicate = result['duplicate']
+
+    # 更新内存状态
+    packing_count += added
+    # 将所有提交的代码（不论有效无效）都加入已处理集合，避免重复提示
+    for c in new_codes:
+        packing_codes.add(c)
+
+    context.user_data['packing_count'] = packing_count
+    context.user_data['packing_codes'] = packing_codes
+
+    # 构建回复
+    reply = f"✅ 已添加 {added} 个文件（新增 {added} | 重复 {duplicate} | 无效 {invalid}）\n\n"
+    reply += f"📊 当前集合: {packing_count}/{max_pack_files}\n"
+    reply += f"继续发送代码，或 `/done` 完成"
+
+    await _retry_send(message.reply_text, reply)

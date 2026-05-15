@@ -147,10 +147,34 @@ async def create_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def done_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/done 完成集合"""
+    """/done 完成集合或打包"""
+    # 优先检查打包模式
+    pack_code = context.user_data.get('packing_collection')
+    if pack_code:
+        count = context.user_data.get('packing_count', 0)
+        if count == 0:
+            await delete_collection(pack_code)
+            await _retry_send(update.message.reply_text, "⚠️ 打包集合为空，已自动取消。")
+        else:
+            await complete_collection(pack_code, count)
+            col_info = await get_collection(pack_code)
+            col_name = col_info['name'] if col_info else "未命名"
+            safe_name = escape_markdown(col_name)
+            await _retry_send(update.message.reply_text,
+                f"🎉 打包集合「{safe_name}」创建完成！\n\n"
+                f"📦 代码: `{pack_code}`\n"
+                f"📊 共 {count} 个文件\n\n"
+                f"将代码发送给 bot 即可获取所有文件。",
+                parse_mode="Markdown"
+            )
+        context.user_data.pop('packing_collection', None)
+        context.user_data.pop('packing_count', None)
+        context.user_data.pop('packing_codes', None)
+        return
+
     col_code = context.user_data.get('creating_collection')
     if not col_code:
-        await _retry_send(update.message.reply_text, "⚠️ 你没有正在创建的集合。发送 `/create 名称` 开始。")
+        await _retry_send(update.message.reply_text, "⚠️ 你没有正在创建的集合。发送 `/create 名称` 或 `/pack 名称` 开始。")
         return
 
     count = context.user_data.get('collection_count', 0)
@@ -176,6 +200,16 @@ async def done_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def cancel_collection_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/cancel 取消当前操作"""
+    # 优先检查打包模式
+    pack_code = context.user_data.get('packing_collection')
+    if pack_code:
+        await delete_collection(pack_code)
+        context.user_data.pop('packing_collection', None)
+        context.user_data.pop('packing_count', None)
+        context.user_data.pop('packing_codes', None)
+        await _retry_send(update.message.reply_text, "❌ 已取消打包。")
+        return
+
     col_code = context.user_data.get('creating_collection')
     if col_code:
         await delete_collection(col_code)
@@ -322,6 +356,53 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         filename=f"fileid_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
         caption=f"导出完成，共 {len(rows)} 条记录。"
     )
+
+
+async def pack_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/pack 通过代码打包创建集合"""
+    user_id = update.effective_user.id
+    bot_username = context.bot.username
+    bot_db_id = context.bot_data.get('bot_record', {}).get('id')
+
+    if context.user_data.get('packing_collection'):
+        await _retry_send(update.message.reply_text,
+            "⚠️ 你已在打包模式中。\n\n"
+            "• 继续发送代码（一行一个）\n"
+            "• `/done` 完成打包\n"
+            "• `/cancel` 取消打包"
+        )
+        return
+
+    if context.user_data.get('creating_collection'):
+        await _retry_send(update.message.reply_text, "⚠️ 你已在创建集合模式中，请先 `/done` 或 `/cancel`。")
+        return
+
+    name = ' '.join(context.args) if context.args else f"打包_{datetime.now().strftime('%m%d%H%M')}"
+    code_prefix = get_code_prefix(bot_username)
+    raw_code = generate_raw_code()
+    full_code = f"{code_prefix}_col:{raw_code}"
+
+    max_pack_files = MAX_COLLECTION_FILES * 2
+
+    if await create_collection(full_code, bot_username, name, user_id, bot_db_id=bot_db_id):
+        context.user_data['packing_collection'] = full_code
+        context.user_data['packing_count'] = 0
+        context.user_data['packing_codes'] = set()
+
+        safe_name = escape_markdown(name)
+        await _retry_send(update.message.reply_text,
+            f"✅ 进入打包模式！集合「{safe_name}」已创建\n\n"
+            f"📦 集合代码: `{full_code}`\n"
+            f"📊 容量上限: {max_pack_files} 个文件\n\n"
+            f"👉 请发送文件代码（一行一个），例如：\n"
+            f"`{code_prefix}_p:xxx`\n"
+            f"`{code_prefix}_v:yyy`\n\n"
+            f"✅ 发送 `/done` 完成打包\n"
+            f"❌ 发送 `/cancel` 取消打包",
+            parse_mode="Markdown"
+        )
+    else:
+        await _retry_send(update.message.reply_text, "❌ 创建打包集合失败，请重试。")
 
 
 async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

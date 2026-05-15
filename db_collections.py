@@ -161,6 +161,87 @@ async def delete_collection(col_code: str) -> bool:
             return False
 
 
+async def batch_add_codes_to_collection(
+    col_code: str,
+    codes: List[str],
+    bot_db_id: int = None,
+    start_sort: int = 0
+) -> Dict:
+    """批量验证并添加代码到集合（一次性查询优化）
+
+    Args:
+        col_code: 集合代码
+        codes: 待添加的代码列表（已去重）
+        bot_db_id: 当前 Bot 的数据库 ID，用于验证代码归属
+        start_sort: 排序起始值
+
+    Returns:
+        {'added': int, 'invalid': int} — 新增数量、无效数量
+    """
+    if not codes:
+        return {'added': 0, 'invalid': 0}
+
+    async with get_session() as session:
+        try:
+            # 1 次查询：验证代码是否存在于 file_mappings 且属于当前 Bot
+            q = select(FileMapping.code).where(
+                FileMapping.code.in_(codes),
+                or_(FileMapping.is_valid.is_(None), FileMapping.is_valid == 1)
+            )
+            if bot_db_id is not None:
+                q = q.where(FileMapping.bot_db_id == bot_db_id)
+            result = await session.execute(q)
+            valid_codes = set(r[0] for r in result.fetchall())
+
+            # 计算无效代码
+            invalid_codes = set(codes) - valid_codes
+
+            # 1 次查询：检查集合中已存在的代码
+            existing_result = await session.execute(
+                select(CollectionItem.file_code).where(
+                    CollectionItem.collection_code == col_code,
+                    CollectionItem.file_code.in_(list(valid_codes))
+                )
+            )
+            existing_codes = set(r[0] for r in existing_result.fetchall())
+
+            # 只插入新增的有效代码
+            new_codes = valid_codes - existing_codes
+
+            if new_codes:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                for i, code in enumerate(new_codes):
+                    session.add(CollectionItem(
+                        collection_code=col_code,
+                        file_code=code,
+                        sort_order=start_sort + i + 1
+                    ))
+
+                # 更新集合的 file_count
+                total_count = start_sort + len(new_codes)
+                await session.execute(
+                    update(Collection)
+                    .where(Collection.code == col_code)
+                    .values(file_count=total_count, updated_at=now)
+                )
+
+                await session.commit()
+
+            # 清除缓存
+            r = await _get_redis()
+            await r.cache_delete(f"col_files:{col_code}")
+            await r.cache_delete(f"col:{col_code}")
+
+            return {
+                'added': len(new_codes),
+                'invalid': len(invalid_codes),
+                'duplicate': len(existing_codes & valid_codes),
+            }
+        except Exception as e:
+            logger.error("批量添加代码到集合失败: %s", e)
+            return {'added': 0, 'invalid': len(codes), 'duplicate': 0}
+
+
 async def get_user_collections(user_id: int, limit: int = 20, bot_db_id: int = None) -> List[Dict]:
     """获取用户集合列表（按 bot_db_id 隔离）"""
     async with get_session() as session:

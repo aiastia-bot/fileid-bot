@@ -102,7 +102,8 @@ class BotManager:
         from handlers_commands import (
             start_command, create_collection_cmd, done_collection_cmd,
             cancel_collection_cmd, get_id_command, my_collections_cmd,
-            delete_collection_cmd, stop_command, ex_command
+            delete_collection_cmd, stop_command, ex_command,
+            pack_command
         )
         from handlers_messages import (
             handle_attachment, handle_text, handle_forward,
@@ -128,6 +129,7 @@ class BotManager:
         application.add_handler(CommandHandler("start", start_command, filters=chat_filter))
         application.add_handler(CommandHandler("help", start_command, filters=chat_filter))
         application.add_handler(CommandHandler("create", create_collection_cmd, filters=chat_filter))
+        application.add_handler(CommandHandler("pack", pack_command, filters=chat_filter))
         application.add_handler(CommandHandler("done", done_collection_cmd, filters=chat_filter))
         application.add_handler(CommandHandler("cancel", cancel_collection_cmd, filters=chat_filter))
         application.add_handler(CommandHandler("getid", get_id_command, filters=chat_filter))
@@ -267,6 +269,7 @@ class BotManager:
                     ("start", "开始使用 / 查看帮助"),
                     ("help", "查看帮助"),
                     ("create", "创建集合 create 名称"),
+                    ("pack", "通过代码打包创建集合"),
                     ("done", "完成集合"),
                     ("cancel", "取消当前操作"),
                     ("getid", "回复消息获取文件ID"),
