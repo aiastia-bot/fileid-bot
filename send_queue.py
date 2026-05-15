@@ -282,20 +282,21 @@ class SendQueue:
         """取消指定用户的所有队列任务（立即生效）
 
         同时标记 chat_id，让消费者正在处理的该用户任务也被取消。
-        返回被取消的排队任务数。
+        返回被取消的任务数。
         """
         self._cancelled_chats.add(chat_id)
 
+        stopped = 0
         # 取消当前正在发送的任务（如果有）
         if self._current_chat_id == chat_id and self._current_send_task and not self._current_send_task.done():
             self._current_send_task.cancel()
             if self._current_task and not self._current_task.future.done():
                 self._current_task.future.cancel()
+            stopped += 1
             # Redis 清理由消费者的 CancelledError 处理器统一负责
 
         # 取消队列中该用户的所有待处理任务
         tasks = self._queues.pop(chat_id, [])
-        stopped = 0
         for t in tasks:
             if not t.future.done():
                 t.future.cancel()

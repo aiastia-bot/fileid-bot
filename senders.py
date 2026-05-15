@@ -189,6 +189,8 @@ async def _send_single(bot, chat_id, f, caption, bot_name) -> int:
         else:
             await _retry_send(bot.send_document, chat_id=chat_id, document=fid, caption=cap, **timeout)
         return 1
+    except asyncio.CancelledError:
+        raise
     except RetryAfter:
         # 限流直接上抛，让队列等待重试
         raise
@@ -222,6 +224,8 @@ async def _send_media_group(bot, chat_id, files, caption, type_key, bot_name) ->
                 media_list.append(InputMediaAudio(media=fid, caption=cap))
             else:
                 media_list.append(InputMediaDocument(media=fid, caption=cap))
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error("构建媒体列表失败: %s", e)
 
@@ -232,6 +236,8 @@ async def _send_media_group(bot, chat_id, files, caption, type_key, bot_name) ->
     try:
         await _retry_send(bot.send_media_group, chat_id=chat_id, media=media_list, **timeout)
         return len(media_list)
+    except asyncio.CancelledError:
+        raise
     except RetryAfter as e:
         # 限流不降级逐个发送，直接上抛让队列等待重试
         raise
