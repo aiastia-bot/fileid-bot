@@ -62,6 +62,7 @@ async def post_init(application: Application) -> None:
         ("blacklist", "黑名单管理（管理员）"),
         ("export", "导出数据（管理员）"),
         ("broadcast", "广播消息（管理员）"),
+        ("mystars", "星星资产 / 发送礼物（管理员）"),
         ("startbot", "重启/启动Bot（管理员）"),
         ("stopbot", "停止指定Bot（管理员）"),
     ]
@@ -301,6 +302,15 @@ def _register_master_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(vip_callback_router, pattern=r'^(buy_vip|vip_history)'))
     application.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
     application.add_handler(TypeHandler(Update, _payment_filter_handler), group=10)
+
+    # 管理员星星资产管理 / 礼物发送
+    from handlers_master_gifts import (
+        mystars_command, stars_callback_router, handle_gift_user_id_input,
+    )
+    application.add_handler(CommandHandler("mystars", mystars_command))
+    application.add_handler(CallbackQueryHandler(stars_callback_router, pattern=r'^stars_'))
+    # 处理管理员手动输入用户 ID 发送礼物（放在较低优先级组）
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gift_user_id_input), group=10)
 
     application.add_error_handler(error_handler)
 

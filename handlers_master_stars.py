@@ -249,14 +249,14 @@ async def _verify_star_payment(bot, telegram_charge_id: str, expected_user_id: i
                                 expected_amount: int) -> bool:
     """通过 Telegram getStarTransactions API 验证支付真实性"""
     try:
-        import httpx
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
                 f"https://api.telegram.org/bot{bot.token}/getStarTransactions",
                 json={"limit": 50},
-                timeout=30,
-            )
-            data = resp.json()
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                data = await resp.json()
 
             if not data.get("ok"):
                 logger.error("getStarTransactions API 调用失败: %s", data.get("description"))
