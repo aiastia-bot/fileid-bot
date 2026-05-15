@@ -107,6 +107,20 @@ MASTER_BOT_COMMANDS = [
     ("stopbot", "停止指定Bot（管理员）"),
 ]
 
+# ===== 用户子 Bot 快捷命令列表 =====
+USER_BOT_COMMANDS = [
+    ("start", "开始使用 / 查看帮助"),
+    ("help", "查看帮助"),
+    ("create", "创建集合 create 名称"),
+    ("pack", "通过代码打包创建集合"),
+    ("done", "完成集合"),
+    ("cancel", "取消当前操作"),
+    ("getid", "回复消息获取文件ID"),
+    ("mycol", "查看我的集合"),
+    ("stop", "停止所有发送任务"),
+    ("delcol", "删除集合 delcol 代码"),
+]
+
 FILE_TYPE_PREFIX = {
     'photo': 'p',
     'video': 'v',

@@ -22,7 +22,8 @@ from config import (
     API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT,
     BOT_MODE, WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET,
     ALLOW_GROUP, ROLE,
-    WEBHOOK_UPDATE_TIMEOUT, PER_BOT_CONCURRENCY
+    WEBHOOK_UPDATE_TIMEOUT, PER_BOT_CONCURRENCY,
+    USER_BOT_COMMANDS,
 )
 
 # 启动并发数限制，避免同时发起过多 Telegram API 请求
@@ -265,21 +266,9 @@ class BotManager:
                 await app.start()
 
                 # 手动注册Bot命令（post_init 在手动启动时不会自动触发）
-                commands = [
-                    ("start", "开始使用 / 查看帮助"),
-                    ("help", "查看帮助"),
-                    ("create", "创建集合 create 名称"),
-                    ("pack", "通过代码打包创建集合"),
-                    ("done", "完成集合"),
-                    ("cancel", "取消当前操作"),
-                    ("getid", "回复消息获取文件ID"),
-                    ("mycol", "查看我的集合"),
-                    ("stop", "停止所有发送任务"),
-                    ("delcol", "删除集合 delcol 代码"),
-                ]
                 try:
-                    await app.bot.set_my_commands(commands)
-                    logger.info("用户Bot @%s 已注册 %d 个命令", app.bot.username, len(commands))
+                    await app.bot.set_my_commands(USER_BOT_COMMANDS)
+                    logger.info("用户Bot @%s 已注册 %d 个命令", app.bot.username, len(USER_BOT_COMMANDS))
                 except Exception as cmd_err:
                     cmd_err_str = str(cmd_err)
                     # Frozen_method_invalid = Bot 已被冻结/注销
