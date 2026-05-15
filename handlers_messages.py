@@ -625,7 +625,7 @@ async def _handle_pack_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     # 步骤0: 格式验证 — 只保留符合代码格式的行（防注入 + 减少无效查询）
     import re
     code_pattern = re.compile(r'^[A-Za-z0-9_]+_(?:[pvd]|col):[A-Za-z0-9]+$')
-    valid_lines = [l for l in lines if code_pattern.match(l) and len(l) <= 200]
+    valid_lines = [l for l in lines if code_pattern.match(l) and len(l) <= 80]
     format_invalid = len(lines) - len(valid_lines)
 
     if not valid_lines:
