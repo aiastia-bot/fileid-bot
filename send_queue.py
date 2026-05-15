@@ -308,6 +308,24 @@ class SendQueue:
         """清除取消标记（开始新的发送时调用）"""
         self._cancelled_chats.discard(chat_id)
 
+    def clear_chat_pending(self, chat_id: int) -> int:
+        """清除指定用户的所有待处理任务（不标记取消）
+
+        用于 _auto_send / _send_paginated 开始前清除 Redis 恢复的旧任务，
+        避免旧任务 + 新提交重复发送。
+        """
+        tasks = self._queues.pop(chat_id, [])
+        cleared = 0
+        for t in tasks:
+            if not t.future.done():
+                t.future.cancel()
+                cleared += 1
+            asyncio.create_task(self._remove_task(t))
+        if cleared:
+            logger.info("SendQueue(@%s): clear_chat_pending=%s 清除 %d 个旧任务",
+                        self.bot_name, chat_id, cleared)
+        return cleared
+
     # ===== 消费者 =====
 
     async def _consume_loop(self):
