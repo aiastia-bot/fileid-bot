@@ -132,6 +132,18 @@ async def get_user_bot_by_telegram_id(bot_id: int) -> Optional[Dict]:
         return _model_to_dict(bot) if bot else None
 
 
+async def is_bot_admin_stopped(bot_id: int) -> bool:
+    """检查某个 Telegram Bot ID 是否被系统停止（包括已删除的记录，防止换账号绕过）"""
+    async with get_session() as session:
+        result = await session.execute(
+            select(UserBot.id).where(
+                UserBot.bot_id == bot_id,
+                UserBot.status == 'admin_stopped'
+            ).limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+
 async def update_user_bot_status(bot_db_id: int, status: str) -> bool:
     """更新用户Bot状态"""
     async with get_session() as session:
@@ -149,12 +161,18 @@ async def update_user_bot_status(bot_db_id: int, status: str) -> bool:
             return False
 
 
-async def update_user_bot_token(bot_db_id: int, new_token: str, new_bot_id: int = None) -> bool:
-    """更新用户Bot的Token"""
+async def update_user_bot_token(bot_db_id: int, new_token: str, new_bot_id: int = None, keep_status: bool = False) -> bool:
+    """更新用户Bot的Token
+    
+    Args:
+        keep_status: 如果为 True，保持当前状态不变（用于被系统停止的Bot更新Token）
+    """
     async with get_session() as session:
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            values: Dict = {'bot_token': new_token, 'status': 'active', 'updated_at': now}
+            values: Dict = {'bot_token': new_token, 'updated_at': now}
+            if not keep_status:
+                values['status'] = 'active'
             if new_bot_id is not None:
                 values['bot_id'] = new_bot_id
             await session.execute(

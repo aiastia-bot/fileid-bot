@@ -11,7 +11,7 @@ from telegram.ext import ApplicationHandlerStop, ContextTypes
 from database import (
     add_user_bot, get_user_bots_by_owner,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
-    get_user_bot_by_id,
+    get_user_bot_by_id, is_bot_admin_stopped,
     is_user_blacklisted,
 )
 
@@ -86,6 +86,11 @@ async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_bots = await get_user_bots_by_owner(owner_id)
     if len(user_bots) >= max_bots:
         logger.warning("用户 %s 已达最大 Bot 数量 (%d)", owner_id, max_bots)
+        return
+
+    # 检查此 Bot 是否被系统停止（跨账号保护）
+    if await is_bot_admin_stopped(bot_id):
+        logger.warning("Bot @%s (id=%s) 已被系统停止，拒绝自动注册", bot_username, bot_id)
         return
 
     # 检查 Bot 是否已添加

@@ -428,9 +428,9 @@ async def stop_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     was_running = mgr and bot_record['id'] in mgr.get_all_apps()
 
     if not was_running:
-        # 即使没在运行，也更新数据库状态为 paused
+        # 即使没在运行，也更新数据库状态为 admin_stopped
         if bot_record['status'] == 'active':
-            await update_user_bot_status(bot_record['id'], 'paused')
+            await update_user_bot_status(bot_record['id'], 'admin_stopped')
         await _retry_send(update.message.reply_text, 
             f"ℹ️ Bot @{escape(bot_record['bot_username'])} 当前未在运行。数据库状态已更新。"
         )
@@ -441,8 +441,8 @@ async def stop_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if mgr:
         success = await mgr.stop_bot(bot_record['id'])
 
-    # 更新数据库状态为 paused
-    await update_user_bot_status(bot_record['id'], 'paused')
+    # 更新数据库状态为 admin_stopped（区别于 VIP 暂停的 paused）
+    await update_user_bot_status(bot_record['id'], 'admin_stopped')
 
     if success:
         await _retry_send(update.message.reply_text, 

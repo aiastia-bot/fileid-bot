@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from database import (
     add_user_bot, get_user_bots_by_owner,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
-    get_user_bot_by_id,
+    get_user_bot_by_id, is_bot_admin_stopped,
 )
 from db_vip import get_max_bots_for_user, check_vip0_capacity
 
@@ -162,6 +162,15 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
             except Exception:
                 pass
 
+    # 检查此 Bot 是否被系统停止（跨账号保护）
+    if await is_bot_admin_stopped(bot_info.id):
+        await status_msg.edit_text(
+            f"⏸️ Bot @{escape(bot_info.username)} 已被系统停止，无法添加。"
+        )
+        context.user_data.pop('new_bot_username', None)
+        context.user_data.pop('new_bot_name', None)
+        return ConversationHandler.END
+
     existing_by_id = await get_user_bot_by_telegram_id(bot_info.id)
     if existing_by_id:
         await status_msg.edit_text(
@@ -303,6 +312,13 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 await test_bot.shutdown()
             except Exception:
                 pass
+
+    # 检查此 Bot 是否被系统停止（跨账号保护）
+    if await is_bot_admin_stopped(bot_info.id):
+        await status_msg.edit_text(
+            f"⏸️ Bot @{escape(bot_info.username)} 已被系统停止，无法添加。"
+        )
+        return
 
     existing_by_id = await get_user_bot_by_telegram_id(bot_info.id)
     if existing_by_id:

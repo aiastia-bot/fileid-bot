@@ -94,6 +94,13 @@ async def delete_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    # 禁止删除被系统停止的 Bot
+    if target_bot['status'] == 'admin_stopped':
+        await _retry_send(update.message.reply_text, 
+            "⏸️ 此 Bot 已被系统停止，无法删除。"
+        )
+        return
+
     mgr = get_bot_manager()
     if mgr:
         await mgr.stop_bot(target_bot['id'])
@@ -125,6 +132,10 @@ async def bot_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         is_running = mgr and bot['id'] in mgr.get_all_apps()
         if is_running:
             status = "🟢 运行中"
+        elif bot['status'] == 'admin_stopped':
+            status = "⏸️ 系统已停止"
+        elif bot['status'] == 'paused':
+            status = "⏸️ VIP 暂停"
         elif bot['status'] == 'revoked':
             status = "⚠️ Token已失效"
         elif bot['status'] == 'banned':
@@ -133,8 +144,8 @@ async def bot_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             status = "🔴 已停止"
         text += f"- @{escape(bot['bot_username'])}: {status}\n"
 
-        # 所有非 banned 的Bot：提供重启按钮（运行中的也可重启）
-        if bot['status'] not in ('banned',):
+        # banned 和 admin_stopped 状态的Bot不允许用户重启/删除（VIP paused 的可以重启）
+        if bot['status'] not in ('banned', 'admin_stopped'):
             action_text = "🔄 重启" if not is_running else "🔄 重启"
             stopped_buttons.append(
                 InlineKeyboardButton(
@@ -181,6 +192,11 @@ async def restart_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     # 检查是否被封禁
     if bot_record['status'] == 'banned':
         await query.answer("🚫 此 Bot 已被封禁，无法重启", show_alert=True)
+        return
+
+    # 检查是否被系统停止
+    if bot_record['status'] == 'admin_stopped':
+        await query.answer("⏸️ 此 Bot 已被系统停止，无法重启。", show_alert=True)
         return
 
     await query.answer("⏳ 正在重启...")
@@ -252,6 +268,9 @@ async def update_token_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer("🚫 此 Bot 已被封禁，无法操作", show_alert=True)
         return
 
+    # 系统停止的 Bot 允许更新 Token，但不会启动
+    is_admin_stopped = bot_record['status'] == 'admin_stopped'
+
     # 保存到 user_data，等待用户发送新 Token
     context.user_data['update_token_bot_id'] = bot_db_id
 
@@ -319,6 +338,18 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _retry_send(update.message.reply_text, "❌ 无权操作此 Bot。")
         return
 
+    # 检查是否被封禁
+    if bot_record['status'] == 'banned':
+        context.user_data.pop('update_token_bot_id', None)
+        await _retry_send(update.message.reply_text,
+            "🚫 此 Bot 已被封禁，无法操作。",
+        )
+        return
+
+    # 系统停止的 Bot 允许更新 Token，但不会启动
+    is_admin_stopped = bot_record['status'] == 'admin_stopped'
+    old_token = bot_record['bot_token']  # 记录旧 Token 用于通知管理员
+
     # 检查 Token 是否已被其他 Bot 使用
     existing_token = await get_user_bot_by_token(token)
     if existing_token and existing_token['id'] != bot_db_id:
@@ -355,8 +386,8 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
-    # 更新数据库
-    success = await update_user_bot_token(bot_db_id, token, bot_info.id)
+    # 更新数据库（系统停止的 Bot 保持状态不变）
+    success = await update_user_bot_token(bot_db_id, token, bot_info.id, keep_status=is_admin_stopped)
     if not success:
         await status_msg.edit_text("❌ 更新 Token 失败，请重试。")
         return
@@ -366,7 +397,41 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if mgr:
         await mgr.stop_bot(bot_db_id)
 
-    # 重新获取记录并启动
+    # 系统停止的 Bot：只更新 Token，不启动，通知管理员
+    if is_admin_stopped:
+        logger.warning("被系统停止的 Bot @%s (owner=%s) 更新了 Token", bot_record['bot_username'], user_id)
+        # 通知管理员
+        try:
+            from config import ADMIN_IDS
+            admin_text = (
+                f"🔔 <b>被系统停止的 Bot 更新了 Token</b>\n\n"
+                f"🤖 Bot：@{escape(bot_record['bot_username'])}\n"
+                f"🆔 Bot ID：<code>{bot_record['bot_id']}</code>\n"
+                f"👤 用户：<code>{user_id}</code>\n\n"
+                f"📋 <b>旧 Token：</b>\n<code>{escape(old_token)}</code>\n\n"
+                f"📋 <b>新 Token：</b>\n<code>{escape(token)}</code>\n\n"
+                f"状态保持 admin_stopped，未启动。"
+            )
+            for admin_id in ADMIN_IDS:
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_id, text=admin_text, parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error("通知管理员失败: %s", e)
+
+        await status_msg.edit_text(
+            f"✅ <b>Token 已更新</b>\n\n"
+            f"🤖 @{escape(bot_record['bot_username'])}\n\n"
+            f"⚠️ 此 Bot 当前被系统停止，Token 已保存但不会启动。\n"
+            f"如需恢复运行，请联系管理员。",
+            parse_mode="HTML"
+        )
+        return
+
+    # 正常流程：重新获取记录并启动
     bot_record = await get_user_bot_by_id(bot_db_id)
     started = False
     if mgr:

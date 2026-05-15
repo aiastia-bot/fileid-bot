@@ -15,6 +15,7 @@ from db_bots import (  # noqa: F401
     add_user_bot, get_user_bots_by_owner, get_user_bot_by_id,
     get_all_owner_ids,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
+    is_bot_admin_stopped,
     delete_user_bot, update_user_bot_status, update_user_bot_token,
     get_all_active_user_bots, update_user_bot_node, get_active_bots_by_node,
     get_user_bot_by_username, unban_user_bots,
