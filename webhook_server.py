@@ -4,7 +4,7 @@ import logging
 from telegram import Update
 from telegram.ext import Application
 from bot_manager import BotManager
-from config import WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET, WORKER_SECRET
+from config import WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET, WORKER_SECRET, MASTER_BOT_COMMANDS
 from scheduler import MasterScheduler
 
 logger = logging.getLogger(__name__)
@@ -129,25 +129,8 @@ def run_webhook_master(application: Application, bot_manager: BotManager, schedu
         scheduler.master_bot_username = application.bot.username
 
         # 注册主Bot命令
-        commands = [
-            ("start", "开始使用 / 查看帮助"),
-            ("vip", "VIP 会员 / 购买星星"),
-            ("newbot", "一键创建你的 Bot"),
-            ("addbot", "添加你的 Bot"),
-            ("mybots", "查看我的 Bot 列表"),
-            ("delbot", "删除 Bot"),
-            ("botstatus", "查看 Bot 运行状态"),
-            ("updatetoken", "更新失效的 Token"),
-            ("mystars", "星星资产 / 发送礼物（管理员）"),
-            ("platform", "平台统计（管理员）"),
-            ("blacklist", "黑名单管理（管理员）"),
-            ("export", "导出数据（管理员）"),
-            ("broadcast", "广播消息（管理员）"),
-            ("startbot", "重启/启动Bot（管理员）"),
-            ("stopbot", "停止指定Bot（管理员）"),
-        ]
         try:
-            await application.bot.set_my_commands(commands)
+            await application.bot.set_my_commands(MASTER_BOT_COMMANDS)
         except Exception as e:
             logger.warning("主Bot注册命令失败: %s", e)
 
@@ -255,25 +238,8 @@ def run_webhook(application: Application, bot_manager: BotManager):
 
         bot_manager.master_bot_username = application.bot.username
 
-        commands = [
-            ("start", "开始使用 / 查看帮助"),
-            ("vip", "VIP 会员 / 购买星星"),
-            ("newbot", "一键创建你的 Bot"),
-            ("addbot", "添加你的 Bot"),
-            ("mybots", "查看我的 Bot 列表"),
-            ("delbot", "删除 Bot"),
-            ("botstatus", "查看 Bot 运行状态"),
-            ("updatetoken", "更新失效的 Token"),
-            ("mystars", "星星资产 / 发送礼物（管理员）"),
-            ("platform", "平台统计（管理员）"),
-            ("blacklist", "黑名单管理（管理员）"),
-            ("export", "导出数据（管理员）"),
-            ("broadcast", "广播消息（管理员）"),
-            ("startbot", "重启/启动Bot（管理员）"),
-            ("stopbot", "停止指定Bot（管理员）"),
-        ]
         try:
-            await application.bot.set_my_commands(commands)
+            await application.bot.set_my_commands(MASTER_BOT_COMMANDS)
         except Exception as e:
             logger.warning("主Bot注册命令失败: %s", e)
 
