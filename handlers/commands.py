@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import MAX_COLLECTION_FILES, FILE_TYPE_MAP
-from database import (
+from db import (
     save_file, get_file, get_collection, create_collection,
     add_file_to_collection, complete_collection, delete_collection,
     get_user_collections, get_stats, get_all_files_for_export
@@ -35,7 +35,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # 获取沟通群组链接
     group_links = ""
     try:
-        from database import get_platform_setting
+        from db import get_platform_setting
         import json
         groups_json = await get_platform_setting('chat_groups', '')
         if groups_json:
@@ -430,7 +430,7 @@ async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     # 解析参数
     import re
-    from db_files import get_recent_files_for_bot
+    from db.files import get_recent_files_for_bot
     from send_queue import get_queue_from_context, split_files_to_batches
 
     args_str = ' '.join(context.args) if context.args else ''

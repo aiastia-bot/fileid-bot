@@ -4,8 +4,8 @@ from typing import Dict, List
 
 from sqlalchemy import select, func, text
 
-from db_core import get_session
-from models import FileMapping, Collection, UserBot
+from db.core import get_session
+from db.models import FileMapping, Collection, UserBot
 
 logger = logging.getLogger(__name__)
 
@@ -164,8 +164,8 @@ async def get_platform_bot_details(status: str = 'active') -> List[Dict]:
 async def get_platform_export_data() -> Dict:
     """导出平台全部数据（Bot、文件、集合、黑名单）"""
     async with get_session() as session:
-        from models import UserBlacklist
-        from db_core import _model_to_dict
+        from db.models import UserBlacklist
+        from db.core import _model_to_dict
 
         # 所有非删除 Bot
         result = await session.execute(

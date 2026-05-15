@@ -9,7 +9,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Labeled
 from telegram.ext import ContextTypes
 
 from config import VIP_PLANS, VIP_EXPIRE_NOTICE_DAYS
-from db_vip import (
+from db.vip import (
     get_user_vip_info, get_user_vip_level, get_max_bots_for_user,
     update_user_vip, record_star_payment, get_payment_history,
     get_active_bots_by_owner, get_active_bots_count_by_owner,
@@ -369,8 +369,8 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 async def handle_expired_vips() -> None:
     """定时任务：处理所有已过期的VIP用户"""
-    from db_vip import get_expired_users
-    from database import update_user_bot_status
+    from db.vip import get_expired_users
+    from db import update_user_bot_status
 
     expired = await get_expired_users()
     if not expired:
@@ -383,7 +383,7 @@ async def handle_expired_vips() -> None:
         old_level = user_info['vip_level']
 
         # 降回 VIP 0
-        from db_vip import _downgrade_expired_user
+        from db.vip import _downgrade_expired_user
         await _downgrade_expired_user(user_id)
 
         # 暂停多余的 Bot
@@ -417,7 +417,7 @@ async def handle_expired_vips() -> None:
 
 async def send_expire_reminders() -> None:
     """定时任务：发送即将过期提醒"""
-    from db_vip import get_expiring_users
+    from db.vip import get_expiring_users
 
     users = await get_expiring_users(days=VIP_EXPIRE_NOTICE_DAYS)
     if not users:
@@ -511,7 +511,7 @@ async def _try_resume_paused_bots(user_id: int, new_level: int) -> None:
 
         # 启动 Bot
         if mgr:
-            from database import get_user_bot_by_id
+            from db import get_user_bot_by_id
             bot_record = await get_user_bot_by_id(bot_db_id)
             if bot_record:
                 success = await mgr.start_bot(bot_record)

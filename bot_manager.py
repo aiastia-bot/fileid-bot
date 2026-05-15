@@ -13,7 +13,7 @@ from telegram.ext import (
     CallbackQueryHandler, filters
 )
 
-from database import (
+from db import (
     get_all_active_user_bots,
     update_user_bot_status
 )
@@ -43,7 +43,7 @@ async def _auto_stop_revoked_bot(bot_username: str, bot_data: dict):
     bot_db_id = bot_record.get('id')
 
     # 更新数据库状态
-    from database import update_user_bot_status
+    from db import update_user_bot_status
     await update_user_bot_status(bot_db_id, 'revoked')
 
     # 停止 Bot
@@ -99,17 +99,17 @@ class BotManager:
 
     def _create_user_bot_app(self, token: str) -> Application:
         """为用户Bot创建 Application 实例，注册所有 FileID 处理器"""
-        from handlers_commands import (
+        from handlers.commands import (
             start_command, create_collection_cmd, done_collection_cmd,
             cancel_collection_cmd, get_id_command, my_collections_cmd,
             delete_collection_cmd, stop_command, ex_command,
             pack_command
         )
-        from handlers_messages import (
+        from handlers.messages import (
             handle_attachment, handle_text, handle_forward,
             handle_group_media, handle_forwarded_media
         )
-        from handlers_callbacks import button_callback
+        from handlers.callbacks import button_callback
 
         application = (
             ApplicationBuilder()
@@ -460,7 +460,7 @@ class BotManager:
         self._cleaned_orphans.add(bot_db_id)
 
         try:
-            from database import get_user_bot_by_id
+            from db import get_user_bot_by_id
             bot_record = await get_user_bot_by_id(bot_db_id)
             if not bot_record:
                 logger.debug("孤立 webhook 清理: bot_db_id=%s 不在数据库中", bot_db_id)

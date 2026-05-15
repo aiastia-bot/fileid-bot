@@ -5,8 +5,8 @@ from typing import Optional, List, Dict
 
 from sqlalchemy import select, update, func, text
 
-from db_core import get_session, _model_to_dict
-from models import User, StarPayment, UserBot
+from db.core import get_session, _model_to_dict
+from db.models import User, StarPayment, UserBot
 from config import VIP_PLANS, MAX_VIP0_USERS
 
 logger = logging.getLogger(__name__)

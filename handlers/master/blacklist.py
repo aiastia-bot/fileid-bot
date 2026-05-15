@@ -6,7 +6,7 @@ from senders import _retry_send
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from database import (
+from db import (
     get_user_bots_by_owner,
     update_user_bot_status,
     add_to_blacklist, remove_from_blacklist, is_user_blacklisted,

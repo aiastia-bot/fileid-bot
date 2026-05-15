@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes
 
 from config import MAX_COLLECTION_FILES, GROUP_SEND_SIZE, FILE_TYPE_MAP
 from config import RATE_LIMIT_WINDOW, RATE_LIMIT_MAX, RATE_LIMIT_MAX_WAIT
-from database import (
+from db import (
     save_file, get_file, get_files_by_codes, get_collection, get_collection_files,
     create_collection, add_file_to_collection,
 )
@@ -520,7 +520,7 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
             full_col_code = f"{code_prefix}_col:{generate_raw_code()}"
 
             # 保存集合到数据库（使用 async ORM）
-            from database import create_collection, add_file_to_collection, complete_collection
+            from db import create_collection, add_file_to_collection, complete_collection
             bot_db_id = context.bot_data.get('bot_record', {}).get('id')
 
             save_ok = False
@@ -668,7 +668,7 @@ async def _handle_pack_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         )
 
     # 步骤4: 批量验证并添加到数据库（3次查询优化）
-    from database import batch_add_codes_to_collection
+    from db import batch_add_codes_to_collection
     result = await batch_add_codes_to_collection(
         col_code=pack_code,
         codes=new_codes,

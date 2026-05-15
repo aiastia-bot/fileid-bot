@@ -8,7 +8,7 @@ import httpx
 from telegram import Update
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
-from database import (
+from db import (
     add_user_bot, get_user_bots_by_owner,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
     get_user_bot_by_id, is_bot_admin_stopped,
@@ -77,7 +77,7 @@ async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     # 检查用户 Bot 数量（使用 VIP 限制）
-    from db_vip import get_max_bots_for_user, check_vip0_capacity
+    from db.vip import get_max_bots_for_user, check_vip0_capacity
     # 检查 VIP 0 用户数量限制
     if not await check_vip0_capacity(owner_id):
         logger.warning("VIP 0 用户已满，拒绝用户 %s 创建 Bot", owner_id)

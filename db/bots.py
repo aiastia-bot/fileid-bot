@@ -6,8 +6,8 @@ from typing import Optional, List, Dict
 from sqlalchemy import select, update, func, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from db_core import get_session, _model_to_dict
-from models import UserBot, UserBlacklist, PlatformSetting
+from db.core import get_session, _model_to_dict
+from db.models import UserBot, UserBlacklist, PlatformSetting
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +257,7 @@ async def get_active_bots_by_node(node_id: str) -> List[Dict]:
 
 async def add_to_blacklist(user_id: int, reason: str = '') -> bool:
     """添加用户到黑名单"""
-    from db_core import get_engine
+    from db.core import get_engine
     from config import DB_TYPE
     async with get_session() as session:
         try:

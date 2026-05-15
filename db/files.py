@@ -7,8 +7,8 @@ from typing import Optional, List, Dict
 
 from sqlalchemy import select, update, func, or_, text
 
-from db_core import get_session, _model_to_dict
-from models import FileMapping, Collection
+from db.core import get_session, _model_to_dict
+from db.models import FileMapping, Collection
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 async def get_active_bot_files(since_date: str = None) -> List[Dict]:
     """获取活跃Bot的文件列表，按bot_username+created_at排序，支持日期过滤"""
     async with get_session() as session:
-        from models import UserBot
+        from db.models import UserBot
         query = (
             select(
                 FileMapping.code, FileMapping.bot_username, FileMapping.file_type,

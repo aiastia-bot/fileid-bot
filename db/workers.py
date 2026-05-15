@@ -5,8 +5,8 @@ from typing import Optional, List, Dict
 
 from sqlalchemy import select, update
 
-from db_core import get_session, _model_to_dict
-from models import WorkerNode
+from db.core import get_session, _model_to_dict
+from db.models import WorkerNode
 
 logger = logging.getLogger(__name__)
 

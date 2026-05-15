@@ -21,7 +21,7 @@ from config import (
     GROUP_SEND_SIZE, SEND_RETRY_COUNT, SEND_RETRY_DELAY,
     SEND_INDIVIDUAL_DELAY, RETRY_AFTER_MAX_WAIT,
 )
-from database import mark_file_invalid
+from db import mark_file_invalid
 
 logger = logging.getLogger(__name__)
 

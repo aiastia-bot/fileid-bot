@@ -9,7 +9,7 @@ from senders import _retry_send
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from database import (
+from db import (
     get_user_bot_by_id,
     get_user_bot_by_username,
     update_user_bot_status,

@@ -7,12 +7,12 @@ from senders import _retry_send
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 
-from database import (
+from db import (
     add_user_bot, get_user_bots_by_owner,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
     get_user_bot_by_id, is_bot_admin_stopped,
 )
-from db_vip import get_max_bots_for_user, check_vip0_capacity
+from db.vip import get_max_bots_for_user, check_vip0_capacity
 
 logger = logging.getLogger(__name__)
 

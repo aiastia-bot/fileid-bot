@@ -6,7 +6,7 @@ from senders import _retry_send
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from database import (
+from db import (
     get_user_bots_by_owner, get_user_bot_by_id,
     delete_user_bot as db_delete_user_bot,
     update_user_bot_status, update_user_bot_token,

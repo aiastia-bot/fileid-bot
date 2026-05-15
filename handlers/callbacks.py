@@ -6,7 +6,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import AUTO_SEND_INTERVAL, GROUP_SEND_SIZE, FILE_TYPE_MAP
-from database import get_collection, get_collection_files
+from db import get_collection, get_collection_files
 from utils import escape_markdown
 from senders import send_file_group, _retry_send
 from send_queue import get_queue_from_context
@@ -33,7 +33,7 @@ async def _resolve_key(context, sk: str) -> str:
     # 2. cb_map 未命中：如果是 c{id} 格式，从数据库恢复
     if sk.startswith('c') and sk[1:].isdigit():
         col_id = int(sk[1:])
-        from database import get_collection_by_id
+        from db import get_collection_by_id
         col_info = await get_collection_by_id(col_id)
         if col_info:
             col_code = col_info['code']
@@ -462,7 +462,7 @@ async def _send_page(context, chat_id, col_code, page, query=None):
             sk = k
             break
     if not sk:
-        from handlers_messages import _short_key
+        from handlers.messages import _short_key
         sk = await _short_key(context, col_code)
 
     buttons = []

@@ -5,8 +5,8 @@ from typing import Optional, List, Dict
 
 from sqlalchemy import select, update, or_
 
-from db_core import get_session, _model_to_dict
-from models import Collection, CollectionItem, FileMapping
+from db.core import get_session, _model_to_dict
+from db.models import Collection, CollectionItem, FileMapping
 
 logger = logging.getLogger(__name__)
 

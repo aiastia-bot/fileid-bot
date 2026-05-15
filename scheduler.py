@@ -5,7 +5,7 @@ Master 调度器
 import logging
 from typing import Dict, List, Optional
 
-from database import (
+from db import (
     get_all_active_user_bots, get_best_worker_node,
     register_worker_node, update_worker_heartbeat, set_worker_offline,
     update_user_bot_node, get_user_bot_by_id,
@@ -81,7 +81,7 @@ class MasterScheduler:
             return True
 
         # 查找 Worker 节点
-        from database import get_all_worker_nodes
+        from db import get_all_worker_nodes
         nodes = {n['node_id']: n for n in await get_all_worker_nodes()}
         node = nodes.get(node_id)
         if not node or node['status'] != 'online':
@@ -150,5 +150,5 @@ class MasterScheduler:
 
     async def get_worker_status(self) -> List[Dict]:
         """获取所有 Worker 状态"""
-        from database import get_all_worker_nodes
+        from db import get_all_worker_nodes
         return await get_all_worker_nodes()

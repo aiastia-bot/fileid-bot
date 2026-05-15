@@ -21,7 +21,7 @@ from config import (
     BOT_MODE, WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET,
     ROLE, WORKER_SECRET, REDIS_URL, LOG_LEVEL
 )
-from database import init_db
+from db import init_db
 from bot_manager import BotManager
 from scheduler import MasterScheduler
 from webhook_server import run_webhook_master, run_webhook
@@ -209,13 +209,13 @@ def run_worker():
 async def _payment_filter_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """过滤并处理 successful_payment 类型的 Update"""
     if update.message and update.message.successful_payment:
-        from handlers_master_stars import successful_payment_handler
+        from handlers.master.stars import successful_payment_handler
         await successful_payment_handler(update, context)
 
 
 def _start_vip_expire_job(application: Application):
     """启动 VIP 过期检查定时任务"""
-    from handlers_master_stars import handle_expired_vips, send_expire_reminders
+    from handlers.master.stars import handle_expired_vips, send_expire_reminders
 
     async def _vip_expire_check(context: ContextTypes.DEFAULT_TYPE):
         """每小时检查过期VIP"""
@@ -237,7 +237,7 @@ def _start_vip_expire_job(application: Application):
 
 def _register_master_handlers(application: Application):
     """注册主Bot的管理命令处理器"""
-    from handlers_master import (
+    from handlers.master import (
         master_start, handle_managed_bot, add_bot_cmd, new_bot_start,
         new_bot_input_username, new_bot_input_name, new_bot_input_token,
         new_bot_cancel, my_bots_cmd, delete_bot_cmd, bot_status_cmd,
@@ -294,7 +294,7 @@ def _register_master_handlers(application: Application):
     application.add_handler(CommandHandler("setgroup", set_group_cmd))
 
     # VIP / 星星支付
-    from handlers_master_stars import (
+    from handlers.master.stars import (
         vip_command, vip_callback_router, pre_checkout_handler,
         successful_payment_handler,
     )
@@ -304,7 +304,7 @@ def _register_master_handlers(application: Application):
     application.add_handler(TypeHandler(Update, _payment_filter_handler), group=10)
 
     # 管理员星星资产管理 / 礼物发送
-    from handlers_master_gifts import (
+    from handlers.master.gifts import (
         mystars_command, stars_callback_router, handle_gift_user_id_input,
     )
     application.add_handler(CommandHandler("mystars", mystars_command))
