@@ -622,8 +622,24 @@ async def _handle_pack_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         lines = lines[:500]
         await _retry_send(message.reply_text, "⚠️ 单次最多处理 500 个代码，已截取前 500 个。")
 
+    # 步骤0: 格式验证 — 只保留符合代码格式的行（防注入 + 减少无效查询）
+    import re
+    code_pattern = re.compile(r'^[A-Za-z0-9_]+_(?:[pvd]|col):[A-Za-z0-9]+$')
+    valid_lines = [l for l in lines if code_pattern.match(l) and len(l) <= 200]
+    format_invalid = len(lines) - len(valid_lines)
+
+    if not valid_lines:
+        await _retry_send(message.reply_text,
+            "⚠️ 没有有效的代码格式。\n\n"
+            "正确格式示例：\n"
+            f"`{context.bot.username}_p:xxx`\n"
+            f"`{context.bot.username}_v:yyy`",
+            parse_mode="Markdown"
+        )
+        return
+
     # 步骤1: 去除本条消息内的重复代码
-    unique_codes = list(dict.fromkeys(lines))  # 保持顺序去重
+    unique_codes = list(dict.fromkeys(valid_lines))  # 保持顺序去重
 
     # 步骤2: 与已添加的代码对比（内存去重）
     new_codes = [c for c in unique_codes if c not in packing_codes]
@@ -674,7 +690,8 @@ async def _handle_pack_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     context.user_data['packing_codes'] = packing_codes
 
     # 构建回复
-    reply = f"✅ 已添加 {added} 个文件（新增 {added} | 重复 {duplicate} | 无效 {invalid}）\n\n"
+    fmt_info = f" | 格式错误 {format_invalid}" if format_invalid else ""
+    reply = f"✅ 已添加 {added} 个文件（新增 {added} | 重复 {duplicate} | 无效 {invalid}{fmt_info}）\n\n"
     reply += f"📊 当前集合: {packing_count}/{max_pack_files}\n"
     reply += f"继续发送代码，或 `/done` 完成"
 
