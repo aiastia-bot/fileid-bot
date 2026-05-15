@@ -1,12 +1,46 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-
 version: 2
+
 updates:
-  - package-ecosystem: "" # See documentation for possible values
-    directory: "/" # Location of package manifests
+  # Python 依赖更新
+  - package-ecosystem: "pip"
+
+    # requirements.txt / pyproject.toml 所在目录
+    directory: "/"
+
+    schedule:
+      # daily / weekly / monthly
+      interval: "weekly"
+
+    # 每次最多打开多少个 PR
+    open-pull-requests-limit: 10
+
+    # PR 标题前缀
+    commit-message:
+      prefix: "deps"
+
+    # 自动给 PR 打标签
+    labels:
+      - "dependencies"
+      - "python"
+
+    # 指定 reviewer（可选）
+    # reviewers:
+    #   - "your-github-name"
+
+  # GitHub Actions 更新
+  - package-ecosystem: "github-actions"
+
+    # workflow 目录
+    directory: "/"
+
     schedule:
       interval: "weekly"
 
+    open-pull-requests-limit: 5
+
+    commit-message:
+      prefix: "ci"
+
+    labels:
+      - "dependencies"
+      - "github-actions"
