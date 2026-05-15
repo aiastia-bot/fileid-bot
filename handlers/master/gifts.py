@@ -270,16 +270,22 @@ async def stars_gift_list_callback(update: Update, context: ContextTypes.DEFAULT
     for i in range(start, end):
         gift = gifts[i]
         gift_id = gift.get("id", "")
-        gift_name = gift.get("title", f"礼物{i+1}")
         star_count = gift.get("star_count", 0)
         remaining = gift.get("remaining_count", -1)
 
-        text += f"  • {escape(gift_name)} — {star_count}⭐"
+        # Gift 对象没有 title 字段，用 sticker 信息构建显示名称
+        sticker = gift.get("sticker", {})
+        sticker_emoji = sticker.get("emoji", "🎁")
+        set_name = sticker.get("set_name", "")
+        # 用 emoji + ID 后缀作为标识
+        gift_label = f"{sticker_emoji} Gift #{gift_id}" if gift_id else f"{sticker_emoji} 礼物{i+1}"
+
+        text += f"  • {sticker_emoji} {escape(gift_label)} — {star_count}⭐"
         if remaining >= 0:
             text += f" （剩余 {remaining}）"
         text += "\n"
 
-        btn_text = f"🚫 {gift_name}（已售罄）" if remaining == 0 else f"🎁 {gift_name} {star_count}⭐"
+        btn_text = f"🚫 {gift_label}（已售罄）" if remaining == 0 else f"{sticker_emoji} {gift_label} {star_count}⭐"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"stars_gift_sel|{gift_id}")])
 
     # 翻页
@@ -319,7 +325,8 @@ async def stars_gift_sel_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.answer("❌ 未找到该礼物，请刷新重试", show_alert=True)
         return
 
-    gift_name = gift_info.get("title", "未知礼物")
+    sticker = gift_info.get("sticker", {})
+    gift_name = f"{sticker.get('emoji', '🎁')} Gift #{gift_id}"
     star_count = gift_info.get("star_count", 0)
 
     # 存储到 user_data
