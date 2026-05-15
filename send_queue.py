@@ -105,6 +105,7 @@ class SendQueue:
         self._total_sent = 0
         self._rate_limit_until = 0.0  # Bot 级别限流截止时间（monotonic）
         self._redis = None  # 延迟获取 RedisManager
+        self._cancelled_chats: set = set()  # 已取消的 chat_id 集合
 
     @property
     def _redis_key(self) -> str:
@@ -274,6 +275,39 @@ class SendQueue:
                         self.bot_name, removed, chat_id, auto_id)
         return removed
 
+    def cancel_chat(self, chat_id: int) -> int:
+        """取消指定用户的所有队列任务（立即生效）
+
+        同时标记 chat_id，让消费者正在处理的该用户任务也被取消。
+        返回被取消的排队任务数。
+        """
+        self._cancelled_chats.add(chat_id)
+
+        # 取消队列中该用户的所有待处理任务
+        tasks = self._queues.pop(chat_id, [])
+        stopped = 0
+        for t in tasks:
+            if not t.future.done():
+                t.future.cancel()
+                stopped += 1
+            asyncio.create_task(self._remove_task(t))
+
+        # 唤醒消费者（队列可能变空，需要重新检查）
+        self._event.set()
+
+        if stopped:
+            logger.info("SendQueue(@%s): cancel_chat=%s 取消 %d 个排队任务",
+                        self.bot_name, chat_id, stopped)
+        return stopped
+
+    def is_chat_cancelled(self, chat_id: int) -> bool:
+        """检查 chat_id 是否已被标记为取消"""
+        return chat_id in self._cancelled_chats
+
+    def clear_chat_cancel(self, chat_id: int):
+        """清除取消标记（开始新的发送时调用）"""
+        self._cancelled_chats.discard(chat_id)
+
     # ===== 消费者 =====
 
     async def _consume_loop(self):
@@ -307,6 +341,19 @@ class SendQueue:
                 if not self._running:
                     break
 
+                # 检查该用户是否已被 /stop 取消
+                if chat_id in self._cancelled_chats:
+                    # 跳过并清理该用户的所有排队任务
+                    skip_tasks = self._queues.pop(chat_id, [])
+                    for t in skip_tasks:
+                        if not t.future.done():
+                            t.future.cancel()
+                        asyncio.create_task(self._remove_task(t))
+                    self._cancelled_chats.discard(chat_id)
+                    logger.info("SendQueue(@%s): 消费者跳过已取消的 chat_id=%s (%d 个任务)",
+                                self.bot_name, chat_id, len(skip_tasks))
+                    continue
+
                 tasks = self._queues.get(chat_id)
                 if not tasks:
                     continue
@@ -314,6 +361,22 @@ class SendQueue:
                 task = tasks.pop(0)
                 if not tasks:
                     del self._queues[chat_id]
+
+                # 再次检查：任务弹出后可能被 /stop 标记
+                if chat_id in self._cancelled_chats:
+                    if not task.future.done():
+                        task.future.cancel()
+                    asyncio.create_task(self._remove_task(task))
+                    # 清理剩余
+                    skip_tasks = self._queues.pop(chat_id, [])
+                    for t in skip_tasks:
+                        if not t.future.done():
+                            t.future.cancel()
+                        asyncio.create_task(self._remove_task(t))
+                    self._cancelled_chats.discard(chat_id)
+                    logger.info("SendQueue(@%s): 消费者取消正在处理的 chat_id=%s 任务",
+                                self.bot_name, chat_id)
+                    continue
 
                 processed_any = True
 

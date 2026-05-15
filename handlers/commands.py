@@ -1,4 +1,5 @@
 """命令处理器模块"""
+import asyncio
 import io
 import logging
 from datetime import datetime
@@ -88,20 +89,14 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     bot_username = context.bot.username
     stopped_count = 0
 
-    # 1. 停止自动发送
+    # 1. 停止自动发送标记
     context.user_data['stop_auto_send'] = True
 
-    # 2. 取消发送队列中该用户所有任务
+    # 2. 通过 cancel_chat 取消队列中该用户所有任务 + 标记取消（阻止正在发送的后续任务）
     from send_queue import get_queue
     try:
         queue = get_queue(bot_username)
-        tasks = queue._queues.get(chat_id, [])
-        for t in tasks[:]:
-            if not t.future.done():
-                t.future.cancel()
-                stopped_count += 1
-        if chat_id in queue._queues:
-            del queue._queues[chat_id]
+        stopped_count = queue.cancel_chat(chat_id)
         if stopped_count > 0:
             logger.info("/stop: @%s 取消了 chat_id=%s 的 %d 个队列任务", bot_username, chat_id, stopped_count)
     except Exception as e:
@@ -513,7 +508,17 @@ async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     total_sent = 0
     for i, batch in enumerate(batches):
-        sent = await queue.submit_batch(chat_id, batch)
-        total_sent += sent
+        # 每次提交前检查是否已被 /stop 取消
+        if queue.is_chat_cancelled(chat_id):
+            logger.info("/ex: chat_id=%s 已被取消，停止提交 (已发送 %d/%d)", chat_id, total_sent, len(send_files))
+            break
+        try:
+            sent = await queue.submit_batch(chat_id, batch)
+            total_sent += sent
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error("/ex 批次发送失败: %s", e)
 
+    queue.clear_chat_cancel(chat_id)
     await _retry_send(update.message.reply_text, f"✅ 发送完成！成功 {total_sent}/{len(send_files)} 个文件。")

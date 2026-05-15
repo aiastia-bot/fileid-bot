@@ -218,6 +218,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif data == "stop_auto":
             logger.info("处理停止自动发送: user_id=%s", user_id)
             context.user_data['stop_auto_send'] = True
+            # 同时标记队列取消
+            from send_queue import get_queue
+            try:
+                queue = get_queue(context.bot.username)
+                queue.cancel_chat(chat_id)
+            except Exception:
+                pass
             try:
                 await _retry_send(query.edit_message_reply_markup, reply_markup=None)
             except Exception as e:
@@ -397,13 +404,16 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
     sent_count = 0
     queue = get_queue_from_context(context)
     for idx, group in enumerate(all_groups):
-        if context.user_data.get('stop_auto_send'):
-            # 取消队列中该用户剩余的 auto_send 任务
+        # 检查两种停止标志：user_data 标记 + 队列 cancel_chat 标记
+        if context.user_data.get('stop_auto_send') or queue.is_chat_cancelled(chat_id):
+            queue.cancel_chat(chat_id)  # 确保队列中的剩余任务也被取消
             await _retry_send(context.bot.send_message, chat_id=chat_id, text=f"⏹ 已停止。成功发送 {sent_count}/{total} 个文件。")
             return
 
         try:
             sent_count += await queue.submit_batch(chat_id, group)
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             logger.error("自动发送组失败: %s", e)
 
