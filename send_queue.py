@@ -307,7 +307,7 @@ class SendQueue:
         self._event.set()
 
         if stopped:
-            logger.info("SendQueue(@%s): cancel_chat=%s 取消 %d 个排队任务",
+            logger.info("SendQueue(@%s): cancel_chat=%s 取消 %d 个任务",
                         self.bot_name, chat_id, stopped)
         return stopped
 
