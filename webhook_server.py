@@ -1,4 +1,5 @@
 """Webhook 服务器 - Standalone 和 Master 模式的 aiohttp 服务器"""
+import asyncio
 import logging
 from telegram import Update
 from telegram.ext import Application
@@ -130,12 +131,14 @@ def run_webhook_master(application: Application, bot_manager: BotManager, schedu
         # 注册主Bot命令
         commands = [
             ("start", "开始使用 / 查看帮助"),
+            ("vip", "VIP 会员 / 购买星星"),
             ("newbot", "一键创建你的 Bot"),
             ("addbot", "添加你的 Bot"),
             ("mybots", "查看我的 Bot 列表"),
             ("delbot", "删除 Bot"),
             ("botstatus", "查看 Bot 运行状态"),
             ("updatetoken", "更新失效的 Token"),
+            ("mystars", "星星资产 / 发送礼物（管理员）"),
             ("platform", "平台统计（管理员）"),
             ("blacklist", "黑名单管理（管理员）"),
             ("export", "导出数据（管理员）"),
@@ -148,9 +151,15 @@ def run_webhook_master(application: Application, bot_manager: BotManager, schedu
         except Exception as e:
             logger.warning("主Bot注册命令失败: %s", e)
 
-        # 分配 Bot 到 Worker
-        loaded = await scheduler.load_all_to_workers()
-        logger.info("✅ Master webhook 启动完成，已分配 %d 个用户Bot", loaded)
+        # 后台异步加载 Bot，不阻塞 webhook 服务器启动
+        async def _bg_load_bots():
+            try:
+                loaded = await scheduler.load_all_to_workers()
+                logger.info("✅ Master 后台加载完成，已分配 %d 个用户Bot", loaded)
+            except Exception as e:
+                logger.error("Master 后台加载 Bot 失败: %s", e)
+
+        asyncio.create_task(_bg_load_bots())
 
         # 启动 webhook 定期验证（防止用户在别处使用 Bot Token）
         await bot_manager.start_webhook_monitor()
@@ -248,12 +257,14 @@ def run_webhook(application: Application, bot_manager: BotManager):
 
         commands = [
             ("start", "开始使用 / 查看帮助"),
+            ("vip", "VIP 会员 / 购买星星"),
             ("newbot", "一键创建你的 Bot"),
             ("addbot", "添加你的 Bot"),
             ("mybots", "查看我的 Bot 列表"),
             ("delbot", "删除 Bot"),
             ("botstatus", "查看 Bot 运行状态"),
             ("updatetoken", "更新失效的 Token"),
+            ("mystars", "星星资产 / 发送礼物（管理员）"),
             ("platform", "平台统计（管理员）"),
             ("blacklist", "黑名单管理（管理员）"),
             ("export", "导出数据（管理员）"),
@@ -266,8 +277,15 @@ def run_webhook(application: Application, bot_manager: BotManager):
         except Exception as e:
             logger.warning("主Bot注册命令失败: %s", e)
 
-        loaded = await bot_manager.load_all()
-        logger.info("✅ webhook 服务器启动完成，共加载 %d 个用户Bot", loaded)
+        # 后台异步加载 Bot，不阻塞 webhook 服务器启动
+        async def _bg_load_bots():
+            try:
+                loaded = await bot_manager.load_all()
+                logger.info("✅ Standalone 后台加载完成，共加载 %d 个用户Bot", loaded)
+            except Exception as e:
+                logger.error("Standalone 后台加载 Bot 失败: %s", e)
+
+        asyncio.create_task(_bg_load_bots())
 
         # 启动 webhook 定期验证（防止用户在别处使用 Bot Token）
         await bot_manager.start_webhook_monitor()
