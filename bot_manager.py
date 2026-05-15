@@ -291,7 +291,6 @@ class BotManager:
                         url=webhook_url,
                         secret_token=WEBHOOK_SECRET or None,
                         allowed_updates=Update.ALL_TYPES,
-                        drop_pending_updates=True,
                     )
                     logger.info("用户Bot @%s webhook 已设置: %s", name, webhook_url)
                 else:
