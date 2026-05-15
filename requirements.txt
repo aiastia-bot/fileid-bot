@@ -1,6 +1,6 @@
 python-telegram-bot>=22.7
 aiohttp>=3.9.0
 sqlalchemy[asyncio]>=2.0
-aiosqlite>=0.20
+aiosqlite>=0.22.1
 aiomysql>=0.2.0
 redis>=7.4.0
