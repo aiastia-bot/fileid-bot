@@ -431,8 +431,19 @@ async def stop_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # 即使没在运行，也更新数据库状态为 admin_stopped
         if bot_record['status'] == 'active':
             await update_user_bot_status(bot_record['id'], 'admin_stopped')
+
+        # 主动删除 webhook（防止残留 webhook 导致 bot 仍能接收消息）
+        try:
+            from telegram import Bot
+            temp_bot = Bot(token=bot_record['bot_token'])
+            await temp_bot.delete_webhook()
+            await temp_bot.shutdown()
+            logger.info("已删除 Bot @%s 的 webhook", bot_record['bot_username'])
+        except Exception as e:
+            logger.warning("删除 Bot @%s webhook 失败: %s", bot_record['bot_username'], e)
+
         await _retry_send(update.message.reply_text, 
-            f"ℹ️ Bot @{escape(bot_record['bot_username'])} 当前未在运行。数据库状态已更新。"
+            f"ℹ️ Bot @{escape(bot_record['bot_username'])} 当前未在运行。数据库状态已更新，webhook 已删除。"
         )
         return
 
