@@ -539,6 +539,7 @@ async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT
     total_success = 0
     total_fail = 0
     bot_results = []
+    sent_owners = set()  # 去重：每个主人只发一次
 
     for bot_db_id, app in apps.items():
         bot_username = app.bot.username if app.bot else f"Bot#{bot_db_id}"
@@ -551,6 +552,11 @@ async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT
 
         owner_id = bot_record['owner_id']
 
+        # 去重：同一个主人只发一次消息
+        if owner_id in sent_owners:
+            bot_results.append(f"⏭️ @{escape(bot_username)} → 主人 <code>{owner_id}</code> (已发送，跳过)")
+            continue
+
         # 通过该用户Bot给主人发消息
         try:
             await _retry_send(
@@ -559,6 +565,7 @@ async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT
                 text=message_text,
                 parse_mode="HTML"
             )
+            sent_owners.add(owner_id)
             total_success += 1
             bot_results.append(f"✅ @{escape(bot_username)} → 主人 <code>{owner_id}</code>")
         except Exception as e:
