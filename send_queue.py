@@ -291,7 +291,7 @@ class SendQueue:
             self._current_send_task.cancel()
             if self._current_task and not self._current_task.future.done():
                 self._current_task.future.cancel()
-            asyncio.create_task(self._remove_task(self._current_task))
+            # Redis 清理由消费者的 CancelledError 处理器统一负责
 
         # 取消队列中该用户的所有待处理任务
         tasks = self._queues.pop(chat_id, [])
