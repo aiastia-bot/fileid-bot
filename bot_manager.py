@@ -96,6 +96,7 @@ class BotManager:
         self._webhook_monitor_task: Optional[asyncio.Task] = None  # webhook 监控任务
         # 防雪崩：每个 Bot 独立的并发信号量
         self._bot_semaphores: Dict[int, asyncio.Semaphore] = {}
+        self._loading = False  # Bot 正在加载中，期间对未知 Bot 返回 503 让 Telegram 重试
 
 
     def _create_user_bot_app(self, token: str) -> Application:
@@ -364,6 +365,10 @@ class BotManager:
         """
         app = self._apps.get(bot_db_id)
         if not app:
+            if self._loading:
+                # Bot 正在加载中，返回 503 让 Telegram 自动重试，不丢失消息
+                logger.info("收到 bot_db_id=%s 的 webhook 更新，但 Bot 正在加载中，返回 503 触发重试", bot_db_id)
+                return False  # 503 → Telegram 自动重试
             # Bot 不在内存中（可能已被封/停止/未加载）
             # 尝试通过数据库获取 Token 并删除 webhook，阻止 Telegram 继续推送
             logger.warning("收到未知 bot_db_id=%s 的 webhook 更新，尝试清理 webhook", bot_db_id)
@@ -390,25 +395,29 @@ class BotManager:
 
     async def load_all(self) -> int:
         """从数据库加载所有活跃的用户Bot（限制并发数启动）"""
-        bots = await get_all_active_user_bots()
-        logger.info("从数据库加载 %d 个用户Bot（最大并发 %d）", len(bots), MAX_CONCURRENT_STARTS)
+        self._loading = True
+        try:
+            bots = await get_all_active_user_bots()
+            logger.info("从数据库加载 %d 个用户Bot（最大并发 %d）", len(bots), MAX_CONCURRENT_STARTS)
 
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_STARTS)
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_STARTS)
 
-        async def _start_one(bot):
-            async with semaphore:
-                success = await self.start_bot(bot)
-            name = bot.get('bot_username', 'unknown')
-            if success:
-                logger.info("  ✅ @%s 已加载", name)
-            else:
-                logger.error("  ❌ @%s 加载失败", name)
-            return success
+            async def _start_one(bot):
+                async with semaphore:
+                    success = await self.start_bot(bot)
+                name = bot.get('bot_username', 'unknown')
+                if success:
+                    logger.info("  ✅ @%s 已加载", name)
+                else:
+                    logger.error("  ❌ @%s 加载失败", name)
+                return success
 
-        results = await asyncio.gather(*[_start_one(bot) for bot in bots])
-        loaded = sum(1 for r in results if r)
-
-        return loaded
+            results = await asyncio.gather(*[_start_one(bot) for bot in bots])
+            loaded = sum(1 for r in results if r)
+            return loaded
+        finally:
+            self._loading = False
+            logger.info("Bot 加载完成，共加载 %d 个，_loading=False", loaded)
 
     async def stop_all(self):
         """停止所有用户Bot"""
