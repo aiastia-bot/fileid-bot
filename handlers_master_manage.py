@@ -48,7 +48,7 @@ async def my_bots_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"   @{escape(bot['bot_username'])} | ID: <code>{bot['bot_id']}</code>\n\n"
         )
 
-    text += f"共 {len(bots)} 个 Bot"
+    text += f"共 {len(bots)} 个 Bot。请使用 /botstatus 管理"
     await _retry_send(update.message.reply_text, text, parse_mode="HTML")
 
 
