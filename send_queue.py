@@ -106,6 +106,9 @@ class SendQueue:
         self._rate_limit_until = 0.0  # Bot 级别限流截止时间（monotonic）
         self._redis = None  # 延迟获取 RedisManager
         self._cancelled_chats: set = set()  # 已取消的 chat_id 集合
+        self._current_chat_id: Optional[int] = None
+        self._current_task: Optional[SendTask] = None
+        self._current_send_task: Optional[asyncio.Task] = None
 
     @property
     def _redis_key(self) -> str:
@@ -283,6 +286,13 @@ class SendQueue:
         """
         self._cancelled_chats.add(chat_id)
 
+        # 取消当前正在发送的任务（如果有）
+        if self._current_chat_id == chat_id and self._current_send_task and not self._current_send_task.done():
+            self._current_send_task.cancel()
+            if self._current_task and not self._current_task.future.done():
+                self._current_task.future.cancel()
+            asyncio.create_task(self._remove_task(self._current_task))
+
         # 取消队列中该用户的所有待处理任务
         tasks = self._queues.pop(chat_id, [])
         stopped = 0
@@ -405,15 +415,19 @@ class SendQueue:
                     await asyncio.sleep(wait)
 
                 # 发送
+                self._current_chat_id = chat_id
+                self._current_task = task
+                self._current_send_task = asyncio.create_task(
+                    send_batch(self._bot, task.chat_id, task.files, task.caption)
+                )
                 try:
-                    sent = await send_batch(self._bot, task.chat_id,
-                                            task.files, task.caption)
-                    self._last_send = time.monotonic()
-                    self._total_sent += sent
+                    sent = await self._current_send_task
+                except asyncio.CancelledError:
+                    logger.info("SendQueue(@%s): chat_id=%s 当前发送被取消", self.bot_name, task.chat_id)
                     if not task.future.done():
-                        task.future.set_result(sent)
-                    # 发送成功，从 Redis 移除
+                        task.future.cancel()
                     await self._remove_task(task)
+                    continue
                 except Exception as e:
                     from telegram.error import RetryAfter
                     from senders import SendBlockedError
@@ -450,6 +464,17 @@ class SendQueue:
                             task.future.set_exception(e)
                         # 非限流失败也从 Redis 移除（避免重启后反复重试）
                         await self._remove_task(task)
+                else:
+                    self._last_send = time.monotonic()
+                    self._total_sent += sent
+                    if not task.future.done():
+                        task.future.set_result(sent)
+                    # 发送成功，从 Redis 移除
+                    await self._remove_task(task)
+                finally:
+                    self._current_chat_id = None
+                    self._current_task = None
+                    self._current_send_task = None
 
                 # 批次间固定间隔
                 await asyncio.sleep(SEND_BATCH_DELAY)
