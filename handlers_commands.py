@@ -32,6 +32,26 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception:
         pass
 
+    # 获取沟通群组链接
+    group_links = ""
+    try:
+        from database import get_platform_setting
+        import json
+        groups_json = await get_platform_setting('chat_groups', '')
+        if groups_json:
+            groups = json.loads(groups_json)
+            if groups:
+                group_lines = []
+                for g in groups:
+                    name = escape_markdown(g.get('name', ''))
+                    url = g.get('url', '')
+                    if name and url:
+                        group_lines.append(f"[{name}]({url})")
+                if group_lines:
+                    group_links = "\n\n" + " ".join(group_lines)
+    except Exception:
+        pass
+
     help_text = f"""🤖 *FileID Bot* — 文件ID互转工具
 
 📌 *核心功能：*
@@ -57,7 +77,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 • `{bot_username}_d:xxx` — 文档/音频
 • `{bot_username}_col:xxx` — 集合
 
-将代码直接发送给 bot 即可获取文件！{master_info}"""
+将代码直接发送给 bot 即可获取文件！{group_links}{master_info}"""
 
     await _retry_send(update.message.reply_text, help_text, parse_mode="Markdown", disable_web_page_preview=True)
 

@@ -499,3 +499,117 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             fail += 1
 
     await status_msg.edit_text(f"✅ 广播完成：成功 {success}/{len(owner_ids)}，失败 {fail}")
+
+
+# ==================== 群组链接管理 ====================
+
+async def set_group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/setgroup 管理员管理沟通群组链接"""
+    from config import ADMIN_IDS
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
+        return
+
+    import json
+
+    args = context.args or []
+
+    if not args:
+        # 显示当前群组列表和帮助
+        groups_json = await get_platform_setting('chat_groups', '')
+        groups = json.loads(groups_json) if groups_json else []
+
+        text = "🔗 <b>沟通群组管理</b>\n\n"
+        if groups:
+            text += "<b>当前群组：</b>\n"
+            for i, g in enumerate(groups, 1):
+                text += f"  {i}\. <a href=\"{escape(g.get('url', ''))}\">{escape(g.get('name', ''))}</a>\n"
+        else:
+            text += "📭 暂无群组。\n"
+
+        text += (
+            "\n<b>用法：</b>\n"
+            "• <code>/setgroup add 群组名称 URL</code> — 添加群组\n"
+            "• <code>/setgroup del 序号</code> — 删除群组\n"
+            "• <code>/setgroup clear</code> — 清空所有群组\n\n"
+            "💡 群组将以超链接形式显示在用户 Bot 的 /start 消息中。"
+        )
+        await _retry_send(update.message.reply_text, text, parse_mode="HTML", disable_web_page_preview=True)
+        return
+
+    action = args[0].lower()
+
+    if action == 'add':
+        if len(args) < 3:
+            await _retry_send(update.message.reply_text,
+                "❌ 格式错误。\n用法：<code>/setgroup add 群组名称 URL</code>",
+                parse_mode="HTML"
+            )
+            return
+
+        # 支持：/setgroup add 群组名称 URL
+        # URL 是最后一个参数，中间的都拼成名称
+        url = args[-1]
+        name = ' '.join(args[1:-1])
+
+        if not name or not url:
+            await _retry_send(update.message.reply_text,
+                "❌ 群组名称和 URL 不能为空。",
+                parse_mode="HTML"
+            )
+            return
+
+        groups_json = await get_platform_setting('chat_groups', '')
+        groups = json.loads(groups_json) if groups_json else []
+
+        groups.append({'name': name, 'url': url})
+        await set_platform_setting('chat_groups', json.dumps(groups, ensure_ascii=False))
+
+        await _retry_send(update.message.reply_text,
+            f"✅ 已添加群组：<a href=\"{escape(url)}\">{escape(name)}</a>",
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+
+    elif action == 'del':
+        if len(args) < 2:
+            await _retry_send(update.message.reply_text,
+                "❌ 请指定序号。\n用法：<code>/setgroup del 序号</code>",
+                parse_mode="HTML"
+            )
+            return
+
+        try:
+            index = int(args[1]) - 1
+        except ValueError:
+            await _retry_send(update.message.reply_text, "❌ 序号必须是数字。")
+            return
+
+        groups_json = await get_platform_setting('chat_groups', '')
+        groups = json.loads(groups_json) if groups_json else []
+
+        if index < 0 or index >= len(groups):
+            await _retry_send(update.message.reply_text, "❌ 序号超出范围。")
+            return
+
+        removed = groups.pop(index)
+        await set_platform_setting('chat_groups', json.dumps(groups, ensure_ascii=False))
+
+        await _retry_send(update.message.reply_text,
+            f"✅ 已删除群组：{escape(removed.get('name', ''))}",
+            parse_mode="HTML"
+        )
+
+    elif action == 'clear':
+        await set_platform_setting('chat_groups', '[]')
+        await _retry_send(update.message.reply_text, "✅ 已清空所有群组。")
+
+    else:
+        await _retry_send(update.message.reply_text,
+            "❓ 未知操作。\n\n"
+            "• <code>/setgroup add 群组名称 URL</code> — 添加\n"
+            "• <code>/setgroup del 序号</code> — 删除\n"
+            "• <code>/setgroup clear</code> — 清空",
+            parse_mode="HTML"
+        )

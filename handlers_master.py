@@ -19,6 +19,7 @@ from handlers_master_manage import (  # noqa: F401
 )
 from handlers_master_admin import (  # noqa: F401
     platform_stats_cmd, export_data_cmd, start_bot_admin_cmd, stop_bot_admin_cmd, broadcast_cmd,
+    set_group_cmd,
 )
 from handlers_master_blacklist import (  # noqa: F401
     blacklist_cmd,
@@ -63,6 +64,7 @@ def register_master_handlers(application):
     application.add_handler(CommandHandler("startbot", start_bot_admin_cmd))
     application.add_handler(CommandHandler("broadcast", broadcast_cmd))
     application.add_handler(CommandHandler("blacklist", blacklist_cmd))
+    application.add_handler(CommandHandler("setgroup", set_group_cmd))
 
     # 黑名单检查中间件（在所有 handler 之前）
     # 注意：这个中间件需要通过 application.handlers 在最前面添加
