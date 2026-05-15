@@ -288,7 +288,9 @@ class SendQueue:
 
         stopped = 0
         # 取消当前正在发送的任务（如果有）
+        active_cancelled = False
         if self._current_chat_id == chat_id and self._current_send_task and not self._current_send_task.done():
+            active_cancelled = True
             logger.info("SendQueue(@%s): cancel_chat 取消当前正在发送的 chat_id=%s", self.bot_name, chat_id)
             self._current_send_task.cancel()
             if self._current_task and not self._current_task.future.done():
@@ -307,9 +309,8 @@ class SendQueue:
         # 唤醒消费者（队列可能变空，需要重新检查）
         self._event.set()
 
-        if stopped:
-            logger.info("SendQueue(@%s): cancel_chat=%s 取消 %d 个任务",
-                        self.bot_name, chat_id, stopped)
+        logger.info("SendQueue(@%s): cancel_chat called chat_id=%s active_cancelled=%s pending=%d stopped=%d",
+                    self.bot_name, chat_id, active_cancelled, self.pending, stopped)
         return stopped
 
     def is_chat_cancelled(self, chat_id: int) -> bool:
