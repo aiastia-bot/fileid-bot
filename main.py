@@ -242,7 +242,7 @@ def _register_master_handlers(application: Application):
         new_bot_cancel, my_bots_cmd, delete_bot_cmd, bot_status_cmd,
         platform_stats_cmd, blacklist_cmd, export_data_cmd,
         start_bot_admin_cmd, stop_bot_admin_cmd,
-        broadcast_cmd,
+        broadcast_cmd, set_group_cmd,
         restart_bot_callback,
         update_token_callback, update_token_cmd,
         blacklist_check_handler,
@@ -290,6 +290,7 @@ def _register_master_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(restart_bot_callback, pattern=r'^restart_bot\|'))
     application.add_handler(CallbackQueryHandler(update_token_callback, pattern=r'^update_token\|'))
     application.add_handler(CommandHandler("updatetoken", update_token_cmd))
+    application.add_handler(CommandHandler("setgroup", set_group_cmd))
 
     # VIP / 星星支付
     from handlers_master_stars import (

@@ -465,7 +465,10 @@ async def stop_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ==================== 广播消息 ====================
 
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/broadcast 管理员广播消息给所有Bot所有者"""
+    """/broadcast 管理员广播消息
+    - /broadcast 消息内容 — 主Bot广播给所有活跃Bot所有者
+    - /broadcast user 消息内容 — 所有活跃用户Bot分别给各自的用户群发消息
+    """
     from config import ADMIN_IDS
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
@@ -475,12 +478,20 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not context.args:
         await _retry_send(update.message.reply_text, 
             "📢 <b>广播命令</b>\n\n"
-            "用法：<code>/broadcast 消息内容</code>\n\n"
-            "消息将发送给所有活跃 Bot 所有者。",
+            "用法：\n"
+            "• <code>/broadcast 消息内容</code> — 主Bot广播给所有活跃Bot所有者\n"
+            "• <code>/broadcast user 消息内容</code> — 所有活跃用户Bot分别给各自的用户群发消息\n\n"
+            "💡 <code>/broadcast user</code> 会通过每个运行中的用户Bot，给该用户Bot的主人进行发送消息",
             parse_mode="HTML"
         )
         return
 
+    # /broadcast user <message> — 所有活跃用户Bot给各自用户群发
+    if context.args[0].lower() == 'user':
+        await _broadcast_via_user_bots(update, context)
+        return
+
+    # 默认：主Bot广播给所有Bot所有者
     text = " ".join(context.args)
     # 只发给 active 状态 Bot 的所有者
     owner_ids = await get_all_owner_ids(status='active')
@@ -499,6 +510,69 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             fail += 1
 
     await status_msg.edit_text(f"✅ 广播完成：成功 {success}/{len(owner_ids)}，失败 {fail}")
+
+
+async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/broadcast user 子命令 — 通过每个运行中的用户Bot给该Bot的主人发消息"""
+    args = context.args[1:]  # 去掉 'user'
+
+    if not args:
+        await _retry_send(update.message.reply_text,
+            "❌ 请输入消息内容。\n\n"
+            "用法：<code>/broadcast user 消息内容</code>\n\n"
+            "消息将通过每个运行中的用户Bot，发送给该Bot的主人。",
+            parse_mode="HTML"
+        )
+        return
+
+    message_text = " ".join(args)
+
+    mgr = get_bot_manager()
+    if not mgr or not mgr.get_all_apps():
+        await _retry_send(update.message.reply_text, "❌ 当前没有运行中的用户 Bot。")
+        return
+
+    apps = mgr.get_all_apps()
+    status_msg = await _retry_send(update.message.reply_text,
+        f"⏳ 正在通过 {len(apps)} 个用户Bot给各自的主人发送消息...")
+
+    total_success = 0
+    total_fail = 0
+    bot_results = []
+
+    for bot_db_id, app in apps.items():
+        bot_username = app.bot.username if app.bot else f"Bot#{bot_db_id}"
+
+        # 查询该Bot的主人ID
+        bot_record = await get_user_bot_by_id(bot_db_id)
+        if not bot_record:
+            bot_results.append(f"❓ @{escape(bot_username)}: 未找到记录")
+            continue
+
+        owner_id = bot_record['owner_id']
+
+        # 通过该用户Bot给主人发消息
+        try:
+            await _retry_send(
+                app.bot.send_message,
+                chat_id=owner_id,
+                text=message_text,
+                parse_mode="HTML"
+            )
+            total_success += 1
+            bot_results.append(f"✅ @{escape(bot_username)} → 主人 <code>{owner_id}</code>")
+        except Exception as e:
+            total_fail += 1
+            bot_results.append(f"❌ @{escape(bot_username)} → 主人 <code>{owner_id}</code>: {escape(str(e)[:60])}")
+
+    # 汇总结果
+    result_lines = "\n".join(bot_results)
+    await status_msg.edit_text(
+        f"✅ <b>用户Bot主人通知完成</b>\n\n"
+        f"📊 总计：成功 {total_success}，失败 {total_fail}\n\n"
+        f"{result_lines}",
+        parse_mode="HTML"
+    )
 
 
 # ==================== 群组链接管理 ====================
