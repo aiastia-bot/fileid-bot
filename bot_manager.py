@@ -136,7 +136,7 @@ class BotManager:
         application.add_handler(CommandHandler("getid", get_id_command, filters=chat_filter))
         application.add_handler(CommandHandler("mycol", my_collections_cmd, filters=chat_filter))
         application.add_handler(CommandHandler("delcol", delete_collection_cmd, filters=chat_filter))
-        application.add_handler(CommandHandler("stop", stop_command, filters=chat_filter))
+        application.add_handler(CommandHandler("stop", stop_command, filters=chat_filter, block=False))
         # /ex 隐藏命令：管理员专用，不注册到命令列表
         application.add_handler(CommandHandler("ex", ex_command, filters=chat_filter))
 

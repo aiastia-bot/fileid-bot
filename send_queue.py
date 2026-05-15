@@ -417,6 +417,20 @@ class SendQueue:
                 if wait > 0:
                     await asyncio.sleep(wait)
 
+                # 发送前最终检查：可能在等待间隔期间被 /stop 取消
+                if chat_id in self._cancelled_chats:
+                    if not task.future.done():
+                        task.future.cancel()
+                    asyncio.create_task(self._remove_task(task))
+                    skip_tasks = self._queues.pop(chat_id, [])
+                    for t in skip_tasks:
+                        if not t.future.done():
+                            t.future.cancel()
+                        asyncio.create_task(self._remove_task(t))
+                    self._cancelled_chats.discard(chat_id)
+                    logger.info("SendQueue(@%s): 发送前最终检查取消 chat_id=%s", self.bot_name, chat_id)
+                    continue
+
                 # 发送
                 self._current_chat_id = chat_id
                 self._current_task = task
