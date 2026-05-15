@@ -133,7 +133,7 @@ async def bot_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if is_running:
             status = "🟢 运行中"
         elif bot['status'] == 'admin_stopped':
-            status = "⏸️ 系统已停止"
+            status = "⏸️ 系统已停止，联系管理员"
         elif bot['status'] == 'paused':
             status = "⏸️ VIP 暂停"
         elif bot['status'] == 'revoked':
