@@ -515,8 +515,10 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/broadcast user 子命令 — 通过每个运行中的用户Bot给该Bot的主人发消息
     
-    使用 job_queue 异步执行，避免 webhook 超时导致 Telegram 重复投递。
+    使用 asyncio.create_task 异步执行，避免 webhook 超时导致 Telegram 重复投递。
     """
+    import asyncio
+
     args = context.args[1:]  # 去掉 'user'
 
     if not args:
@@ -537,13 +539,13 @@ async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT
 
     apps = mgr.get_all_apps()
     admin_chat_id = update.message.chat_id
+    bot = context.bot  # 捕获 bot 引用
 
     # 立即回复，避免 webhook 超时
     await _retry_send(update.message.reply_text,
         f"⏳ 正在通过 {len(apps)} 个用户Bot给各自的主人发送消息...\n完成后会通知你。")
 
-    # 通过 job_queue 异步执行耗时操作
-    async def _do_broadcast(context: ContextTypes.DEFAULT_TYPE):
+    async def _do_broadcast():
         total_success = 0
         total_fail = 0
         bot_results = []
@@ -579,34 +581,34 @@ async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT
 
         # 汇总结果发送给管理员
         result_lines = "\n".join(bot_results)
-        # 结果可能很长，分段发送
         summary = f"✅ <b>用户Bot主人通知完成</b>\n\n📊 总计：成功 {total_success}，失败 {total_fail}\n\n"
         full_text = summary + result_lines
-        
-        if len(full_text) > 4000:
-            # 先发摘要
-            await _retry_send(context.bot.send_message,
-                chat_id=admin_chat_id, text=summary, parse_mode="HTML")
-            # 再分批发详情
-            parts = []
-            current = ""
-            for line in result_lines.split('\n'):
-                if len(current) + len(line) + 1 > 3800:
-                    parts.append(current)
-                    current = line + '\n'
-                else:
-                    current += line + '\n'
-            if current:
-                parts.append(current)
-            for part in parts:
-                await _retry_send(context.bot.send_message,
-                    chat_id=admin_chat_id, text=part, parse_mode="HTML")
-        else:
-            await _retry_send(context.bot.send_message,
-                chat_id=admin_chat_id, text=full_text, parse_mode="HTML")
 
-    # 注册到 job_queue，立即异步执行（不阻塞 webhook 响应）
-    context.application.job_queue.run_once(_do_broadcast, when=0)
+        try:
+            if len(full_text) > 4000:
+                await _retry_send(bot.send_message,
+                    chat_id=admin_chat_id, text=summary, parse_mode="HTML")
+                parts = []
+                current = ""
+                for line in result_lines.split('\n'):
+                    if len(current) + len(line) + 1 > 3800:
+                        parts.append(current)
+                        current = line + '\n'
+                    else:
+                        current += line + '\n'
+                if current:
+                    parts.append(current)
+                for part in parts:
+                    await _retry_send(bot.send_message,
+                        chat_id=admin_chat_id, text=part, parse_mode="HTML")
+            else:
+                await _retry_send(bot.send_message,
+                    chat_id=admin_chat_id, text=full_text, parse_mode="HTML")
+        except Exception as e:
+            logger.error("发送广播结果给管理员失败: %s", e)
+
+    # 异步执行，不阻塞 webhook 响应
+    asyncio.create_task(_do_broadcast())
 
 
 # ==================== 群组链接管理 ====================
