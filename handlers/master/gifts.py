@@ -1,5 +1,4 @@
 """管理员星星资产管理 - 查看 Bot 星星余额、交易记录、发送礼物"""
-import html
 import logging
 import time
 from senders import _retry_send
@@ -8,13 +7,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import ADMIN_IDS
+from handlers.master._utils import escape
 
 logger = logging.getLogger(__name__)
-
-
-def escape(text: str) -> str:
-    """HTML 转义"""
-    return html.escape(str(text), quote=False)
 
 
 # ==================== API 辅助函数 ====================

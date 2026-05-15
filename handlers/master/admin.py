@@ -1,5 +1,4 @@
 """管理员命令 - /platform, /export, /startbot, /stopbot, /broadcast"""
-import html
 import io
 import json
 import logging
@@ -21,19 +20,9 @@ from db import (
     get_blacklist_count,
     get_platform_setting, set_platform_setting,
 )
+from handlers.master._utils import get_bot_manager, escape
 
 logger = logging.getLogger(__name__)
-
-
-def get_bot_manager():
-    """获取全局 BotManager 实例"""
-    import __main__
-    return getattr(__main__, 'bot_manager', None)
-
-
-def escape(text: str) -> str:
-    """HTML 转义"""
-    return html.escape(str(text), quote=False)
 
 
 async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

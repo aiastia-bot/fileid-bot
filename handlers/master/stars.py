@@ -1,5 +1,4 @@
 """VIP 星星支付处理器 - Telegram Stars 支付 + VIP 管理"""
-import html
 import json
 import logging
 import time
@@ -15,19 +14,9 @@ from db.vip import (
     get_active_bots_by_owner, get_active_bots_count_by_owner,
     pause_user_bot, resume_user_bot, get_paused_bots_by_owner,
 )
+from handlers.master._utils import get_bot_manager, escape
 
 logger = logging.getLogger(__name__)
-
-
-def escape(text: str) -> str:
-    """HTML 转义"""
-    return html.escape(str(text), quote=False)
-
-
-def get_bot_manager():
-    """获取全局 BotManager 实例"""
-    import __main__
-    return getattr(__main__, 'bot_manager', None)
 
 
 # ==================== /vip 命令 ====================

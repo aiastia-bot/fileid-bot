@@ -1,5 +1,4 @@
 """黑名单管理命令 - /blacklist"""
-import html
 import logging
 from senders import _retry_send
 
@@ -13,19 +12,9 @@ from db import (
     get_blacklist,
     unban_user_bots,
 )
+from handlers.master._utils import get_bot_manager, escape
 
 logger = logging.getLogger(__name__)
-
-
-def get_bot_manager():
-    """获取全局 BotManager 实例"""
-    import __main__
-    return getattr(__main__, 'bot_manager', None)
-
-
-def escape(text: str) -> str:
-    """HTML 转义"""
-    return html.escape(str(text), quote=False)
 
 
 async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

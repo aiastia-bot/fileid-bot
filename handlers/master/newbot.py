@@ -1,5 +1,4 @@
 """/newbot 交互式创建和 /addbot 命令处理"""
-import html
 import logging
 import urllib.parse
 from senders import _retry_send
@@ -13,22 +12,12 @@ from db import (
     get_user_bot_by_id, is_bot_admin_stopped,
 )
 from db.vip import get_max_bots_for_user, check_vip0_capacity
+from handlers.master._utils import get_bot_manager, escape
 
 logger = logging.getLogger(__name__)
 
 # Conversation states for /newbot
 INPUT_BOT_USERNAME, INPUT_BOT_NAME, INPUT_BOT_TOKEN = range(3)
-
-
-def get_bot_manager():
-    """获取全局 BotManager 实例"""
-    import __main__
-    return getattr(__main__, 'bot_manager', None)
-
-
-def escape(text: str) -> str:
-    """HTML 转义"""
-    return html.escape(str(text), quote=False)
 
 
 async def new_bot_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

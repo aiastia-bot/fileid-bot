@@ -1,5 +1,4 @@
 """主Bot入口处理 - start命令、managed_bot处理、黑名单检查中间件"""
-import html
 import logging
 from senders import _retry_send
 
@@ -14,19 +13,9 @@ from db import (
     get_user_bot_by_id, is_bot_admin_stopped,
     is_user_blacklisted,
 )
+from handlers.master._utils import get_bot_manager, escape
 
 logger = logging.getLogger(__name__)
-
-
-def get_bot_manager():
-    """获取全局 BotManager 实例"""
-    import __main__
-    return getattr(__main__, 'bot_manager', None)
-
-
-def escape(text: str) -> str:
-    """HTML 转义"""
-    return html.escape(str(text), quote=False)
 
 
 async def master_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

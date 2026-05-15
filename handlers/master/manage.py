@@ -1,5 +1,4 @@
 """Bot 管理命令 - /mybots, /delbot, /botstatus, 重启, 更新Token"""
-import html
 import logging
 from senders import _retry_send
 
@@ -12,19 +11,9 @@ from db import (
     update_user_bot_status, update_user_bot_token,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
 )
+from handlers.master._utils import get_bot_manager, escape
 
 logger = logging.getLogger(__name__)
-
-
-def get_bot_manager():
-    """获取全局 BotManager 实例"""
-    import __main__
-    return getattr(__main__, 'bot_manager', None)
-
-
-def escape(text: str) -> str:
-    """HTML 转义"""
-    return html.escape(str(text), quote=False)
 
 
 async def my_bots_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
