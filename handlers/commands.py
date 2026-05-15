@@ -500,30 +500,20 @@ async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await _retry_send(update.message.reply_text, "📭 没有可发送的文件。")
         return
 
-    # 使用发送队列
+    # 使用发送队列（全部异步提交，不阻塞 handler，允许 /stop 立即生效）
     chat_id = update.effective_chat.id
     queue = get_queue_from_context(context)
     batches = split_files_to_batches(send_files)
 
     type_label = {'photo': '图片', 'video': '视频', 'document': '文档/其他'}.get(file_type, '全部类型')
+
+    # 提交所有批次到队列（不等待发送完成）
+    for batch in batches:
+        queue.submit_batch_async(chat_id, batch)
+
+    logger.info("/ex: @%s 已提交 %d 个文件（%d 批）到队列", context.bot.username, len(send_files), len(batches))
+
     await _retry_send(update.message.reply_text,
-        f"📤 开始发送 {len(send_files)} 个{type_label}（{len(batches)} 批）...\n"
+        f"📤 已排队 {len(send_files)} 个{type_label}（{len(batches)} 批），正在后台发送…\n"
         f"💡 发送 /stop 可随时停止。"
     )
-
-    total_sent = 0
-    for i, batch in enumerate(batches):
-        # 每次提交前检查是否已被 /stop 取消
-        if queue.is_chat_cancelled(chat_id):
-            logger.info("/ex: chat_id=%s 已被取消，停止提交 (已发送 %d/%d)", chat_id, total_sent, len(send_files))
-            break
-        try:
-            sent = await queue.submit_batch(chat_id, batch)
-            total_sent += sent
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error("/ex 批次发送失败: %s", e)
-
-    queue.clear_chat_cancel(chat_id)
-    await _retry_send(update.message.reply_text, f"✅ 发送完成！成功 {total_sent}/{len(send_files)} 个文件。")
