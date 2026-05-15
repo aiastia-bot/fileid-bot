@@ -42,7 +42,7 @@ jobs:
 
     steps:
       - name: 清理旧的 Workflow 运行记录
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const days_old = parseInt('${{ github.event.inputs.days_old || '30' }}');
@@ -119,7 +119,7 @@ jobs:
 
     steps:
       - name: 清理旧的 Caches
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const dry_run = '${{ github.event.inputs.dry_run || 'false' }}' === 'true';
