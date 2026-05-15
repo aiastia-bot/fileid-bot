@@ -375,8 +375,11 @@ class BotManager:
         """
         app = self._apps.get(bot_db_id)
         if not app:
-            logger.warning("收到未知 bot_db_id=%s 的 webhook 更新", bot_db_id)
-            return False
+            # Bot 不在内存中（可能已被封/停止/未加载）
+            # 尝试通过数据库获取 Token 并删除 webhook，阻止 Telegram 继续推送
+            logger.warning("收到未知 bot_db_id=%s 的 webhook 更新，尝试清理 webhook", bot_db_id)
+            asyncio.create_task(self._cleanup_orphan_webhook(bot_db_id))
+            return True  # 返回 200 停止 Telegram 重试
 
 
         sem = self._get_semaphore(bot_db_id)
@@ -441,6 +444,56 @@ class BotManager:
     def active_count(self) -> int:
         """当前活跃Bot数量"""
         return len(self._apps)
+
+    async def _cleanup_orphan_webhook(self, bot_db_id: int):
+        """清理孤立 webhook：Bot 不在内存但 Telegram 仍在推送
+        
+        通过数据库获取 Token，直接调用 Telegram API 删除 webhook。
+        添加防重复机制，避免对同一个 bot 反复清理。
+        """
+        if not hasattr(self, '_cleaned_orphans'):
+            self._cleaned_orphans = set()
+
+        if bot_db_id in self._cleaned_orphans:
+            return  # 已清理过，跳过
+
+        self._cleaned_orphans.add(bot_db_id)
+
+        try:
+            from database import get_user_bot_by_id
+            bot_record = await get_user_bot_by_id(bot_db_id)
+            if not bot_record:
+                logger.debug("孤立 webhook 清理: bot_db_id=%s 不在数据库中", bot_db_id)
+                return
+
+            token = bot_record.get('bot_token')
+            if not token:
+                return
+
+            # 直接调用 Telegram API 删除 webhook（不需要 Application 实例）
+            import httpx
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"https://api.telegram.org/bot{token}/deleteWebhook",
+                    json={"drop_pending_updates": True}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get('ok'):
+                        logger.info("✅ 孤立 webhook 已清理: bot_db_id=%s @%s",
+                                    bot_db_id, bot_record.get('bot_username', '?'))
+                    else:
+                        # Token 无效（Bot 被封），标记状态
+                        err_desc = data.get('description', '')
+                        if 'Unauthorized' in err_desc or '401' in str(data.get('error_code', '')):
+                            logger.warning("孤立 webhook 清理: bot_db_id=%s Token 已失效，标记 revoked", bot_db_id)
+                            await update_user_bot_status(bot_db_id, 'revoked')
+                        else:
+                            logger.warning("孤立 webhook 清理失败: bot_db_id=%s %s", bot_db_id, err_desc)
+                else:
+                    logger.warning("孤立 webhook 清理: bot_db_id=%s HTTP %s", bot_db_id, resp.status_code)
+        except Exception as e:
+            logger.error("清理孤立 webhook 异常 (bot_db_id=%s): %s", bot_db_id, e)
 
     async def _update_redis_status(self):
         """更新 Bot 状态到 Redis（供多节点共享）"""
