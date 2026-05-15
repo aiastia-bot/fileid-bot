@@ -513,7 +513,10 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/broadcast user 子命令 — 通过每个运行中的用户Bot给该Bot的主人发消息"""
+    """/broadcast user 子命令 — 通过每个运行中的用户Bot给该Bot的主人发消息
+    
+    使用 job_queue 异步执行，避免 webhook 超时导致 Telegram 重复投递。
+    """
     args = context.args[1:]  # 去掉 'user'
 
     if not args:
@@ -533,52 +536,77 @@ async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT
         return
 
     apps = mgr.get_all_apps()
-    status_msg = await _retry_send(update.message.reply_text,
-        f"⏳ 正在通过 {len(apps)} 个用户Bot给各自的主人发送消息...")
+    admin_chat_id = update.message.chat_id
 
-    total_success = 0
-    total_fail = 0
-    bot_results = []
-    sent_owners = set()  # 去重：每个主人只发一次
+    # 立即回复，避免 webhook 超时
+    await _retry_send(update.message.reply_text,
+        f"⏳ 正在通过 {len(apps)} 个用户Bot给各自的主人发送消息...\n完成后会通知你。")
 
-    for bot_db_id, app in apps.items():
-        bot_username = app.bot.username if app.bot else f"Bot#{bot_db_id}"
+    # 通过 job_queue 异步执行耗时操作
+    async def _do_broadcast(context: ContextTypes.DEFAULT_TYPE):
+        total_success = 0
+        total_fail = 0
+        bot_results = []
+        sent_owners = set()  # 去重：每个主人只发一次
 
-        # 查询该Bot的主人ID
-        bot_record = await get_user_bot_by_id(bot_db_id)
-        if not bot_record:
-            bot_results.append(f"❓ @{escape(bot_username)}: 未找到记录")
-            continue
+        for bot_db_id, app in apps.items():
+            bot_username = app.bot.username if app.bot else f"Bot#{bot_db_id}"
 
-        owner_id = bot_record['owner_id']
+            bot_record = await get_user_bot_by_id(bot_db_id)
+            if not bot_record:
+                bot_results.append(f"❓ @{escape(bot_username)}: 未找到记录")
+                continue
 
-        # 去重：同一个主人只尝试一次（无论成功失败）
-        if owner_id in sent_owners:
-            continue
+            owner_id = bot_record['owner_id']
 
-        # 通过该用户Bot给主人发消息
-        sent_owners.add(owner_id)  # 标记已处理，避免其他Bot重复尝试
-        try:
-            await _retry_send(
-                app.bot.send_message,
-                chat_id=owner_id,
-                text=message_text,
-                parse_mode="HTML"
-            )
-            total_success += 1
-            bot_results.append(f"✅ @{escape(bot_username)} → 主人 <code>{owner_id}</code>")
-        except Exception as e:
-            total_fail += 1
-            bot_results.append(f"❌ @{escape(bot_username)} → 主人 <code>{owner_id}</code>: {escape(str(e)[:60])}")
+            # 去重：同一个主人只尝试一次（无论成功失败）
+            if owner_id in sent_owners:
+                continue
 
-    # 汇总结果
-    result_lines = "\n".join(bot_results)
-    await status_msg.edit_text(
-        f"✅ <b>用户Bot主人通知完成</b>\n\n"
-        f"📊 总计：成功 {total_success}，失败 {total_fail}\n\n"
-        f"{result_lines}",
-        parse_mode="HTML"
-    )
+            sent_owners.add(owner_id)
+            try:
+                await _retry_send(
+                    app.bot.send_message,
+                    chat_id=owner_id,
+                    text=message_text,
+                    parse_mode="HTML"
+                )
+                total_success += 1
+                bot_results.append(f"✅ @{escape(bot_username)} → 主人 <code>{owner_id}</code>")
+            except Exception as e:
+                total_fail += 1
+                bot_results.append(f"❌ @{escape(bot_username)} → 主人 <code>{owner_id}</code>: {escape(str(e)[:60])}")
+
+        # 汇总结果发送给管理员
+        result_lines = "\n".join(bot_results)
+        # 结果可能很长，分段发送
+        summary = f"✅ <b>用户Bot主人通知完成</b>\n\n📊 总计：成功 {total_success}，失败 {total_fail}\n\n"
+        full_text = summary + result_lines
+        
+        if len(full_text) > 4000:
+            # 先发摘要
+            await _retry_send(context.bot.send_message,
+                chat_id=admin_chat_id, text=summary, parse_mode="HTML")
+            # 再分批发详情
+            parts = []
+            current = ""
+            for line in result_lines.split('\n'):
+                if len(current) + len(line) + 1 > 3800:
+                    parts.append(current)
+                    current = line + '\n'
+                else:
+                    current += line + '\n'
+            if current:
+                parts.append(current)
+            for part in parts:
+                await _retry_send(context.bot.send_message,
+                    chat_id=admin_chat_id, text=part, parse_mode="HTML")
+        else:
+            await _retry_send(context.bot.send_message,
+                chat_id=admin_chat_id, text=full_text, parse_mode="HTML")
+
+    # 注册到 job_queue，立即异步执行（不阻塞 webhook 响应）
+    context.application.job_queue.run_once(_do_broadcast, when=0)
 
 
 # ==================== 群组链接管理 ====================
