@@ -285,8 +285,9 @@ def _register_master_handlers(application: Application):
     application.add_handler(CommandHandler("setgroup", set_group_cmd))
 
     # VIP 转发保护设置（Bot 主人设置转发模式）
-    from handlers.master.manage import forward_mode_callback
+    from handlers.master.manage import forward_mode_callback, auto_delete_callback
     application.add_handler(CallbackQueryHandler(forward_mode_callback, pattern=r'^fwd_'))
+    application.add_handler(CallbackQueryHandler(auto_delete_callback, pattern=r'^adel_'))
 
     # VIP / 星星支付
     from handlers.master.stars import (

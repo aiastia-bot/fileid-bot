@@ -39,6 +39,7 @@ from db.vip import (  # noqa: F401
     get_active_bots_by_owner, pause_user_bot, resume_user_bot,
     get_paused_bots_by_owner, get_expiring_users, get_expired_users,
     get_bot_forward_mode, set_bot_forward_mode,
+    set_bot_auto_delete,
     get_user_forward_protect, set_user_forward_protect,
     should_protect_content,
 )

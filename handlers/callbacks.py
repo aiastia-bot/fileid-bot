@@ -281,6 +281,11 @@ async def _get_protect(context, chat_id: int) -> bool:
     return False
 
 
+def _get_auto_delete(context) -> int:
+    """从 bot_record 获取自动删除延迟秒数"""
+    return context.bot_data.get('bot_record', {}).get('auto_delete', 0) or 0
+
+
 async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
     """分页发送集合文件：每次发送 PER_PAGE 个，带页码按钮，已发送页显示✅"""
     logger.info("_send_paginated: col_code=%s, sk=%s, page=%d", col_code, sk, page)
@@ -322,13 +327,15 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
 
     # 检查转发保护（从内存 bot_record 读取，0 次 DB 查询）
     protect = await _get_protect(context, chat_id)
+    auto_delete = _get_auto_delete(context)
 
     # 通过 SendQueue 发送本页文件（享受 Bot 级别限流保护 + Redis 持久化）
     logger.info("_send_paginated: 发送第 %d 页, %d 个文件, protect=%s", page, len(page_files), protect)
     try:
         queue = get_queue_from_context(context)
         queue.clear_chat_pending(chat_id)  # 清除 Redis 恢复的旧任务，避免重复发送
-        sent = await queue.submit_batch(chat_id, page_files, protect_content=protect)
+        sent = await queue.submit_batch(chat_id, page_files, protect_content=protect,
+                                        auto_delete=auto_delete)
         logger.info("_send_paginated: 第 %d 页发送完成, sent=%d", page, sent)
     except Exception as e:
         logger.error("_send_paginated: 第 %d 页发送失败: %s", page, e, exc_info=True)
@@ -404,6 +411,7 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
 
     # 检查转发保护（从内存 bot_record 读取，0 次 DB 查询）
     protect = await _get_protect(context, chat_id)
+    auto_delete = _get_auto_delete(context)
 
     total = len(files)
     context.user_data['stop_auto_send'] = False
@@ -435,7 +443,8 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
             return
 
         try:
-            sent_count += await queue.submit_batch(chat_id, group, protect_content=protect)
+            sent_count += await queue.submit_batch(chat_id, group, protect_content=protect,
+                                                    auto_delete=auto_delete)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -537,11 +546,13 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
 
     # 检查转发保护（从内存 bot_record 读取，0 次 DB 查询）
     protect = await _get_protect(context, chat_id)
+    auto_delete = _get_auto_delete(context)
 
     logger.info("_send_page_files: 准备发送 %d 个文件, protect=%s", len(page_files), protect)
     queue = get_queue_from_context(context)
     queue.clear_chat_pending(chat_id)  # 清除 Redis 恢复的旧任务，避免重复发送
-    sent = await queue.submit_batch(chat_id, page_files, protect_content=protect)
+    sent = await queue.submit_batch(chat_id, page_files, protect_content=protect,
+                                    auto_delete=auto_delete)
     result_text = f"✅ 已发送第{page}页文件 ({sent}/{len(page_files)})"
     logger.info("_send_page_files 完成: %s", result_text)
     await _safe_edit_query(query, context, chat_id, result_text)

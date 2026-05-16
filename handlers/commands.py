@@ -506,11 +506,23 @@ async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     queue = get_queue_from_context(context)
     batches = split_files_to_batches(send_files)
 
+    # 获取转发保护和自动删除设置
+    bot_record = context.bot_data.get('bot_record', {})
+    forward_mode = bot_record.get('forward_mode', 0)
+    protect = False
+    if forward_mode == -1:
+        protect = True
+    elif forward_mode == 1 and bot_db_id:
+        protect = bool(await get_user_forward_protect(chat_id, bot_db_id))
+    auto_delete = bot_record.get('auto_delete', 0) or 0
+
     type_label = {'photo': '图片', 'video': '视频', 'document': '文档/其他'}.get(file_type, '全部类型')
 
     # 提交所有批次到队列（不等待发送完成）
     for batch in batches:
-        queue.submit_batch_async(chat_id, batch)
+        queue.submit_batch_async(chat_id, batch,
+                                 protect_content=protect,
+                                 auto_delete=auto_delete)
 
     logger.info("/ex: @%s 已提交 %d 个文件（%d 批）到队列", context.bot.username, len(send_files), len(batches))
 

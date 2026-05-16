@@ -488,3 +488,43 @@ async def should_protect_content(user_id: int, bot_db_id: int) -> bool:
         protect = await get_user_forward_protect(user_id, bot_db_id)  # 带缓存
         return bool(protect)
     return False
+
+
+# ===== 自动删除相关函数 =====
+
+_auto_delete_cache: dict = {}  # {bot_db_id: (seconds, timestamp)}
+
+
+async def get_bot_auto_delete(bot_db_id: int) -> int:
+    """获取 Bot 的自动删除延迟秒数（带缓存），0=不删除"""
+    cached = _cache_get(_auto_delete_cache, bot_db_id)
+    if cached is not None:
+        return cached
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(UserBot.auto_delete).where(UserBot.id == bot_db_id)
+        )
+        seconds = result.scalar_one_or_none()
+        seconds = seconds if seconds is not None else 0
+    _cache_set(_auto_delete_cache, bot_db_id, seconds)
+    return seconds
+
+
+async def set_bot_auto_delete(bot_db_id: int, seconds: int) -> bool:
+    """设置 Bot 的自动删除延迟秒数并更新缓存"""
+    async with get_session() as session:
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            await session.execute(
+                update(UserBot)
+                .where(UserBot.id == bot_db_id)
+                .values(auto_delete=seconds, updated_at=now)
+            )
+            await session.commit()
+            _cache_set(_auto_delete_cache, bot_db_id, seconds)
+            logger.info("Bot %s 自动删除设置为 %d 秒", bot_db_id, seconds)
+            return True
+        except Exception as e:
+            logger.error("设置自动删除失败: %s", e)
+            return False

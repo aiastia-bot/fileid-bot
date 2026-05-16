@@ -310,12 +310,14 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
 
         # 检查转发保护（直接从内存 bot_record 读取，通常 0 次 DB 查询）
         protect = await _get_protect_async(context, chat_id)
+        auto_delete = _get_auto_delete(context)
 
         # 异步提交所有批次到队列（不等待发送完成，避免阻塞 webhook）
         t2 = _time.monotonic()
         for batch in batches:
             try:
-                queue.submit_batch_async(chat_id, batch, protect_content=protect)
+                queue.submit_batch_async(chat_id, batch, protect_content=protect,
+                                         auto_delete=auto_delete)
             except Exception as e:
                 logger.error("队列提交失败: %s", e)
         logger.debug("⏱ _process_file_codes queue提交(%d 批) 耗时%.3fs", len(batches), _time.monotonic() - t2)
@@ -606,6 +608,11 @@ async def _get_protect_async(context, chat_id: int) -> bool:
         protect = await get_user_forward_protect(chat_id, bot_db_id)
         return bool(protect)
     return False
+
+
+def _get_auto_delete(context) -> int:
+    """从 bot_record 获取自动删除延迟秒数"""
+    return context.bot_data.get('bot_record', {}).get('auto_delete', 0) or 0
 
 
 async def _add_to_collection(context, col_code, codes):

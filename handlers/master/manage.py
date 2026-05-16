@@ -10,7 +10,7 @@ from db import (
     delete_user_bot as db_delete_user_bot,
     update_user_bot_status, update_user_bot_token,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
-    set_bot_forward_mode,
+    set_bot_forward_mode, set_bot_auto_delete,
     get_user_vip_level,
 )
 from config import VIP_FEATURES, FORWARD_MODE_ALLOW, FORWARD_MODE_DENY, FORWARD_MODE_USER_CHOICE
@@ -61,15 +61,21 @@ async def my_bots_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             forward_mode = bot.get('forward_mode', 0)
             mode_labels = {0: '✅ 允许转发', -1: '🚫 禁止转发', 1: '👤 用户自选'}
             mode_text = mode_labels.get(forward_mode, '✅ 允许转发')
+            auto_del = bot.get('auto_delete', 0)
+            del_text = f"⏱ {auto_del}s 后删除" if auto_del else "⏱ 不自动删除"
             keyboard.append([
                 InlineKeyboardButton(
                     f"🔒 @{bot['bot_username']} - {mode_text}",
                     callback_data=f"fwd_menu|{bot['id']}"
-                )
+                ),
+                InlineKeyboardButton(
+                    del_text,
+                    callback_data=f"adel_menu|{bot['id']}"
+                ),
             ])
 
     if keyboard:
-        text += "\n🔒 点击下方按钮设置 Bot 的转发保护："
+        text += "\n🔒 点击设置转发保护 | ⏱ 点击设置自动删除："
         await _retry_send(update.message.reply_text, text, parse_mode="HTML",
                           reply_markup=InlineKeyboardMarkup(keyboard))
     else:
@@ -590,5 +596,133 @@ async def forward_mode_callback(update: Update, context: ContextTypes.DEFAULT_TY
                                              reply_markup=InlineKeyboardMarkup(keyboard))
             except Exception as e:
                 logger.debug("编辑转发设置消息失败（可能消息未变化）: %s", e)
+        else:
+            await query.answer("❌ 设置失败，请重试", show_alert=True)
+
+
+async def auto_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理 Bot 主人设置自动删除的回调"""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    user_id = query.from_user.id
+    data = query.data
+
+    # adel_menu|{bot_db_id} - 显示自动删除菜单
+    # adel_set|{bot_db_id}|{seconds} - 设置自动删除
+
+    if not data.startswith("adel_"):
+        return
+
+    parts = data.split("|")
+    action = parts[0]
+
+    if action == "adel_menu":
+        try:
+            bot_db_id = int(parts[1])
+        except (ValueError, IndexError):
+            await query.answer("❌ 数据错误", show_alert=True)
+            return
+
+        bot_record = await get_user_bot_by_id(bot_db_id)
+        if not bot_record or bot_record['owner_id'] != user_id:
+            await query.answer("❌ 无权操作此 Bot", show_alert=True)
+            return
+
+        if not await _check_vip_forward(user_id):
+            await query.answer("⛔ 此功能需要 VIP 1 及以上", show_alert=True)
+            return
+
+        current_del = bot_record.get('auto_delete', 0)
+        current_text = f"{current_del} 秒" if current_del else "❌ 不自动删除"
+
+        text = (
+            f"⏱ <b>自动删除设置</b>\n\n"
+            f"🤖 Bot：@{escape(bot_record['bot_username'])}\n"
+            f"当前状态：{current_text}\n\n"
+            f"发送文件后，消息将在指定时间后自动删除。\n"
+            f"适合保护隐私内容。\n\n"
+            f"选择自动删除时间："
+        )
+
+        keyboard = [
+            [InlineKeyboardButton("❌ 不自动删除",
+                                  callback_data=f"adel_set|{bot_db_id}|0")],
+            [InlineKeyboardButton("10 秒", callback_data=f"adel_set|{bot_db_id}|10"),
+             InlineKeyboardButton("30 秒", callback_data=f"adel_set|{bot_db_id}|30")],
+            [InlineKeyboardButton("1 分钟", callback_data=f"adel_set|{bot_db_id}|60"),
+             InlineKeyboardButton("5 分钟", callback_data=f"adel_set|{bot_db_id}|300")],
+            [InlineKeyboardButton("10 分钟", callback_data=f"adel_set|{bot_db_id}|600"),
+             InlineKeyboardButton("30 分钟", callback_data=f"adel_set|{bot_db_id}|1800")],
+        ]
+        await query.answer()
+        await query.edit_message_text(text, parse_mode="HTML",
+                                     reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif action == "adel_set":
+        try:
+            bot_db_id = int(parts[1])
+            seconds = int(parts[2])
+        except (ValueError, IndexError):
+            await query.answer("❌ 数据错误", show_alert=True)
+            return
+
+        # 限制范围：0~3600
+        seconds = max(0, min(3600, seconds))
+
+        bot_record = await get_user_bot_by_id(bot_db_id)
+        if not bot_record or bot_record['owner_id'] != user_id:
+            await query.answer("❌ 无权操作此 Bot", show_alert=True)
+            return
+
+        if not await _check_vip_forward(user_id):
+            await query.answer("⛔ 此功能需要 VIP 1 及以上", show_alert=True)
+            return
+
+        success = await set_bot_auto_delete(bot_db_id, seconds)
+        if success:
+            if seconds > 0:
+                if seconds >= 60:
+                    mins = seconds // 60
+                    label = f"{mins} 分钟"
+                else:
+                    label = f"{seconds} 秒"
+                current_text = f"⏱ {label} 后删除"
+            else:
+                current_text = "❌ 不自动删除"
+
+            # 同时更新内存中的 bot_record（如果 Bot 正在运行）
+            mgr = get_bot_manager()
+            all_apps = mgr.get_all_apps() if mgr else {}
+            if bot_db_id in all_apps:
+                app = all_apps[bot_db_id]
+                if hasattr(app, 'bot_data'):
+                    app.bot_data['bot_record']['auto_delete'] = seconds
+
+            await query.answer(f"已设置：{current_text}")
+
+            text = (
+                f"⏱ <b>自动删除设置</b>\n\n"
+                f"🤖 Bot：@{escape(bot_record['bot_username'])}\n"
+                f"当前状态：{current_text}\n\n"
+                f"✅ 已更新！\n\n"
+                f"选择自动删除时间："
+            )
+            keyboard = [
+                [InlineKeyboardButton("❌ 不自动删除",
+                                      callback_data=f"adel_set|{bot_db_id}|0")],
+                [InlineKeyboardButton("10 秒", callback_data=f"adel_set|{bot_db_id}|10"),
+                 InlineKeyboardButton("30 秒", callback_data=f"adel_set|{bot_db_id}|30")],
+                [InlineKeyboardButton("1 分钟", callback_data=f"adel_set|{bot_db_id}|60"),
+                 InlineKeyboardButton("5 分钟", callback_data=f"adel_set|{bot_db_id}|300")],
+                [InlineKeyboardButton("10 分钟", callback_data=f"adel_set|{bot_db_id}|600"),
+                 InlineKeyboardButton("30 分钟", callback_data=f"adel_set|{bot_db_id}|1800")],
+            ]
+            try:
+                await query.edit_message_text(text, parse_mode="HTML",
+                                             reply_markup=InlineKeyboardMarkup(keyboard))
+            except Exception as e:
+                logger.debug("编辑自动删除消息失败: %s", e)
         else:
             await query.answer("❌ 设置失败，请重试", show_alert=True)

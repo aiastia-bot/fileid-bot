@@ -109,8 +109,50 @@ async def _retry_send(send_func, *args, **kwargs):
 
 # ===== 核心：发送一批文件（被队列消费者调用） =====
 
+async def _schedule_auto_delete(bot, chat_id: int, message_ids: list, delay: int):
+    """延迟删除消息（静默失败，带限流保护）"""
+    try:
+        await asyncio.sleep(delay)
+        deleted = 0
+        for msg_id in message_ids:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                deleted += 1
+                # 批量删除时加小延迟，避免触发限流
+                if len(message_ids) > 5:
+                    await asyncio.sleep(0.3)
+            except RetryAfter as e:
+                # 限流：等待后继续删除
+                wait = e.retry_after if hasattr(e, 'retry_after') and e.retry_after else 2
+                logger.warning("自动删除触发限流，等待 %ds", wait)
+                await asyncio.sleep(wait)
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                    deleted += 1
+                except Exception:
+                    pass
+            except Exception:
+                pass  # 消息可能已被用户删除
+        if deleted > 0:
+            logger.debug("自动删除: chat_id=%s 成功删除 %d/%d 条消息",
+                         chat_id, deleted, len(message_ids))
+    except asyncio.CancelledError:
+        pass
+
+
+def _collect_msg_ids(result) -> list:
+    """从发送结果中提取 message_id 列表"""
+    if result is None:
+        return []
+    if isinstance(result, list):
+        return [m.message_id for m in result if hasattr(m, 'message_id')]
+    if hasattr(result, 'message_id'):
+        return [result.message_id]
+    return []
+
+
 async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "",
-                     protect_content: bool = False) -> int:
+                     protect_content: bool = False, auto_delete: int = 0) -> int:
     """发送一批文件（≤ GROUP_SEND_SIZE）
     
     按类型分组合并发送：
@@ -120,6 +162,7 @@ async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "",
     
     Args:
         protect_content: 如果为 True，发送的图片/视频将禁止转发和保存
+        auto_delete: >0 时发送后延迟 N 秒自动删除消息
     
     返回成功发送的数量
     """
@@ -127,8 +170,8 @@ async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "",
         return 0
 
     bot_name = getattr(bot, 'username', 'unknown')
-    logger.info("send_batch: @%s 发送 %d 个文件到 chat_id=%s protect=%s",
-                bot_name, len(files), chat_id, protect_content)
+    logger.info("send_batch: @%s 发送 %d 个文件到 chat_id=%s protect=%s auto_del=%s",
+                bot_name, len(files), chat_id, protect_content, auto_delete)
 
     _start = time.time()
 
@@ -138,28 +181,39 @@ async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "",
     audios = [f for f in files if f['file_type'] == 'audio']
 
     sent_count = 0
+    all_msg_ids = []  # 收集所有消息ID（用于自动删除）
 
     # 1. 图片+视频（仅图片/视频受 protect_content 保护）
     if photo_video:
-        sent_count += await _send_typed_batch(
+        count, msg_ids = await _send_typed_batch(
             bot, chat_id, photo_video, caption, 'photo_video', bot_name,
             protect_content=protect_content)
+        sent_count += count
+        all_msg_ids.extend(msg_ids)
 
     # 2. 文档（组间小延迟）
     if documents:
         if photo_video:
             await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
-        sent_count += await _send_typed_batch(
+        count, msg_ids = await _send_typed_batch(
             bot, chat_id, documents, caption, 'document', bot_name,
             protect_content=False)
+        sent_count += count
+        all_msg_ids.extend(msg_ids)
 
     # 3. 音频
     if audios:
         if photo_video or documents:
             await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
-        sent_count += await _send_typed_batch(
+        count, msg_ids = await _send_typed_batch(
             bot, chat_id, audios, caption, 'audio', bot_name,
             protect_content=False)
+        sent_count += count
+        all_msg_ids.extend(msg_ids)
+
+    # 自动删除
+    if auto_delete > 0 and all_msg_ids:
+        asyncio.create_task(_schedule_auto_delete(bot, chat_id, all_msg_ids, auto_delete))
 
     # 记录发送计数
     if sent_count > 0:
@@ -177,8 +231,8 @@ async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "",
 
 
 async def _send_typed_batch(bot, chat_id, files, caption, type_key, bot_name,
-                            protect_content: bool = False) -> int:
-    """发送同类型的一批文件"""
+                            protect_content: bool = False) -> tuple:
+    """发送同类型的一批文件，返回 (sent_count, [msg_ids])"""
     if len(files) == 1:
         return await _send_single(bot, chat_id, files[0], caption, bot_name,
                                   protect_content=protect_content)
@@ -187,8 +241,8 @@ async def _send_typed_batch(bot, chat_id, files, caption, type_key, bot_name,
 
 
 async def _send_single(bot, chat_id, f, caption, bot_name,
-                       protect_content: bool = False) -> int:
-    """发送单个文件"""
+                       protect_content: bool = False) -> tuple:
+    """发送单个文件，返回 (1或0, [msg_ids])"""
     try:
         ft = f['file_type']
         fid = f['telegram_file_id']
@@ -197,17 +251,18 @@ async def _send_single(bot, chat_id, f, caption, bot_name,
         # 仅图片/视频支持 protect_content
         protect = protect_content and ft in ('photo', 'video')
 
+        msg = None
         if ft == 'photo':
-            await _retry_send(bot.send_photo, chat_id=chat_id, photo=fid, caption=cap,
+            msg = await _retry_send(bot.send_photo, chat_id=chat_id, photo=fid, caption=cap,
                               protect_content=protect, **timeout)
         elif ft == 'video':
-            await _retry_send(bot.send_video, chat_id=chat_id, video=fid, caption=cap,
+            msg = await _retry_send(bot.send_video, chat_id=chat_id, video=fid, caption=cap,
                               protect_content=protect, **timeout)
         elif ft == 'audio':
-            await _retry_send(bot.send_audio, chat_id=chat_id, audio=fid, caption=cap, **timeout)
+            msg = await _retry_send(bot.send_audio, chat_id=chat_id, audio=fid, caption=cap, **timeout)
         else:
-            await _retry_send(bot.send_document, chat_id=chat_id, document=fid, caption=cap, **timeout)
-        return 1
+            msg = await _retry_send(bot.send_document, chat_id=chat_id, document=fid, caption=cap, **timeout)
+        return (1, _collect_msg_ids(msg))
     except asyncio.CancelledError:
         raise
     except RetryAfter:
@@ -221,12 +276,12 @@ async def _send_single(bot, chat_id, f, caption, bot_name,
         logger.error("发送单个文件失败: %s", e)
         if _is_invalid_file_error(e):
             await mark_file_invalid(f.get("code", ""))
-        return 0
+        return (0, [])
 
 
 async def _send_media_group(bot, chat_id, files, caption, type_key, bot_name,
-                            protect_content: bool = False) -> int:
-    """发送媒体组，失败时降级为逐个发送"""
+                            protect_content: bool = False) -> tuple:
+    """发送媒体组，失败时降级为逐个发送，返回 (sent_count, [msg_ids])"""
     timeout = dict(read_timeout=30, write_timeout=30)
     media_list = []
 
@@ -250,13 +305,13 @@ async def _send_media_group(bot, chat_id, files, caption, type_key, bot_name,
             logger.error("构建媒体列表失败: %s", e)
 
     if not media_list:
-        return 0
+        return (0, [])
 
     # 尝试组发送
     try:
-        await _retry_send(bot.send_media_group, chat_id=chat_id, media=media_list,
+        result = await _retry_send(bot.send_media_group, chat_id=chat_id, media=media_list,
                           protect_content=protect_content, **timeout)
-        return len(media_list)
+        return (len(media_list), _collect_msg_ids(result))
     except asyncio.CancelledError:
         raise
     except RetryAfter as e:
@@ -270,13 +325,15 @@ async def _send_media_group(bot, chat_id, files, caption, type_key, bot_name,
 
     # 降级：逐个发送
     sent = 0
+    msg_ids = []
     for f in files:
-        s = await _send_single(bot, chat_id, f, "", bot_name,
+        count, ids = await _send_single(bot, chat_id, f, "", bot_name,
                                protect_content=protect_content)
-        sent += s
+        sent += count
+        msg_ids.extend(ids)
         if sent < len(files):
             await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
-    return sent
+    return (sent, msg_ids)
 
 
 # ===== 向后兼容：send_file_group → 通过队列发送 =====
@@ -287,13 +344,19 @@ async def send_file_group(
     files: List[Dict],
     caption: str = "",
     update=None,
+    protect_content: bool = False,
+    auto_delete: int = 0,
 ) -> int:
     """向后兼容：提交到发送队列并等待完成
-    
+
     旧代码仍可调用此函数，内部会自动使用发送队列。
     新代码建议直接用 send_queue.submit_batch()
     """
     from send_queue import get_queue_from_context, split_files_to_batches
+
+    # 从 bot_record 自动获取 auto_delete（如果未显式传入）
+    if not auto_delete:
+        auto_delete = context.bot_data.get('bot_record', {}).get('auto_delete', 0) or 0
 
     queue = get_queue_from_context(context)
     batches = split_files_to_batches(files)
@@ -314,7 +377,9 @@ async def send_file_group(
             pass
 
     for i, batch in enumerate(batches):
-        sent = await queue.submit_batch(chat_id, batch, caption)
+        sent = await queue.submit_batch(chat_id, batch, caption,
+                                        protect_content=protect_content,
+                                        auto_delete=auto_delete)
         total_sent += sent
 
         # 更新进度

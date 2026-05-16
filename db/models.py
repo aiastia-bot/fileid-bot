@@ -23,6 +23,7 @@ class UserBot(Base):
     updated_at: Mapped[str] = mapped_column(String, nullable=True)
     node_id: Mapped[str] = mapped_column(String, default='local')
     forward_mode: Mapped[int] = mapped_column(Integer, default=0)  # 0=默认允许, -1=禁止转发, 1=用户自定义
+    auto_delete: Mapped[int] = mapped_column(Integer, default=0)   # 0=不删除, >0=延迟N秒自动删除
 
 
 class FileMapping(Base):
