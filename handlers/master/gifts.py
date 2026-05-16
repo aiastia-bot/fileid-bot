@@ -453,7 +453,7 @@ async def _do_send_gift(update, context, target_user_id, query=None):
                 f"✅ <b>礼物发送成功！</b>\n\n"
                 f"🎁 <b>礼物：</b>{escape(gift_name)}\n"
                 f"⭐ <b>花费：</b>{star_count} 星星\n"
-                f"👤 <b>接收者 ID：</b><code>{target_user_id}</code>"
+                f"👤 <b>接收者 ID：</b><a href=\"tg://user?id={target_user_id}\">{target_user_id}</a>"
             )
             logger.info("管理员发送礼物 %s (%d⭐) 给用户 %s", gift_name, star_count, target_user_id)
         else:

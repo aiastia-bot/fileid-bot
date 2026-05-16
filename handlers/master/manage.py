@@ -396,7 +396,7 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 f"🔔 <b>被系统停止的 Bot 更新了 Token</b>\n\n"
                 f"🤖 Bot：@{escape(bot_record['bot_username'])}\n"
                 f"🆔 Bot ID：<code>{bot_record['bot_id']}</code>\n"
-                f"👤 用户：<code>{user_id}</code>\n\n"
+                f"👤 用户：<a href=\"tg://user?id={user_id}\">{user_id}</a>\n\n"
                 f"📋 <b>旧 Token：</b>\n<code>{escape(old_token)}</code>\n\n"
                 f"📋 <b>新 Token：</b>\n<code>{escape(token)}</code>\n\n"
                 f"状态保持 admin_stopped，未启动。"

@@ -73,7 +73,7 @@ async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"{i}. {status} <b>{escape(bot['bot_firstname'])}</b>\n"
                     f"   📌 @{escape(bot['bot_username'])}\n"
                     f"   🆔 Bot ID: <code>{bot['bot_id']}</code> | DB ID: <code>{bot['id']}</code>\n"
-                    f"   👤 所有者: <code>{bot['owner_id']}</code>\n"
+                    f"   👤 所有者: <a href=\"tg://user?id={bot['owner_id']}\">{bot['owner_id']}</a>\n"
                     f"   📁 文件: {bot['file_count']} | 📦 集合: {bot['col_count']} | 👥 用户: {bot['user_count']}\n"
                     f"   📅 创建: {bot['created_at']}\n\n"
                 )
@@ -365,9 +365,9 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"✅ <b>Bot {action_text}成功！</b>\n\n"
             f"🤖 @{escape(bot_record['bot_username'])}\n"
             f"🆔 Bot ID：<code>{bot_record['bot_id']}</code>\n"
-            f"👤 所有者：<code>{bot_record['owner_id']}</code>",
-            parse_mode="HTML"
-        )
+                f"👤 所有者：<a href=\"tg://user?id={bot_record['owner_id']}\">{bot_record['owner_id']}</a>",
+                parse_mode="HTML"
+            )
         logger.info("管理员 %s %s了 Bot @%s", user_id, action_text, bot_record['bot_username'])
     else:
         await status_msg.edit_text(
@@ -449,7 +449,7 @@ async def stop_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"✅ <b>Bot 已停止</b>\n\n"
             f"🤖 @{escape(bot_record['bot_username'])}\n"
             f"🆔 Bot ID：<code>{bot_record['bot_id']}</code>\n"
-            f"👤 所有者：<code>{bot_record['owner_id']}</code>\n\n"
+            f"👤 所有者：<a href=\"tg://user?id={bot_record['owner_id']}\">{bot_record['owner_id']}</a>\n\n"
             f"💡 使用 <code>/startbot @{escape(bot_record['bot_username'])}</code> 可重新启动。",
             parse_mode="HTML"
         )
@@ -574,10 +574,10 @@ async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT
                     parse_mode="HTML"
                 )
                 total_success += 1
-                bot_results.append(f"✅ @{escape(bot_username)} → 主人 <code>{owner_id}</code>")
+                bot_results.append(f"✅ @{escape(bot_username)} → 主人 <a href=\"tg://user?id={owner_id}\">{owner_id}</a>")
             except Exception as e:
                 total_fail += 1
-                bot_results.append(f"❌ @{escape(bot_username)} → 主人 <code>{owner_id}</code>: {escape(str(e)[:60])}")
+                bot_results.append(f"❌ @{escape(bot_username)} → 主人 <a href=\"tg://user?id={owner_id}\">{owner_id}</a>: {escape(str(e)[:60])}")
 
         # 汇总结果发送给管理员
         result_lines = "\n".join(bot_results)

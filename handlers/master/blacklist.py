@@ -40,7 +40,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             text += "<b>当前黑名单：</b>\n"
             for entry in bl[:20]:  # 最多显示20条
                 reason = f" ({escape(entry['reason'])})" if entry['reason'] else ""
-                text += f"• <code>{entry['user_id']}</code>{reason} — {entry['created_at']}\n"
+                text += f"• <a href=\"tg://user?id={entry['user_id']}\">{entry['user_id']}</a>{reason} — {entry['created_at']}\n"
             if len(bl) > 20:
                 text += f"\n... 还有 {len(bl) - 20} 条记录"
         else:
@@ -81,7 +81,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     stopped += 1
                 await update_user_bot_status(bot['id'], 'banned')
 
-            text = f"✅ 用户 <code>{target_id}</code> 已加入黑名单。"
+            text = f"✅ 用户 <a href=\"tg://user?id={target_id}\">{target_id}</a> 已加入黑名单。"
             if reason:
                 text += f"\n原因: {escape(reason)}"
             if stopped > 0:
@@ -112,7 +112,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await unban_user_bots(target_id)
 
             await _retry_send(update.message.reply_text, 
-                f"✅ 用户 <code>{target_id}</code> 已从黑名单移除。\n"
+                f"✅ 用户 <a href=\"tg://user?id={target_id}\">{target_id}</a> 已从黑名单移除。\n"
                 f"💡 如需重新启动其 Bot，请使用 /platform bots 查看，或让用户使用 /botstatus。",
                 parse_mode="HTML"
             )
@@ -129,7 +129,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         text = f"🚫 <b>黑名单列表</b> (共 {len(bl)} 人)\n\n"
         for i, entry in enumerate(bl, 1):
             reason = f" — {escape(entry['reason'])}" if entry['reason'] else ""
-            text += f"{i}. <code>{entry['user_id']}</code>{reason}\n    📅 {entry['created_at']}\n"
+            text += f"{i}. <a href=\"tg://user?id={entry['user_id']}\">{entry['user_id']}</a>{reason}\n    📅 {entry['created_at']}\n"
 
         # 分段发送
         if len(text) > 4000:
@@ -172,7 +172,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # 获取详细信息
             bl_list = await get_blacklist()
             entry = next((e for e in bl_list if e['user_id'] == target_id), None)
-            text = f"🚫 用户 <code>{target_id}</code> <b>在黑名单中</b>。"
+            text = f"🚫 用户 <a href=\"tg://user?id={target_id}\">{target_id}</a> <b>在黑名单中</b>。"
             if entry:
                 text += f"\n📅 加入时间: {entry['created_at']}"
                 if entry['reason']:
@@ -186,7 +186,7 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await _retry_send(update.message.reply_text, text, parse_mode="HTML")
         else:
             target_bots = await get_user_bots_by_owner(target_id)
-            text = f"✅ 用户 <code>{target_id}</code> 不在黑名单中。"
+            text = f"✅ 用户 <a href=\"tg://user?id={target_id}\">{target_id}</a> 不在黑名单中。"
             if target_bots:
                 text += f"\n🤖 该用户有 {len(target_bots)} 个 Bot。"
             await _retry_send(update.message.reply_text, text, parse_mode="HTML")
