@@ -19,6 +19,7 @@ from db import (
     get_files_by_bot_db_id,
     get_blacklist_count,
     get_platform_setting, set_platform_setting,
+    update_user_vip, get_user_vip_info,
 )
 from handlers.master._utils import get_bot_manager, escape
 
@@ -723,3 +724,123 @@ async def set_group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "• <code>/setgroup clear</code> — 清空",
             parse_mode="HTML"
         )
+
+
+# ==================== 管理员设置VIP ====================
+
+async def set_vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/setvip 管理员设置用户VIP等级
+    
+    用法：
+        /setvip <user_id> <level> [months]   — 设置VIP（默认12个月）
+        /setvip <user_id> 0                   — 取消VIP
+        /setvip info <user_id>                — 查看用户VIP信息
+    """
+    from config import ADMIN_IDS
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
+        return
+
+    args = context.args or []
+
+    if not args:
+        await _retry_send(update.message.reply_text,
+            "👑 <b>VIP 管理命令</b>\n\n"
+            "用法：\n"
+            "• <code>/setvip info USER_ID</code> — 查看用户VIP信息\n"
+            "• <code>/setvip USER_ID LEVEL [MONTHS]</code> — 设置VIP等级\n"
+            "• <code>/setvip USER_ID 0</code> — 取消VIP\n\n"
+            "VIP 等级：\n"
+            "  0 = 普通用户\n"
+            "  1 = VIP 1\n"
+            "  2 = VIP 2\n"
+            "  3 = VIP 3\n\n"
+            "默认有效期 12 个月。 Months=0 表示永久。",
+            parse_mode="HTML"
+        )
+        return
+
+    # /setvip info <user_id> — 查看信息
+    if args[0].lower() == 'info':
+        if len(args) < 2:
+            await _retry_send(update.message.reply_text, "❌ 请指定用户ID。\n用法：<code>/setvip info USER_ID</code>", parse_mode="HTML")
+            return
+        try:
+            target_id = int(args[1])
+        except ValueError:
+            await _retry_send(update.message.reply_text, "❌ 用户ID必须是数字。")
+            return
+
+        info = await get_user_vip_info(target_id)
+        status_text = "✅ 有效" if info['is_active'] else "❌ 已过期"
+        expire_text = info.get('vip_expire_at', '永久') or '无'
+
+        await _retry_send(update.message.reply_text,
+            f"👤 <b>用户 VIP 信息</b>\n\n"
+            f"🆔 User ID: <code>{target_id}</code>\n"
+            f"👑 VIP 等级: {info['vip_name']} (Level {info['vip_level']})\n"
+            f"📊 状态: {status_text}\n"
+            f"🤖 最大Bot数: {info['max_bots']}\n"
+            f"📅 到期时间: {expire_text}\n"
+            f"⏳ 剩余天数: {info['remaining_days']}",
+            parse_mode="HTML"
+        )
+        return
+
+    # /setvip <user_id> <level> [months]
+    if len(args) < 2:
+        await _retry_send(update.message.reply_text,
+            "❌ 参数不足。\n用法：<code>/setvip USER_ID LEVEL [MONTHS]</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        target_id = int(args[0])
+    except ValueError:
+        await _retry_send(update.message.reply_text, "❌ 用户ID必须是数字。")
+        return
+
+    try:
+        level = int(args[1])
+    except ValueError:
+        await _retry_send(update.message.reply_text, "❌ VIP等级必须是数字 (0-3)。")
+        return
+
+    if level < 0 or level > 3:
+        await _retry_send(update.message.reply_text, "❌ VIP等级范围: 0-3。")
+        return
+
+    months = int(args[2]) if len(args) > 2 else 12
+
+    if level == 0:
+        # 取消VIP — 设置过期时间为过去
+        success = await update_user_vip(target_id, 0, 0)
+        if success:
+            await _retry_send(update.message.reply_text,
+                f"✅ 已取消用户 <code>{target_id}</code> 的 VIP。",
+                parse_mode="HTML"
+            )
+            logger.info("管理员 %s 取消了用户 %s 的 VIP", user_id, target_id)
+        else:
+            await _retry_send(update.message.reply_text, "❌ 操作失败，用户可能不存在。")
+        return
+
+    # 设置VIP
+    success = await update_user_vip(target_id, level, months)
+    if success:
+        info = await get_user_vip_info(target_id)
+        level_names = {1: 'VIP 1', 2: 'VIP 2', 3: 'VIP 3'}
+        await _retry_send(update.message.reply_text,
+            f"✅ <b>VIP 设置成功</b>\n\n"
+            f"👤 User ID: <code>{target_id}</code>\n"
+            f"👑 等级: {level_names.get(level, f'Level {level}')}\n"
+            f"🤖 最大Bot数: {info['max_bots']}\n"
+            f"📅 有效期: {months} 个月\n"
+            f"⏳ 到期时间: {info.get('vip_expire_at', '未知')}",
+            parse_mode="HTML"
+        )
+        logger.info("管理员 %s 设置用户 %s 为 VIP%d (%d个月)", user_id, target_id, level, months)
+    else:
+        await _retry_send(update.message.reply_text, "❌ 设置失败，用户可能不存在。")

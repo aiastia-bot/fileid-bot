@@ -15,7 +15,7 @@ from handlers.master.manage import (  # noqa: F401
 )
 from handlers.master.admin import (  # noqa: F401
     platform_stats_cmd, export_data_cmd, start_bot_admin_cmd, stop_bot_admin_cmd, broadcast_cmd,
-    set_group_cmd,
+    set_group_cmd, set_vip_cmd,
 )
 from handlers.master.blacklist import (  # noqa: F401
     blacklist_cmd,

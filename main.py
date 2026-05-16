@@ -235,6 +235,7 @@ def _register_master_handlers(application: Application):
         platform_stats_cmd, blacklist_cmd, export_data_cmd,
         start_bot_admin_cmd, stop_bot_admin_cmd,
         broadcast_cmd, set_group_cmd,
+        set_vip_cmd,
         restart_bot_callback,
         update_token_callback, update_token_cmd,
         blacklist_check_handler,
@@ -283,6 +284,7 @@ def _register_master_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(update_token_callback, pattern=r'^update_token\|'))
     application.add_handler(CommandHandler("updatetoken", update_token_cmd))
     application.add_handler(CommandHandler("setgroup", set_group_cmd))
+    application.add_handler(CommandHandler("setvip", set_vip_cmd))
 
     # VIP 转发保护设置（Bot 主人设置转发模式）
     from handlers.master.manage import forward_mode_callback, auto_delete_callback
