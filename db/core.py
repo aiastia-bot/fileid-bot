@@ -147,6 +147,8 @@ async def init_db():
                 await conn.execute(text("ALTER TABLE user_bots ADD COLUMN node_id TEXT DEFAULT 'local'"))
             if 'forward_mode' not in columns:
                 await conn.execute(text("ALTER TABLE user_bots ADD COLUMN forward_mode INTEGER DEFAULT 0"))
+            if 'auto_delete' not in columns:
+                await conn.execute(text("ALTER TABLE user_bots ADD COLUMN auto_delete INTEGER DEFAULT 0"))
 
             # 检查 collections.bot_db_id 列
             result = await conn.execute(text("PRAGMA table_info(collections)"))

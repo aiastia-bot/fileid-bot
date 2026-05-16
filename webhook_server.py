@@ -83,6 +83,7 @@ def _build_on_startup(application: Application, bot_manager: BotManager,
 
         # 后台异步加载 Bot，不阻塞 webhook 服务器启动
         async def _bg_load_bots():
+            loaded = 0
             try:
                 if scheduler:
                     loaded = await scheduler.load_all_to_workers()
