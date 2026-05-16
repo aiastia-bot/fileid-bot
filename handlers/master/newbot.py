@@ -1,5 +1,6 @@
 """/newbot 交互式创建和 /addbot 命令处理"""
 import logging
+import re
 import urllib.parse
 from senders import _retry_send
 
@@ -15,6 +16,21 @@ from db.vip import get_max_bots_for_user, check_vip0_capacity
 from handlers.master._utils import get_bot_manager, escape
 
 logger = logging.getLogger(__name__)
+
+# Token 格式：数字ID:字母数字下划线连字符（30~60字符）
+_TOKEN_RE = re.compile(r'^\d{6,12}:[A-Za-z0-9_-]{30,50}$')
+# Bot 用户名格式：5~32位字母数字下划线，必须以 bot 结尾
+_USERNAME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_]{3,29}bot$', re.IGNORECASE)
+
+
+def _validate_token(token: str) -> bool:
+    """验证 Bot Token 格式，防止无效输入"""
+    return bool(_TOKEN_RE.match(token))
+
+
+def _validate_bot_username(username: str) -> bool:
+    """验证 Bot 用户名格式"""
+    return bool(_USERNAME_RE.match(username))
 
 # Conversation states for /newbot
 INPUT_BOT_USERNAME, INPUT_BOT_NAME, INPUT_BOT_TOKEN = range(3)
@@ -55,9 +71,12 @@ async def new_bot_input_username(update: Update, context: ContextTypes.DEFAULT_T
     """接收 Bot 用户名"""
     username = update.message.text.strip().lstrip('@')
 
-    if not username.lower().endswith('bot'):
+    if not _validate_bot_username(username):
         await _retry_send(update.message.reply_text, 
-            "❌ Bot 用户名必须以 <code>bot</code> 结尾，请重新输入。\n\n"
+            "❌ Bot 用户名格式不正确。\n\n"
+            "• 必须以字母开头，只含字母、数字、下划线\n"
+            "• 必须以 <code>bot</code> 结尾\n"
+            "• 长度 5~32 个字符\n\n"
             "例如：<code>myfile_bot</code>",
             parse_mode="HTML"
         )
@@ -115,9 +134,9 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
     token = update.message.text.strip()
     user_id = update.effective_user.id
 
-    if ":" not in token or len(token) < 10:
+    if not _validate_token(token):
         await _retry_send(update.message.reply_text, 
-            "❌ 这不像是一个有效的 Token，请重新输入。\n\n"
+            "❌ Token 格式不正确，请重新输入。\n\n"
             "Token 格式类似：<code>123456789:ABCdefGHIjklMNOpqrS</code>",
             parse_mode="HTML"
         )
@@ -274,8 +293,12 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     token = context.args[0].strip()
 
-    if ":" not in token:
-        await _retry_send(update.message.reply_text, "❌ Token 格式不正确，请检查后重试。")
+    if not _validate_token(token):
+        await _retry_send(update.message.reply_text,
+            "❌ Token 格式不正确。\n\n"
+            "Token 格式类似：<code>123456789:ABCdefGHIjklMNOpqrS</code>",
+            parse_mode="HTML"
+        )
         return
 
     existing = await get_user_bot_by_token(token)

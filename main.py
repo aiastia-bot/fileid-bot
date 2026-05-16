@@ -5,6 +5,7 @@ FileID Bot 托管平台 - 主入口
 """
 import asyncio
 import logging
+import os
 import signal
 import sys
 
@@ -109,6 +110,9 @@ def run_standalone():
     # 注册主Bot管理命令
     _register_master_handlers(application)
 
+    # 优雅关闭
+    _setup_graceful_shutdown(application, bot_manager=bot_manager)
+
     # 全局引用
     sys.modules['__main__'].bot_manager = bot_manager
     sys.modules['__main__'].master_app = application
@@ -153,6 +157,9 @@ def run_master():
 
     # 注册主Bot管理命令
     _register_master_handlers(application)
+
+    # 优雅关闭
+    _setup_graceful_shutdown(application, bot_manager=bot_manager, scheduler=scheduler)
 
     # 全局引用
     sys.modules['__main__'].bot_manager = bot_manager
@@ -301,6 +308,70 @@ def _register_master_handlers(application: Application):
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gift_user_id_input), group=10)
 
     application.add_error_handler(error_handler)
+
+
+def _setup_graceful_shutdown(application: Application, bot_manager: BotManager = None, scheduler=None):
+    """注册优雅关闭信号处理器，确保所有 Bot 停止后才退出"""
+
+    _shutdown_event = asyncio.Event()
+
+    def _signal_handler(signum, frame):
+        sig_name = signal.Signals(signum).name
+        logger.info("📩 收到信号 %s，开始优雅关闭...", sig_name)
+        # 在 asyncio 事件循环中调度关闭
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.call_soon_threadsafe(_shutdown_event.set)
+                # 触发 application 停止
+                loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_do_shutdown(application, bot_manager, scheduler)))
+            else:
+                _shutdown_event.set()
+        except RuntimeError:
+            _shutdown_event.set()
+
+    # 注册信号处理
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, _signal_handler)
+        except (OSError, ValueError):
+            pass  # 非 main 线程无法设置信号
+
+    logger.info("✅ 优雅关闭信号处理器已注册 (SIGINT/SIGTERM)")
+
+
+async def _do_shutdown(application: Application, bot_manager: BotManager = None, scheduler=None):
+    """执行优雅关闭序列"""
+    logger.info("🛑 开始优雅关闭...")
+
+    # 1. 停止调度器（Master 模式）
+    if scheduler:
+        try:
+            if hasattr(scheduler, 'stop'):
+                await scheduler.stop()
+            logger.info("✅ 调度器已停止")
+        except Exception as e:
+            logger.warning("停止调度器失败: %s", e)
+
+    # 2. 停止所有用户 Bot
+    if bot_manager:
+        try:
+            stopped = await bot_manager.stop_all()
+            logger.info("✅ 已停止 %d 个用户 Bot", stopped or 0)
+        except Exception as e:
+            logger.warning("停止用户 Bot 失败: %s", e)
+
+    # 3. 停止主 Bot Application
+    try:
+        await application.stop()
+        await application.shutdown()
+        logger.info("✅ 主 Bot Application 已关闭")
+    except Exception as e:
+        logger.warning("关闭主 Bot Application 失败: %s", e)
+
+    logger.info("🛑 优雅关闭完成")
+    # 强制退出（避免 aiohttp 等框架的信号处理器阻止退出）
+    os._exit(0)
 
 
 def _run_polling(application: Application):
