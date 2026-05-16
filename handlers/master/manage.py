@@ -576,6 +576,13 @@ async def forward_mode_callback(update: Update, context: ContextTypes.DEFAULT_TY
             current_text = _FWD_MODE_LABELS.get(mode, str(mode))
             await query.answer(f"已设置为：{current_text}")
 
+            # 同步更新运行中 Bot 的内存数据
+            mgr = get_bot_manager()
+            if mgr and bot_db_id in mgr.get_all_apps():
+                user_app = mgr.get_all_apps()[bot_db_id]
+                user_app.bot_data.setdefault('bot_record', {})['forward_mode'] = mode
+                logger.info("已同步 Bot %d 的 forward_mode=%d 到内存", bot_db_id, mode)
+
             text = (
                 f"🔒 <b>转发保护设置</b>\n\n"
                 f"🤖 Bot：@{escape(bot_record['bot_username'])}\n"
