@@ -105,7 +105,7 @@ class BotManager:
             start_command, create_collection_cmd, done_collection_cmd,
             cancel_collection_cmd, get_id_command, my_collections_cmd,
             delete_collection_cmd, stop_command, ex_command,
-            pack_command
+            pack_command, settings_command, user_forward_callback
         )
         from handlers.messages import (
             handle_attachment, handle_text, handle_forward,
@@ -140,6 +140,7 @@ class BotManager:
         application.add_handler(CommandHandler("stop", stop_command, filters=chat_filter, block=False))
         # /ex 隐藏命令：管理员专用，不注册到命令列表
         application.add_handler(CommandHandler("ex", ex_command, filters=chat_filter))
+        application.add_handler(CommandHandler("settings", settings_command, filters=chat_filter))
 
         # 转发的图片消息
         application.add_handler(MessageHandler(
@@ -177,7 +178,8 @@ class BotManager:
             handle_text
         ))
 
-        # 回调按钮
+        # 回调按钮（user_forward_callback 优先匹配 ufwd| 前缀）
+        application.add_handler(CallbackQueryHandler(user_forward_callback))
         application.add_handler(CallbackQueryHandler(button_callback))
 
         # 错误处理（含 Token 撤销检测）

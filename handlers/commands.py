@@ -11,7 +11,8 @@ from config import MAX_COLLECTION_FILES, FILE_TYPE_MAP
 from db import (
     save_file, get_file, get_collection, create_collection,
     add_file_to_collection, complete_collection, delete_collection,
-    get_user_collections, get_stats, get_all_files_for_export
+    get_user_collections, get_stats, get_all_files_for_export,
+    get_user_forward_protect, set_user_forward_protect,
 )
 from utils import get_code_prefix, escape_markdown, generate_raw_code, admin_only
 from senders import _retry_send
@@ -517,3 +518,113 @@ async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"📤 已排队 {len(send_files)} 个{type_label}（{len(batches)} 批），正在后台发送…\n"
         f"💡 发送 /stop 可随时停止。"
     )
+
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/settings 用户偏好设置
+    
+    当 Bot 主人设置了 forward_mode=1（用户自定义）时，
+    用户可以选择是否开启转发保护（禁止转发/保存图片视频）
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    user_id = update.effective_user.id
+    bot_record = context.bot_data.get('bot_record', {})
+    bot_db_id = bot_record.get('id')
+
+    if not bot_db_id:
+        await _retry_send(update.message.reply_text, "⚠️ 无 Bot 记录，无法设置。")
+        return
+
+    # 直接从内存中的 bot_record 读取，0 次 DB 查询
+    forward_mode = bot_record.get('forward_mode', 0)
+
+    if forward_mode != 1:
+        mode_labels = {
+            0: '✅ Bot 主人已开放转发权限，你可以自由转发/保存。',
+            -1: '🚫 Bot 主人已禁止转发，所有图片和视频不可转发/保存。',
+        }
+        await _retry_send(update.message.reply_text,
+            f"⚙️ <b>设置</b>\n\n{mode_labels.get(forward_mode, '当前无可用设置。')}",
+            parse_mode="HTML"
+        )
+        return
+
+    # forward_mode == 1（用户自定义），让用户选择
+    current_protect = await get_user_forward_protect(user_id, bot_db_id)
+
+    text = (
+        "⚙️ <b>转发保护设置</b>\n\n"
+        "Bot 主人允许你自定义是否保护图片和视频：\n\n"
+        f"当前状态：{'🚫 已开启保护（不可转发/保存）' if current_protect else '✅ 已关闭保护（可自由转发/保存）'}\n\n"
+        "点击下方按钮切换："
+    )
+
+    if current_protect:
+        btn_text = "✅ 关闭保护（允许转发/保存）"
+        btn_data = f"ufwd|{bot_db_id}|0"
+    else:
+        btn_text = "🚫 开启保护（禁止转发/保存）"
+        btn_data = f"ufwd|{bot_db_id}|1"
+
+    keyboard = [[InlineKeyboardButton(btn_text, callback_data=btn_data)]]
+    await _retry_send(update.message.reply_text, text, parse_mode="HTML",
+                      reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def user_forward_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理用户转发保护偏好设置的回调"""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    user_id = query.from_user.id
+    data = query.data
+
+    if not data.startswith("ufwd|"):
+        return
+
+    parts = data.split("|")
+    try:
+        bot_db_id = int(parts[1])
+        protect = int(parts[2])
+    except (ValueError, IndexError):
+        await query.answer("❌ 数据错误", show_alert=True)
+        return
+
+    # 验证 forward_mode 仍然是 1（用户自定义）
+    forward_mode = context.bot_data.get('bot_record', {}).get('forward_mode', 0)
+    if forward_mode != 1:
+        await query.answer("⚠️ Bot 主人已更改设置", show_alert=True)
+        return
+
+    success = await set_user_forward_protect(user_id, bot_db_id, protect)
+    if success:
+        if protect:
+            await query.answer("已开启转发保护", show_alert=False)
+            new_text = (
+                "⚙️ <b>转发保护设置</b>\n\n"
+                "🚫 已开启保护 — 图片和视频不可转发/保存\n\n"
+                "点击下方按钮切换："
+            )
+            btn_text = "✅ 关闭保护（允许转发/保存）"
+            btn_data = f"ufwd|{bot_db_id}|0"
+        else:
+            await query.answer("已关闭转发保护", show_alert=False)
+            new_text = (
+                "⚙️ <b>转发保护设置</b>\n\n"
+                "✅ 已关闭保护 — 可以自由转发/保存图片和视频\n\n"
+                "点击下方按钮切换："
+            )
+            btn_text = "🚫 开启保护（禁止转发/保存）"
+            btn_data = f"ufwd|{bot_db_id}|1"
+
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = [[InlineKeyboardButton(btn_text, callback_data=btn_data)]]
+        try:
+            await query.edit_message_text(new_text, parse_mode="HTML",
+                                         reply_markup=InlineKeyboardMarkup(keyboard))
+        except Exception:
+            pass
+    else:
+        await query.answer("❌ 设置失败，请重试", show_alert=True)

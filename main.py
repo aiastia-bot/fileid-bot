@@ -277,6 +277,10 @@ def _register_master_handlers(application: Application):
     application.add_handler(CommandHandler("updatetoken", update_token_cmd))
     application.add_handler(CommandHandler("setgroup", set_group_cmd))
 
+    # VIP 转发保护设置（Bot 主人设置转发模式）
+    from handlers.master.manage import forward_mode_callback
+    application.add_handler(CallbackQueryHandler(forward_mode_callback, pattern=r'^fwd_'))
+
     # VIP / 星星支付
     from handlers.master.stars import (
         vip_command, vip_callback_router, pre_checkout_handler,

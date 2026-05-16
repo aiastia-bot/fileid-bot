@@ -55,16 +55,17 @@ async def stop_all_queues():
 
 class SendTask:
     """一个发送批次"""
-    __slots__ = ('task_id', 'chat_id', 'files', 'caption', 'future', 'auto_id')
+    __slots__ = ('task_id', 'chat_id', 'files', 'caption', 'future', 'auto_id', 'protect_content')
 
     def __init__(self, chat_id: int, files: List[Dict], caption: str = "",
-                 auto_id: str = None, task_id: str = None):
+                 auto_id: str = None, task_id: str = None, protect_content: bool = False):
         self.task_id = task_id or uuid.uuid4().hex[:12]
         self.chat_id = chat_id
         self.files = files
         self.caption = caption
         self.future: asyncio.Future = asyncio.get_running_loop().create_future()
         self.auto_id = auto_id  # 用于 auto_send 取消
+        self.protect_content = protect_content  # 转发保护（VIP 功能）
 
     def to_json(self) -> str:
         """序列化为 JSON（用于 Redis 持久化）"""
@@ -74,6 +75,7 @@ class SendTask:
             'files': self.files,
             'caption': self.caption,
             'auto_id': self.auto_id,
+            'protect_content': self.protect_content,
         }, ensure_ascii=False, default=str)
 
     @classmethod
@@ -86,6 +88,7 @@ class SendTask:
             caption=d.get('caption', ''),
             auto_id=d.get('auto_id'),
             task_id=d.get('id'),
+            protect_content=d.get('protect_content', False),
         )
 
 
@@ -237,9 +240,10 @@ class SendQueue:
     # ===== 提交方式 =====
 
     async def submit_batch(self, chat_id: int, files: List[Dict],
-                           caption: str = "", auto_id: str = None) -> int:
+                           caption: str = "", auto_id: str = None,
+                           protect_content: bool = False) -> int:
         """提交一个批次并等待完成。返回成功发送数量。"""
-        task = SendTask(chat_id, files, caption, auto_id)
+        task = SendTask(chat_id, files, caption, auto_id, protect_content=protect_content)
         if chat_id not in self._queues:
             self._queues[chat_id] = []
         self._queues[chat_id].append(task)
@@ -248,9 +252,10 @@ class SendQueue:
         return await task.future
 
     def submit_batch_async(self, chat_id: int, files: List[Dict],
-                           caption: str = "", auto_id: str = None) -> SendTask:
+                           caption: str = "", auto_id: str = None,
+                           protect_content: bool = False) -> SendTask:
         """提交一个批次但不等待。返回 SendTask（可通过 await task.future 获取结果）。"""
-        task = SendTask(chat_id, files, caption, auto_id)
+        task = SendTask(chat_id, files, caption, auto_id, protect_content=protect_content)
         if chat_id not in self._queues:
             self._queues[chat_id] = []
         self._queues[chat_id].append(task)
@@ -435,7 +440,8 @@ class SendQueue:
                 self._current_chat_id = chat_id
                 self._current_task = task
                 self._current_send_task = asyncio.create_task(
-                    send_batch(self._bot, task.chat_id, task.files, task.caption)
+                    send_batch(self._bot, task.chat_id, task.files, task.caption,
+                               protect_content=task.protect_content)
                 )
                 try:
                     sent = await self._current_send_task

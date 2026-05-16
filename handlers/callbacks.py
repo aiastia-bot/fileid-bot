@@ -266,6 +266,21 @@ def _get_sending_tasks(context) -> dict:
     return context.bot_data['_sending_tasks']
 
 
+async def _get_protect(context, chat_id: int) -> bool:
+    """从内存 bot_record 判断转发保护，mode==1 时查用户偏好（带缓存）"""
+    bot_record = context.bot_data.get('bot_record', {})
+    forward_mode = bot_record.get('forward_mode', 0)
+    bot_db_id = bot_record.get('id')
+
+    if forward_mode == -1:
+        return True
+    elif forward_mode == 1 and bot_db_id:
+        from db import get_user_forward_protect
+        protect = await get_user_forward_protect(chat_id, bot_db_id)
+        return bool(protect)
+    return False
+
+
 async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
     """分页发送集合文件：每次发送 PER_PAGE 个，带页码按钮，已发送页显示✅"""
     logger.info("_send_paginated: col_code=%s, sk=%s, page=%d", col_code, sk, page)
@@ -305,12 +320,15 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
     sent_pages.add(page)
     context.user_data[sent_key] = sent_pages
 
+    # 检查转发保护（从内存 bot_record 读取，0 次 DB 查询）
+    protect = await _get_protect(context, chat_id)
+
     # 通过 SendQueue 发送本页文件（享受 Bot 级别限流保护 + Redis 持久化）
-    logger.info("_send_paginated: 发送第 %d 页, %d 个文件", page, len(page_files))
+    logger.info("_send_paginated: 发送第 %d 页, %d 个文件, protect=%s", page, len(page_files), protect)
     try:
         queue = get_queue_from_context(context)
         queue.clear_chat_pending(chat_id)  # 清除 Redis 恢复的旧任务，避免重复发送
-        sent = await queue.submit_batch(chat_id, page_files)
+        sent = await queue.submit_batch(chat_id, page_files, protect_content=protect)
         logger.info("_send_paginated: 第 %d 页发送完成, sent=%d", page, sent)
     except Exception as e:
         logger.error("_send_paginated: 第 %d 页发送失败: %s", page, e, exc_info=True)
@@ -377,11 +395,15 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
     """自动发送集合文件（每组间隔）"""
     logger.info("_auto_send 开始: col_code=%s, chat_id=%s, user_id=%s", col_code, chat_id, user_id)
     files = await get_collection_files(col_code)
+    col_info = await get_collection(col_code)
     logger.info("_auto_send: 查询到 %d 个文件", len(files) if files else 0)
-    if not files:
-        msg = "⚠️ 集合为空。"
+    if not files or not col_info:
+        msg = "⚠️ 集合为空或不存在。"
         await _safe_edit_query(query, context, chat_id, msg)
         return
+
+    # 检查转发保护（从内存 bot_record 读取，0 次 DB 查询）
+    protect = await _get_protect(context, chat_id)
 
     total = len(files)
     context.user_data['stop_auto_send'] = False
@@ -413,7 +435,7 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
             return
 
         try:
-            sent_count += await queue.submit_batch(chat_id, group)
+            sent_count += await queue.submit_batch(chat_id, group, protect_content=protect)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -499,9 +521,10 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
     """发送指定页的文件"""
     logger.info("_send_page_files: col_code=%s, page=%d, chat_id=%s", col_code, page, chat_id)
     files = await get_collection_files(col_code)
+    col_info = await get_collection(col_code)
     logger.info("_send_page_files: files=%d", len(files) if files else 0)
-    if not files:
-        msg = "⚠️ 集合为空。"
+    if not files or not col_info:
+        msg = "⚠️ 集合为空或不存在。"
         await _safe_edit_query(query, context, chat_id, msg)
         return
 
@@ -512,10 +535,13 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
         await _safe_edit_query(query, context, chat_id, msg)
         return
 
-    logger.info("_send_page_files: 准备发送 %d 个文件", len(page_files))
+    # 检查转发保护（从内存 bot_record 读取，0 次 DB 查询）
+    protect = await _get_protect(context, chat_id)
+
+    logger.info("_send_page_files: 准备发送 %d 个文件, protect=%s", len(page_files), protect)
     queue = get_queue_from_context(context)
     queue.clear_chat_pending(chat_id)  # 清除 Redis 恢复的旧任务，避免重复发送
-    sent = await queue.submit_batch(chat_id, page_files)
+    sent = await queue.submit_batch(chat_id, page_files, protect_content=protect)
     result_text = f"✅ 已发送第{page}页文件 ({sent}/{len(page_files)})"
     logger.info("_send_page_files 完成: %s", result_text)
     await _safe_edit_query(query, context, chat_id, result_text)

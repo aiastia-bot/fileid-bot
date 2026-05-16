@@ -22,6 +22,7 @@ class UserBot(Base):
     created_at: Mapped[str] = mapped_column(String, nullable=True)
     updated_at: Mapped[str] = mapped_column(String, nullable=True)
     node_id: Mapped[str] = mapped_column(String, default='local')
+    forward_mode: Mapped[int] = mapped_column(Integer, default=0)  # 0=默认允许, -1=禁止转发, 1=用户自定义
 
 
 class FileMapping(Base):
@@ -107,6 +108,16 @@ class StarPayment(Base):
     payload: Mapped[str] = mapped_column(String, nullable=False)
     telegram_charge_id: Mapped[str] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, nullable=True)
+
+
+class UserBotPref(Base):
+    """用户对某个 Bot 的偏好设置"""
+    __tablename__ = 'user_bot_prefs'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    bot_db_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    forward_protect: Mapped[int] = mapped_column(Integer, default=0)  # 0=不保护(允许转发), 1=保护(禁止转发)
 
 
 class WorkerNode(Base):

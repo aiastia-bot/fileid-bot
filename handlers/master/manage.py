@@ -10,10 +10,22 @@ from db import (
     delete_user_bot as db_delete_user_bot,
     update_user_bot_status, update_user_bot_token,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
+    set_bot_forward_mode,
+    get_user_vip_level,
 )
+from config import VIP_FEATURES, FORWARD_MODE_ALLOW, FORWARD_MODE_DENY, FORWARD_MODE_USER_CHOICE
 from handlers.master._utils import get_bot_manager, escape
 
 logger = logging.getLogger(__name__)
+
+# 转发模式标签（复用）
+_FWD_MODE_LABELS = {0: '✅ 允许转发', -1: '🚫 禁止转发', 1: '👤 用户自选'}
+
+
+async def _check_vip_forward(user_id: int) -> bool:
+    """检查用户是否有转发保护设置权限（VIP 1+）"""
+    vip_level = await get_user_vip_level(user_id)
+    return VIP_FEATURES.get(vip_level, VIP_FEATURES[0]).get('forward_mode', False)
 
 
 async def my_bots_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -37,8 +49,32 @@ async def my_bots_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"   @{escape(bot['bot_username'])} | ID: <code>{bot['bot_id']}</code>\n\n"
         )
 
-    text += f"共 {len(bots)} 个 Bot。请使用 /botstatus 管理"
-    await _retry_send(update.message.reply_text, text, parse_mode="HTML")
+    text += f"共 {len(bots)} 个 Bot。\n"
+
+    # VIP 1+ 可以看到转发保护设置按钮
+    vip_level = await get_user_vip_level(user_id)
+    has_forward_feature = VIP_FEATURES.get(vip_level, VIP_FEATURES[0]).get('forward_mode', False)
+
+    keyboard = []
+    if has_forward_feature:
+        for i, bot in enumerate(bots, 1):
+            forward_mode = bot.get('forward_mode', 0)
+            mode_labels = {0: '✅ 允许转发', -1: '🚫 禁止转发', 1: '👤 用户自选'}
+            mode_text = mode_labels.get(forward_mode, '✅ 允许转发')
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"🔒 @{bot['bot_username']} - {mode_text}",
+                    callback_data=f"fwd_menu|{bot['id']}"
+                )
+            ])
+
+    if keyboard:
+        text += "\n🔒 点击下方按钮设置 Bot 的转发保护："
+        await _retry_send(update.message.reply_text, text, parse_mode="HTML",
+                          reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        text += "请使用 /botstatus 管理"
+        await _retry_send(update.message.reply_text, text, parse_mode="HTML")
 
 
 async def delete_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -442,3 +478,117 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             f"请使用 /botstatus 查看状态，或联系管理员。",
             parse_mode="HTML"
         )
+
+
+async def forward_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理 Bot 主人设置转发保护模式的回调"""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    user_id = query.from_user.id
+    data = query.data
+
+    # fwd_menu|{bot_db_id} - 显示转发保护菜单
+    # fwd_set|{bot_db_id}|{mode} - 设置转发保护模式
+
+    if not data.startswith("fwd_"):
+        return
+
+    parts = data.split("|")
+    action = parts[0]
+
+    if action == "fwd_menu":
+        # 显示转发保护设置菜单
+        try:
+            bot_db_id = int(parts[1])
+        except (ValueError, IndexError):
+            await query.answer("❌ 数据错误", show_alert=True)
+            return
+
+        # 验证 Bot 归属
+        bot_record = await get_user_bot_by_id(bot_db_id)
+        if not bot_record or bot_record['owner_id'] != user_id:
+            await query.answer("❌ 无权操作此 Bot", show_alert=True)
+            return
+
+        if not await _check_vip_forward(user_id):
+            await query.answer("⛔ 此功能需要 VIP 1 及以上", show_alert=True)
+            return
+
+        # 直接从 bot_record 读取，0 次 DB 查询
+        current_mode = bot_record.get('forward_mode', 0)
+        current_text = _FWD_MODE_LABELS.get(current_mode, '✅ 允许转发')
+
+        text = (
+            f"🔒 <b>转发保护设置</b>\n\n"
+            f"🤖 Bot：@{escape(bot_record['bot_username'])}\n"
+            f"当前状态：{current_text}\n\n"
+            f"选择转发保护模式：\n\n"
+            f"✅ <b>允许转发</b> — 所有用户都可以转发/保存图片和视频\n"
+            f"🚫 <b>禁止转发</b> — 所有用户都不能转发/保存\n"
+            f"👤 <b>用户自选</b> — 由每个用户自己决定"
+        )
+
+        keyboard = [
+            [InlineKeyboardButton("✅ 允许转发",
+                                  callback_data=f"fwd_set|{bot_db_id}|0")],
+            [InlineKeyboardButton("🚫 禁止转发",
+                                  callback_data=f"fwd_set|{bot_db_id}|-1")],
+            [InlineKeyboardButton("👤 用户自选",
+                                  callback_data=f"fwd_set|{bot_db_id}|1")],
+        ]
+        await query.answer()
+        await query.edit_message_text(text, parse_mode="HTML",
+                                     reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif action == "fwd_set":
+        # 设置转发保护模式
+        try:
+            bot_db_id = int(parts[1])
+            mode = int(parts[2])
+        except (ValueError, IndexError):
+            await query.answer("❌ 数据错误", show_alert=True)
+            return
+
+        if mode not in (FORWARD_MODE_ALLOW, FORWARD_MODE_DENY, FORWARD_MODE_USER_CHOICE):
+            await query.answer("❌ 无效的模式", show_alert=True)
+            return
+
+        # 验证 Bot 归属 + VIP 权限（合并，避免重复查询）
+        bot_record = await get_user_bot_by_id(bot_db_id)
+        if not bot_record or bot_record['owner_id'] != user_id:
+            await query.answer("❌ 无权操作此 Bot", show_alert=True)
+            return
+
+        if not await _check_vip_forward(user_id):
+            await query.answer("⛔ 此功能需要 VIP 1 及以上", show_alert=True)
+            return
+
+        success = await set_bot_forward_mode(bot_db_id, mode)
+        if success:
+            current_text = _FWD_MODE_LABELS.get(mode, str(mode))
+            await query.answer(f"已设置为：{current_text}")
+
+            text = (
+                f"🔒 <b>转发保护设置</b>\n\n"
+                f"🤖 Bot：@{escape(bot_record['bot_username'])}\n"
+                f"当前状态：{current_text}\n\n"
+                f"✅ 已更新！\n\n"
+                f"选择转发保护模式："
+            )
+            keyboard = [
+                [InlineKeyboardButton("✅ 允许转发",
+                                      callback_data=f"fwd_set|{bot_db_id}|0")],
+                [InlineKeyboardButton("🚫 禁止转发",
+                                      callback_data=f"fwd_set|{bot_db_id}|-1")],
+                [InlineKeyboardButton("👤 用户自选",
+                                      callback_data=f"fwd_set|{bot_db_id}|1")],
+            ]
+            try:
+                await query.edit_message_text(text, parse_mode="HTML",
+                                             reply_markup=InlineKeyboardMarkup(keyboard))
+            except Exception as e:
+                logger.debug("编辑转发设置消息失败（可能消息未变化）: %s", e)
+        else:
+            await query.answer("❌ 设置失败，请重试", show_alert=True)

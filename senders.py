@@ -109,7 +109,8 @@ async def _retry_send(send_func, *args, **kwargs):
 
 # ===== 核心：发送一批文件（被队列消费者调用） =====
 
-async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "") -> int:
+async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "",
+                     protect_content: bool = False) -> int:
     """发送一批文件（≤ GROUP_SEND_SIZE）
     
     按类型分组合并发送：
@@ -117,13 +118,17 @@ async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "") ->
     - 文档 → send_media_group（文档组）
     - 音频 → send_media_group（音频组）
     
+    Args:
+        protect_content: 如果为 True，发送的图片/视频将禁止转发和保存
+    
     返回成功发送的数量
     """
     if not files:
         return 0
 
     bot_name = getattr(bot, 'username', 'unknown')
-    logger.info("send_batch: @%s 发送 %d 个文件到 chat_id=%s", bot_name, len(files), chat_id)
+    logger.info("send_batch: @%s 发送 %d 个文件到 chat_id=%s protect=%s",
+                bot_name, len(files), chat_id, protect_content)
 
     _start = time.time()
 
@@ -134,21 +139,27 @@ async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "") ->
 
     sent_count = 0
 
-    # 1. 图片+视频
+    # 1. 图片+视频（仅图片/视频受 protect_content 保护）
     if photo_video:
-        sent_count += await _send_typed_batch(bot, chat_id, photo_video, caption, 'photo_video', bot_name)
+        sent_count += await _send_typed_batch(
+            bot, chat_id, photo_video, caption, 'photo_video', bot_name,
+            protect_content=protect_content)
 
     # 2. 文档（组间小延迟）
     if documents:
         if photo_video:
             await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
-        sent_count += await _send_typed_batch(bot, chat_id, documents, caption, 'document', bot_name)
+        sent_count += await _send_typed_batch(
+            bot, chat_id, documents, caption, 'document', bot_name,
+            protect_content=False)
 
     # 3. 音频
     if audios:
         if photo_video or documents:
             await asyncio.sleep(SEND_INDIVIDUAL_DELAY)
-        sent_count += await _send_typed_batch(bot, chat_id, audios, caption, 'audio', bot_name)
+        sent_count += await _send_typed_batch(
+            bot, chat_id, audios, caption, 'audio', bot_name,
+            protect_content=False)
 
     # 记录发送计数
     if sent_count > 0:
@@ -165,25 +176,33 @@ async def send_batch(bot, chat_id: int, files: List[Dict], caption: str = "") ->
     return sent_count
 
 
-async def _send_typed_batch(bot, chat_id, files, caption, type_key, bot_name) -> int:
+async def _send_typed_batch(bot, chat_id, files, caption, type_key, bot_name,
+                            protect_content: bool = False) -> int:
     """发送同类型的一批文件"""
     if len(files) == 1:
-        return await _send_single(bot, chat_id, files[0], caption, bot_name)
-    return await _send_media_group(bot, chat_id, files, caption, type_key, bot_name)
+        return await _send_single(bot, chat_id, files[0], caption, bot_name,
+                                  protect_content=protect_content)
+    return await _send_media_group(bot, chat_id, files, caption, type_key, bot_name,
+                                   protect_content=protect_content)
 
 
-async def _send_single(bot, chat_id, f, caption, bot_name) -> int:
+async def _send_single(bot, chat_id, f, caption, bot_name,
+                       protect_content: bool = False) -> int:
     """发送单个文件"""
     try:
         ft = f['file_type']
         fid = f['telegram_file_id']
         cap = caption[:1024] if caption else ""
         timeout = dict(read_timeout=30, write_timeout=30)
+        # 仅图片/视频支持 protect_content
+        protect = protect_content and ft in ('photo', 'video')
 
         if ft == 'photo':
-            await _retry_send(bot.send_photo, chat_id=chat_id, photo=fid, caption=cap, **timeout)
+            await _retry_send(bot.send_photo, chat_id=chat_id, photo=fid, caption=cap,
+                              protect_content=protect, **timeout)
         elif ft == 'video':
-            await _retry_send(bot.send_video, chat_id=chat_id, video=fid, caption=cap, **timeout)
+            await _retry_send(bot.send_video, chat_id=chat_id, video=fid, caption=cap,
+                              protect_content=protect, **timeout)
         elif ft == 'audio':
             await _retry_send(bot.send_audio, chat_id=chat_id, audio=fid, caption=cap, **timeout)
         else:
@@ -205,7 +224,8 @@ async def _send_single(bot, chat_id, f, caption, bot_name) -> int:
         return 0
 
 
-async def _send_media_group(bot, chat_id, files, caption, type_key, bot_name) -> int:
+async def _send_media_group(bot, chat_id, files, caption, type_key, bot_name,
+                            protect_content: bool = False) -> int:
     """发送媒体组，失败时降级为逐个发送"""
     timeout = dict(read_timeout=30, write_timeout=30)
     media_list = []
@@ -234,7 +254,8 @@ async def _send_media_group(bot, chat_id, files, caption, type_key, bot_name) ->
 
     # 尝试组发送
     try:
-        await _retry_send(bot.send_media_group, chat_id=chat_id, media=media_list, **timeout)
+        await _retry_send(bot.send_media_group, chat_id=chat_id, media=media_list,
+                          protect_content=protect_content, **timeout)
         return len(media_list)
     except asyncio.CancelledError:
         raise
@@ -250,7 +271,8 @@ async def _send_media_group(bot, chat_id, files, caption, type_key, bot_name) ->
     # 降级：逐个发送
     sent = 0
     for f in files:
-        s = await _send_single(bot, chat_id, f, "", bot_name)
+        s = await _send_single(bot, chat_id, f, "", bot_name,
+                               protect_content=protect_content)
         sent += s
         if sent < len(files):
             await asyncio.sleep(SEND_INDIVIDUAL_DELAY)

@@ -145,6 +145,8 @@ async def init_db():
             columns = {row[1] for row in result}
             if 'node_id' not in columns:
                 await conn.execute(text("ALTER TABLE user_bots ADD COLUMN node_id TEXT DEFAULT 'local'"))
+            if 'forward_mode' not in columns:
+                await conn.execute(text("ALTER TABLE user_bots ADD COLUMN forward_mode INTEGER DEFAULT 0"))
 
             # 检查 collections.bot_db_id 列
             result = await conn.execute(text("PRAGMA table_info(collections)"))
@@ -168,6 +170,9 @@ async def init_db():
             await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_col_bot_db ON collections(bot_db_id)"))
             await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_ci_col ON collection_items(collection_code)"))
             await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_bl_user ON user_blacklist(user_id)"))
+
+            # user_bot_prefs 索引
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_ubp_user_bot ON user_bot_prefs(user_id, bot_db_id)"))
 
             # 回填 bot_db_id
             await _backfill_bot_db_id(conn)

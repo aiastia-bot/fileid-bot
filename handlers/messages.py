@@ -11,7 +11,7 @@ from config import MAX_COLLECTION_FILES, GROUP_SEND_SIZE, FILE_TYPE_MAP
 from config import RATE_LIMIT_WINDOW, RATE_LIMIT_MAX, RATE_LIMIT_MAX_WAIT
 from db import (
     save_file, get_file, get_files_by_codes, get_collection, get_collection_files,
-    create_collection, add_file_to_collection,
+    create_collection, add_file_to_collection, get_user_forward_protect,
 )
 from utils import get_code_prefix, escape_markdown, generate_raw_code, parse_file_code, parse_collection_code
 from senders import send_file_group, _retry_send
@@ -308,11 +308,14 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
         queue = get_queue_from_context(context)
         batches = split_files_to_batches(found_files)
 
+        # 检查转发保护（直接从内存 bot_record 读取，通常 0 次 DB 查询）
+        protect = await _get_protect_async(context, chat_id)
+
         # 异步提交所有批次到队列（不等待发送完成，避免阻塞 webhook）
         t2 = _time.monotonic()
         for batch in batches:
             try:
-                queue.submit_batch_async(chat_id, batch)
+                queue.submit_batch_async(chat_id, batch, protect_content=protect)
             except Exception as e:
                 logger.error("队列提交失败: %s", e)
         logger.debug("⏱ _process_file_codes queue提交(%d 批) 耗时%.3fs", len(batches), _time.monotonic() - t2)
@@ -589,6 +592,20 @@ async def _save_media_messages(messages, context) -> list:
             if code:
                 codes.append(code)
     return codes
+
+
+async def _get_protect_async(context, chat_id: int) -> bool:
+    """异步版本的转发保护判断（用于 mode==1 时查用户偏好）"""
+    bot_record = context.bot_data.get('bot_record', {})
+    forward_mode = bot_record.get('forward_mode', 0)
+    bot_db_id = bot_record.get('id')
+
+    if forward_mode == -1:
+        return True
+    elif forward_mode == 1 and bot_db_id:
+        protect = await get_user_forward_protect(chat_id, bot_db_id)
+        return bool(protect)
+    return False
 
 
 async def _add_to_collection(context, col_code, codes):

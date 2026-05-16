@@ -1,13 +1,14 @@
 """VIP 用户管理和星星支付相关数据库函数"""
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 
 from sqlalchemy import select, update, func, text
 
 from db.core import get_session, _model_to_dict
-from db.models import User, StarPayment, UserBot
-from config import VIP_PLANS, MAX_VIP0_USERS
+from db.models import User, StarPayment, UserBot, UserBotPref
+from config import VIP_PLANS, VIP_FEATURES, MAX_VIP0_USERS
 
 logger = logging.getLogger(__name__)
 
@@ -350,3 +351,140 @@ async def get_paused_bots_by_owner(owner_id: int) -> List[Dict]:
         )
         bots = result.scalars().all()
         return [_model_to_dict(b) for b in bots]
+
+
+# ===== 转发保护相关函数 =====
+# forward_mode: 0=默认允许, -1=禁止转发, 1=用户自定义
+# 使用内存缓存减少数据库查询
+
+_forward_mode_cache: dict = {}      # {bot_db_id: (mode, timestamp)}
+_user_pref_cache: dict = {}          # {(user_id, bot_db_id): (protect, timestamp)}
+_CACHE_TTL = 300                     # 缓存 5 分钟
+
+
+def _cache_get(cache: dict, key):
+    """从缓存读取，过期返回 None"""
+    entry = cache.get(key)
+    if entry and time.time() - entry[1] < _CACHE_TTL:
+        return entry[0]
+    return None
+
+
+def _cache_set(cache: dict, key, value):
+    """写入缓存"""
+    cache[key] = (value, time.time())
+
+
+def _cache_del(cache: dict, key):
+    """删除缓存"""
+    cache.pop(key, None)
+
+
+async def get_bot_forward_mode(bot_db_id: int) -> int:
+    """获取 Bot 的转发模式（带缓存），返回整数：0=允许, -1=禁止, 1=用户自定义"""
+    cached = _cache_get(_forward_mode_cache, bot_db_id)
+    if cached is not None:
+        return cached
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(UserBot.forward_mode).where(UserBot.id == bot_db_id)
+        )
+        mode = result.scalar_one_or_none()
+        mode = mode if mode is not None else 0
+    _cache_set(_forward_mode_cache, bot_db_id, mode)
+    return mode
+
+
+async def set_bot_forward_mode(bot_db_id: int, mode: int) -> bool:
+    """设置 Bot 的转发模式并更新缓存"""
+    async with get_session() as session:
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            await session.execute(
+                update(UserBot)
+                .where(UserBot.id == bot_db_id)
+                .values(forward_mode=mode, updated_at=now)
+            )
+            await session.commit()
+            _cache_set(_forward_mode_cache, bot_db_id, mode)
+            # Bot 模式变更时，清除该 Bot 所有用户偏好缓存
+            _user_pref_cache.update(
+                {k: v for k, v in list(_user_pref_cache.items()) if k[1] != bot_db_id}
+            )
+            # 实际上是删除，重建缓存
+            to_del = [k for k in _user_pref_cache if k[1] == bot_db_id]
+            for k in to_del:
+                del _user_pref_cache[k]
+            return True
+        except Exception as e:
+            logger.error("设置转发模式失败: %s", e)
+            return False
+
+
+async def get_user_forward_protect(user_id: int, bot_db_id: int) -> int:
+    """获取用户对某个 Bot 的转发保护偏好（带缓存），0=不保护(允许), 1=保护(禁止)"""
+    cache_key = (user_id, bot_db_id)
+    cached = _cache_get(_user_pref_cache, cache_key)
+    if cached is not None:
+        return cached
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(UserBotPref).where(
+                UserBotPref.user_id == user_id,
+                UserBotPref.bot_db_id == bot_db_id
+            )
+        )
+        pref = result.scalar_one_or_none()
+        protect = pref.forward_protect if pref else 0
+    _cache_set(_user_pref_cache, cache_key, protect)
+    return protect
+
+
+async def set_user_forward_protect(user_id: int, bot_db_id: int, protect: int) -> bool:
+    """设置用户对某个 Bot 的转发保护偏好并更新缓存"""
+    async with get_session() as session:
+        try:
+            result = await session.execute(
+                select(UserBotPref).where(
+                    UserBotPref.user_id == user_id,
+                    UserBotPref.bot_db_id == bot_db_id
+                )
+            )
+            pref = result.scalar_one_or_none()
+            if pref:
+                pref.forward_protect = protect
+            else:
+                pref = UserBotPref(
+                    user_id=user_id,
+                    bot_db_id=bot_db_id,
+                    forward_protect=protect,
+                )
+                session.add(pref)
+            await session.commit()
+            _cache_set(_user_pref_cache, (user_id, bot_db_id), protect)
+            return True
+        except Exception as e:
+            logger.error("设置用户转发保护偏好失败: %s", e)
+            return False
+
+
+async def should_protect_content(user_id: int, bot_db_id: int) -> bool:
+    """判断是否应该对发给该用户的图片/视频添加转发保护（带缓存）
+
+    逻辑：
+    - forward_mode == 0  → 不保护（默认允许）
+    - forward_mode == -1 → 保护（禁止转发）
+    - forward_mode == 1  → 查用户偏好表 user_bot_prefs
+    """
+    forward_mode = await get_bot_forward_mode(bot_db_id)  # 带缓存，通常 0 次DB查询
+
+    if forward_mode == 0:
+        return False
+    elif forward_mode == -1:
+        return True
+    elif forward_mode == 1:
+        protect = await get_user_forward_protect(user_id, bot_db_id)  # 带缓存
+        return bool(protect)
+    return False

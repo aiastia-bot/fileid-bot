@@ -69,10 +69,24 @@ ALLOW_GROUP = os.environ.get('ALLOW_GROUP', 'false').lower() in ('true', '1', 'y
 # VIP 0 使用 MAX_BOTS_PER_USER，VIP 1-3 可通过 VIP1_MAX_BOTS 等环境变量配置
 VIP_PLANS = {
     0: {'name': '免费用户', 'max_bots': int(os.environ.get('MAX_BOTS_PER_USER', '1')), 'monthly_price': 0, 'yearly_price': 0},
-    1: {'name': 'VIP 1', 'max_bots': int(os.environ.get('VIP1_MAX_BOTS', '3')), 'monthly_price': 50, 'yearly_price': 500},
-    2: {'name': 'VIP 2', 'max_bots': int(os.environ.get('VIP2_MAX_BOTS', '5')), 'monthly_price': 100, 'yearly_price': 1000},
-    3: {'name': 'VIP 3', 'max_bots': int(os.environ.get('VIP3_MAX_BOTS', '10')), 'monthly_price': 500, 'yearly_price': 5000},
+    1: {'name': 'VIP 1', 'max_bots': int(os.environ.get('VIP1_MAX_BOTS', os.environ.get('MAX_BOTS_PER_USER', '1'))), 'monthly_price': 50, 'yearly_price': 500},
+    2: {'name': 'VIP 2', 'max_bots': int(os.environ.get('VIP2_MAX_BOTS', '3')), 'monthly_price': 100, 'yearly_price': 1000},
+    3: {'name': 'VIP 3', 'max_bots': int(os.environ.get('VIP3_MAX_BOTS', '6')), 'monthly_price': 500, 'yearly_price': 5000},
 }
+
+# VIP 特权功能（高等级包含低等级所有特权）
+# forward_mode: Bot 主人可控制发送的图片/视频是否允许转发 (VIP 1+)
+VIP_FEATURES = {
+    0: {'forward_mode': False},
+    1: {'forward_mode': True},
+    2: {'forward_mode': True},
+    3: {'forward_mode': True},
+}
+
+# 转发模式常量（整数）
+FORWARD_MODE_ALLOW = 0       # 默认允许
+FORWARD_MODE_DENY = -1       # 禁止转发
+FORWARD_MODE_USER_CHOICE = 1 # 用户自定义
 
 # VIP 0（免费）用户最大数量限制，超过后提示升级 VIP
 MAX_VIP0_USERS = int(os.environ.get('MAX_VIP0_USERS', '0'))  # 0 = 不限制
@@ -119,6 +133,7 @@ USER_BOT_COMMANDS = [
     ("mycol", "查看我的集合"),
     ("stop", "停止所有发送任务"),
     ("delcol", "删除集合 delcol 代码"),
+    ("settings", "用户偏好设置"),
 ]
 
 FILE_TYPE_PREFIX = {
