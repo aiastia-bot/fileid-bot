@@ -1,0 +1,145 @@
+name: Build Protected App
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  PYTHON_VERSION: "3.11"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ============ 任务1: 构建 Linux 受保护分发包 ============
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf gcc g++ make
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip wheel setuptools
+
+      - name: Install Python Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Nuitka
+        run: pip install nuitka ordered-set zstandard
+
+      - name: Build Protected Modules
+        run: bash build_protected.sh linux
+
+      - name: Prepare Distribution Archives
+        run: |
+          # 1. 纯二进制包
+          cd fileid-bot-protected
+          tar -czf ../fileid-bot-linux.tar.gz .
+          cd ..
+
+          # 2. 便携分发包（含启动脚本和说明）
+          mkdir -p portable-dist/fileid-bot
+          cp -r fileid-bot-protected/* portable-dist/fileid-bot/
+
+          cat > portable-dist/fileid-bot/start.sh << 'SCRIPT'
+          #!/bin/bash
+          cd "$(dirname "$0")"
+          pip install -r requirements.txt 2>/dev/null
+          python3 run.py
+          SCRIPT
+          chmod +x portable-dist/fileid-bot/start.sh
+
+          cat > portable-dist/fileid-bot/README.txt << 'README'
+          FileID Bot - 受保护版本
+          ========================
+
+          使用方法:
+          1. 确保 Python 3.11+ 已安装
+          2. 安装依赖: pip install -r requirements.txt
+          3. 复制 .env.example 为 .env 并填写配置
+          4. 启动: python run.py 或 bash start.sh
+
+          注意: 此版本不包含源代码，所有模块已编译为二进制格式。
+          README
+
+          cd portable-dist
+          tar -czf ../fileid-bot-portable.tar.gz fileid-bot/
+          cd ..
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fileid-bot-linux
+          path: fileid-bot-linux.tar.gz
+
+      - name: Upload Portable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fileid-bot-portable
+          path: fileid-bot-portable.tar.gz
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            fileid-bot-linux.tar.gz
+            fileid-bot-portable.tar.gz
+
+  # ============ 任务2: 构建受保护的 Docker 镜像 ============
+  build-docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and Push Protected Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.protected
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

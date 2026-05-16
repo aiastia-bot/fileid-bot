@@ -9,3 +9,13 @@ __pycache__/
 venv/
 .idea/
 .vscode/
+
+# Nuitka 编译产物
+dist_protected/
+fileid-bot-protected/
+portable-dist/
+*.so
+*.pyd
+*.build/
+*.dist/
+*.c

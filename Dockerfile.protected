@@ -1,0 +1,49 @@
+# ============================================================
+# FileID Bot - 受保护版本 Dockerfile（多阶段构建）
+# 阶段1: 编译 .py -> .so（不进入最终镜像）
+# 阶段2: 只包含编译后的 .so + 运行时依赖
+# ============================================================
+
+# ============ 阶段1: 构建 ============
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# 安装编译依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ make patchelf \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 Nuitka 和项目依赖
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir nuitka ordered-set zstandard
+
+# 复制源码
+COPY . .
+
+# 编译所有模块为 .so
+RUN bash build_protected.sh linux
+
+# ============ 阶段2: 运行 ============
+FROM python:3.11-slim
+
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
+    apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 安装运行时 Python 依赖（不含编译工具）
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 只复制编译后的二进制模块和必要文件（不含源码）
+COPY --from=builder /build/fileid-bot-protected/ .
+
+# 创建数据目录
+RUN mkdir -p /app/data
+VOLUME ["/app/data"]
+
+# 启动
+CMD ["python", "run.py"]
