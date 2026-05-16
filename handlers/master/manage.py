@@ -579,9 +579,19 @@ async def forward_mode_callback(update: Update, context: ContextTypes.DEFAULT_TY
             # 同步更新运行中 Bot 的内存数据
             mgr = get_bot_manager()
             if mgr and bot_db_id in mgr.get_all_apps():
+                # standalone 模式：直接更新内存
                 user_app = mgr.get_all_apps()[bot_db_id]
                 user_app.bot_data.setdefault('bot_record', {})['forward_mode'] = mode
                 logger.info("已同步 Bot %d 的 forward_mode=%d 到内存", bot_db_id, mode)
+            else:
+                # master+worker 模式：通过 scheduler 通知 Worker
+                try:
+                    import sys
+                    scheduler = getattr(sys.modules.get('__main__'), 'scheduler', None)
+                    if scheduler:
+                        await scheduler.notify_settings_update(bot_db_id, {'forward_mode': mode})
+                except Exception as e:
+                    logger.warning("通知 Worker 更新 forward_mode 失败: %s", e)
 
             text = (
                 f"🔒 <b>转发保护设置</b>\n\n"
@@ -699,13 +709,23 @@ async def auto_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             else:
                 current_text = "❌ 不自动删除"
 
-            # 同时更新内存中的 bot_record（如果 Bot 正在运行）
+            # 同步更新运行中 Bot 的内存数据
             mgr = get_bot_manager()
             all_apps = mgr.get_all_apps() if mgr else {}
             if bot_db_id in all_apps:
+                # standalone 模式：直接更新内存
                 app = all_apps[bot_db_id]
                 if hasattr(app, 'bot_data'):
                     app.bot_data['bot_record']['auto_delete'] = seconds
+            else:
+                # master+worker 模式：通过 scheduler 通知 Worker
+                try:
+                    import sys
+                    scheduler = getattr(sys.modules.get('__main__'), 'scheduler', None)
+                    if scheduler:
+                        await scheduler.notify_settings_update(bot_db_id, {'auto_delete': seconds})
+                except Exception as e:
+                    logger.warning("通知 Worker 更新 auto_delete 失败: %s", e)
 
             await query.answer(f"已设置：{current_text}")
 

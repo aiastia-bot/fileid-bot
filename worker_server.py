@@ -52,7 +52,8 @@ class WorkerServer:
         app.router.add_post('/internal/start', self._handle_start)
         app.router.add_post('/internal/stop', self._handle_stop)
         app.router.add_post('/internal/restart', self._handle_restart)
-        app.router.add_get('/internal/status', self._handle_status)
+        app.router.add_post('/internal/update_settings', self._handle_update_settings)
+        app.router.add_post('/internal/status', self._handle_status)
         app.router.add_get('/internal/health', self._handle_health)
 
         # Webhook 处理（Telegram 消息入口）
@@ -172,6 +173,44 @@ class WorkerServer:
             return web.json_response({'status': 'restarted', 'bot_db_id': bot_db_id})
         else:
             return web.json_response({'error': 'restart failed'}, status=500)
+
+    async def _handle_update_settings(self, request: web.Request) -> web.Response:
+        """更新运行中 Bot 的内存设置：POST /internal/update_settings
+        Body: {"bot_db_id": 1, "forward_mode": 1, "auto_delete": 0}
+        """
+        if not _verify_secret(request):
+            return web.json_response({'error': 'unauthorized'}, status=403)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({'error': 'invalid json'}, status=400)
+
+        bot_db_id = data.get('bot_db_id')
+        if not bot_db_id:
+            return web.json_response({'error': 'missing bot_db_id'}, status=400)
+
+        if not self._bot_manager:
+            return web.json_response({'error': 'bot_manager not ready'}, status=503)
+
+        # 检查 Bot 是否在本 Worker 运行
+        all_apps = self._bot_manager.get_all_apps()
+        if bot_db_id not in all_apps:
+            return web.json_response({'error': 'bot not running on this worker', 'bot_db_id': bot_db_id}, status=404)
+
+        app = all_apps[bot_db_id]
+        bot_record = app.bot_data.setdefault('bot_record', {})
+
+        updated = []
+        if 'forward_mode' in data:
+            bot_record['forward_mode'] = data['forward_mode']
+            updated.append(f"forward_mode={data['forward_mode']}")
+        if 'auto_delete' in data:
+            bot_record['auto_delete'] = data['auto_delete']
+            updated.append(f"auto_delete={data['auto_delete']}")
+
+        logger.info("Worker 更新 Bot %d 内存设置: %s", bot_db_id, ', '.join(updated))
+        return web.json_response({'status': 'ok', 'bot_db_id': bot_db_id, 'updated': updated})
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         """获取 Worker 状态：GET /internal/status"""

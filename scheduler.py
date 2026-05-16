@@ -152,3 +152,47 @@ class MasterScheduler:
         """获取所有 Worker 状态"""
         from db import get_all_worker_nodes
         return await get_all_worker_nodes()
+
+    async def notify_settings_update(self, bot_db_id: int, settings: dict) -> bool:
+        """通知 Worker 更新运行中 Bot 的内存设置
+        
+        settings: {"forward_mode": 1} 或 {"auto_delete": 30} 等
+        """
+        import httpx
+
+        bot = await get_user_bot_by_id(bot_db_id)
+        if not bot:
+            return False
+
+        node_id = bot.get('node_id', 'local')
+        if node_id == 'local':
+            # standalone 模式，无需通知
+            return True
+
+        # 查找 Worker 节点
+        from db import get_all_worker_nodes
+        nodes = {n['node_id']: n for n in await get_all_worker_nodes()}
+        node = nodes.get(node_id)
+        if not node or node['status'] != 'online':
+            logger.warning("Worker %s 不在线，无法更新设置", node_id)
+            return False
+
+        try:
+            payload = {'bot_db_id': bot_db_id}
+            payload.update(settings)
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{node['node_url']}/internal/update_settings",
+                    json=payload,
+                    headers={'X-Worker-Secret': WORKER_SECRET},
+                    timeout=10.0
+                )
+                if resp.status_code == 200:
+                    logger.info("已通知 Worker %s 更新 Bot %d 设置: %s", node_id, bot_db_id, settings)
+                    return True
+                else:
+                    logger.warning("Worker %s 更新设置失败: %s", node_id, resp.text)
+                    return False
+        except Exception as e:
+            logger.error("通知 Worker %s 更新设置失败: %s", node_id, e)
+            return False
