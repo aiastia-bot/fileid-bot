@@ -24,7 +24,7 @@ on:
       dry_run:
         description: '试运行（不实际删除）'
         required: true
-        default: 'true'
+        default: 'false'
         type: choice
         options:
           - 'true'
