@@ -178,8 +178,8 @@ class BotManager:
             handle_text
         ))
 
-        # 回调按钮（user_forward_callback 优先匹配 ufwd| 前缀）
-        application.add_handler(CallbackQueryHandler(user_forward_callback))
+        # 回调按钮（user_forward_callback 只匹配 ufwd| 前缀，其余交给 button_callback）
+        application.add_handler(CallbackQueryHandler(user_forward_callback, pattern=r'^ufwd\|'))
         application.add_handler(CallbackQueryHandler(button_callback))
 
         # 错误处理（含 Token 撤销检测）
