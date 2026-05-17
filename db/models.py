@@ -41,6 +41,8 @@ class FileMapping(Base):
     created_at: Mapped[str] = mapped_column(String, nullable=True)
     is_valid: Mapped[int] = mapped_column(Integer, default=1)
     bot_db_id: Mapped[int] = mapped_column(Integer, nullable=True)
+    source_chat_id: Mapped[str] = mapped_column(String, nullable=True)
+    source_message_id: Mapped[int] = mapped_column(Integer, nullable=True)
 
 
 class Collection(Base):

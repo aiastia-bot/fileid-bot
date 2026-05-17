@@ -88,7 +88,9 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
         t1 = _time.monotonic()
         bot_db_id = context.bot_data.get('bot_record', {}).get('id')
-        code = await save_file(user_id, file_type, file_id, file_size, file_unique_id, bot_username, code_prefix, bot_db_id=bot_db_id)
+        code = await save_file(user_id, file_type, file_id, file_size, file_unique_id, bot_username, code_prefix,
+                               bot_db_id=bot_db_id,
+                               source_chat_id=str(message.chat_id), source_message_id=message.message_id)
         logger.debug("⏱ handle_attachment save_file user=%s 耗时%.3fs", user_id, _time.monotonic() - t1)
         if not code:
             await _retry_send(message.reply_text, "❌ 保存失败，请重试。")
@@ -593,7 +595,9 @@ async def _save_media_messages(messages, context) -> list:
     for msg in messages:
         file_id, file_type, file_size, file_unique_id = _extract_file_info(msg)
         if file_id and file_type:
-            code = await save_file(uid, file_type, file_id, file_size, file_unique_id, bname, code_prefix, bot_db_id=bot_db_id)
+            code = await save_file(uid, file_type, file_id, file_size, file_unique_id, bname, code_prefix,
+                                   bot_db_id=bot_db_id,
+                                   source_chat_id=str(msg.chat_id), source_message_id=msg.message_id)
             if code:
                 codes.append(code)
                 logger.info("媒体组文件已保存: code=%s file_type=%s user_id=%s chat_id=%s message_id=%s file_unique_id=%s",

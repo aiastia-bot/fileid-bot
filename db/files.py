@@ -54,7 +54,8 @@ async def mark_file_invalid(code: str) -> bool:
 
 async def save_file(user_id: int, file_type: str, file_id: str,
                     file_size: int, file_unique_id: str, bot_username: str,
-                    code_prefix: str, bot_db_id: int = None) -> Optional[str]:
+                    code_prefix: str, bot_db_id: int = None,
+                    source_chat_id: str = None, source_message_id: int = None) -> Optional[str]:
     """保存文件到数据库，返回完整代码"""
     from config import CODE_LENGTH, FILE_TYPE_PREFIX
 
@@ -104,7 +105,8 @@ async def save_file(user_id: int, file_type: str, file_id: str,
                 code=full_code, bot_username=bot_username, file_type=file_type,
                 telegram_file_id=file_id, file_size=file_size,
                 file_unique_id=file_unique_id, user_id=user_id,
-                created_at=now, bot_db_id=bot_db_id
+                created_at=now, bot_db_id=bot_db_id,
+                source_chat_id=source_chat_id, source_message_id=source_message_id
             )
             session.add(fm)
             await session.commit()

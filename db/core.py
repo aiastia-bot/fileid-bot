@@ -139,6 +139,10 @@ async def init_db():
                 await conn.execute(text("ALTER TABLE file_mappings ADD COLUMN is_valid INTEGER DEFAULT 1"))
             if 'bot_db_id' not in columns:
                 await conn.execute(text("ALTER TABLE file_mappings ADD COLUMN bot_db_id INTEGER"))
+            if 'source_chat_id' not in columns:
+                await conn.execute(text("ALTER TABLE file_mappings ADD COLUMN source_chat_id TEXT"))
+            if 'source_message_id' not in columns:
+                await conn.execute(text("ALTER TABLE file_mappings ADD COLUMN source_message_id INTEGER"))
 
             # 检查 node_id 列
             result = await conn.execute(text("PRAGMA table_info(user_bots)"))
