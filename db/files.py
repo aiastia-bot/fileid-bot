@@ -108,6 +108,8 @@ async def save_file(user_id: int, file_type: str, file_id: str,
             )
             session.add(fm)
             await session.commit()
+            logger.info("新文件已写入DB: code=%s file_type=%s bot=%s user_id=%s file_unique_id=%s",
+                        full_code, file_type, bot_username, user_id, file_unique_id)
             return full_code
         except Exception as e:
             if 'unique' in str(e).lower() or 'integrity' in str(e).lower():

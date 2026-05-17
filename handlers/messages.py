@@ -94,6 +94,9 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await _retry_send(message.reply_text, "❌ 保存失败，请重试。")
             return
 
+        logger.info("文件已保存: code=%s file_type=%s user_id=%s chat_id=%s message_id=%s file_unique_id=%s",
+                    code, file_type, user_id, message.chat_id, message.message_id, file_unique_id)
+
         type_name = FILE_TYPE_MAP.get(file_type, file_type)
 
         # 如果正在创建集合，追加文件（立即回复，不缓冲）
@@ -593,6 +596,8 @@ async def _save_media_messages(messages, context) -> list:
             code = await save_file(uid, file_type, file_id, file_size, file_unique_id, bname, code_prefix, bot_db_id=bot_db_id)
             if code:
                 codes.append(code)
+                logger.info("媒体组文件已保存: code=%s file_type=%s user_id=%s chat_id=%s message_id=%s file_unique_id=%s",
+                            code, file_type, uid, msg.chat_id, msg.message_id, file_unique_id)
     return codes
 
 
