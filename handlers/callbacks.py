@@ -80,6 +80,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as e:
         logger.debug("query.answer() 失败 (回调已过期，可忽略): %s", e)
 
+    # === Telegram 回调去重（防止同一回调被投递2次导致重复发送） ===
+    if data and data != "noop":
+        recent_cb_key = f"_rcb_{chat_id}_{data}"
+        if context.bot_data.get(recent_cb_key):
+            logger.warning("回调去重: 重复回调已忽略 data=%r chat_id=%s", data, chat_id)
+            return
+        context.bot_data[recent_cb_key] = True
+        # 5秒后自动清除标记
+        async def _clear_cb_key():
+            await asyncio.sleep(5)
+            context.bot_data.pop(recent_cb_key, None)
+        asyncio.create_task(_clear_cb_key())
+
     # === 防止重复点击：立即移除原消息按钮 ===
     if data != "noop":
         try:
