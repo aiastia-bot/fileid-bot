@@ -126,13 +126,20 @@ async def test_429_cooldown_covers_other_calls_but_not_other_bots():
         async with asyncio.timeout(1):
             while gate.stats["429"] == 0:
                 await asyncio.sleep(0.001)
+        # 冷却截止时间在 stats["429"] 自增前的同一锁块内就已定死，
+        # 因此从观察到 429 起算即可，与中间操作耗时无关（慢 CI 下
+        # 下方 wait_for 本身可能吃掉几十毫秒）。
+        assert not pending.done()  # 同步检查：冷却刚开始，重试不可能已完成
+        cooldown_started_at = time.monotonic()
+
+        # 其他 Bot 的限速器不受影响
         await asyncio.wait_for(
-            request(other, AsyncMock(return_value=True), data={"chat_id": 1}), 0.05
+            request(other, AsyncMock(return_value=True), data={"chat_id": 1}), 1
         )
-        assert not pending.done()
-        start = time.monotonic()
+
+        # 同一 Bot 的其他调用必须等满冷却
         await request(gate, AsyncMock(return_value=True), "getMe")
-        assert time.monotonic() - start >= 0.08
+        assert time.monotonic() - cooldown_started_at >= 0.12 - 0.01
     finally:
         await pending
 
