@@ -73,6 +73,33 @@ async def test_ptb_swallowed_error_is_retryable(database):
         await inbox.stop()
 
 
+async def test_blocked_user_reply_is_not_retried(database):
+    """拉黑/销号是永久错误：一次处理即终结，不进重试队列"""
+    from telegram.error import Forbidden
+
+    async def handler(update):
+        raise Forbidden("Forbidden: bot was blocked by the user")
+
+    inbox = Inbox(lambda key: SimpleNamespace(bot=None, process_update=handler))
+    await inbox.accept("master", {"update_id": 99})
+    inbox.start()
+    try:
+
+        async def done():
+            async with get_session() as session:
+                row = await session.get(UpdateInbox, ("master", 99))
+                return row.state == "completed" and row.attempts == 1
+
+        await until(done)
+        await asyncio.sleep(0.1)
+        # 终结后不再重试
+        async with get_session() as session:
+            row = await session.get(UpdateInbox, ("master", 99))
+            assert row.state == "completed" and row.attempts == 1
+    finally:
+        await inbox.stop()
+
+
 async def test_database_lease_fences_workers(database):
     assert await acquire("bot:1", owner="first")
     assert not await acquire("bot:1", owner="second")
