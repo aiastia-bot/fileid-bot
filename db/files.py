@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from typing import Optional, List, Dict
 
-from sqlalchemy import select, update, func, or_, text
+from sqlalchemy import select, update, delete, func, or_, text
 
 from db.core import get_session, _model_to_dict
 from db.models import FileMapping, Collection
@@ -207,7 +207,12 @@ async def get_file(code: str) -> Optional[Dict]:
 
 
 async def get_files_by_codes(codes: list, bot_db_id: int = None) -> list:
-    """批量根据代码获取文件信息（自动过滤已失效的文件）"""
+    """批量根据代码获取文件信息（自动过滤已失效的文件）
+
+    跨 Bot 同码取回：本 Bot 没有的代码，按 code 找到源行的 file_unique_id，
+    再取本 Bot 的备份行（自己的 telegram_file_id）返回，行内带 requested_code
+    标记用户实际输入的代码。
+    """
     if not codes:
         return []
     async with get_session() as session:
@@ -219,12 +224,45 @@ async def get_files_by_codes(codes: list, bot_db_id: int = None) -> list:
         )
         rows = result.scalars().all()
         results = []
+        found_codes = set()
         for fm in rows:
             f = _model_to_dict(fm)
             # 过滤：如果指定了 bot_db_id，只返回属于该 Bot 的文件
             if bot_db_id and f.get("bot_db_id") and f["bot_db_id"] != bot_db_id:
                 continue
+            found_codes.add(f["code"])
             results.append(f)
+
+        # 跨 Bot 兜底：解析缺失代码对应的本 Bot 备份行
+        if bot_db_id:
+            missing = [c for c in codes if c not in found_codes]
+            if missing:
+                sources = (await session.execute(
+                    select(FileMapping).where(
+                        FileMapping.code.in_(missing),
+                        FileMapping.file_unique_id.isnot(None),
+                        or_(FileMapping.is_valid.is_(None), FileMapping.is_valid == 1)
+                    )
+                )).scalars().all()
+                unique_by_code = {s.code: s.file_unique_id for s in sources}
+                wanted_uniques = set(unique_by_code.values())
+                if wanted_uniques:
+                    mine = (await session.execute(
+                        select(FileMapping).where(
+                            FileMapping.bot_db_id == bot_db_id,
+                            FileMapping.file_unique_id.in_(wanted_uniques),
+                            or_(FileMapping.is_valid.is_(None), FileMapping.is_valid == 1)
+                        )
+                    )).scalars().all()
+                    mine_by_unique = {m.file_unique_id: _model_to_dict(m) for m in mine}
+                    seen = set()
+                    for code in missing:  # 保持调用方传入的顺序
+                        uid = unique_by_code.get(code)
+                        row = mine_by_unique.get(uid) if uid else None
+                        if row and row["id"] not in seen:
+                            seen.add(row["id"])
+                            row = dict(row, requested_code=code)
+                            results.append(row)
         return results
 
 
@@ -352,3 +390,96 @@ async def get_recent_files_for_bot(
         ]
 
 
+
+
+# ==================== 死亡 Bot 记录清理 ====================
+
+async def bot_purge_preview(bot_db_id: int) -> Dict:
+    """清理前统计：文件行数、引用这些文件的集合项、涉及集合数"""
+    from db.models import CollectionItem
+    async with get_session() as session:
+        files = (await session.execute(
+            select(func.count()).select_from(FileMapping)
+            .where(FileMapping.bot_db_id == bot_db_id)
+        )).scalar() or 0
+        items = (await session.execute(
+            select(func.count()).select_from(CollectionItem)
+            .join(FileMapping, FileMapping.code == CollectionItem.file_code)
+            .where(FileMapping.bot_db_id == bot_db_id)
+        )).scalar() or 0
+        collections = (await session.execute(
+            select(func.count(func.distinct(CollectionItem.collection_code)))
+            .select_from(CollectionItem)
+            .join(FileMapping, FileMapping.code == CollectionItem.file_code)
+            .where(FileMapping.bot_db_id == bot_db_id)
+        )).scalar() or 0
+    return {'files': files, 'collection_items': items, 'collections': collections}
+
+
+async def purge_bot_files(bot_db_id: int, batch_size: int = 5000) -> Dict:
+    """永久删除某个 Bot 的全部文件记录（含引用它们的集合项）
+
+    分批删除避免长事务/锁表；bot_file_counts 由数据库触发器自动归零。
+    返回 {deleted_files, removed_items, fixed_collections}。
+    """
+    from db.models import CollectionItem
+    total_files, total_items = 0, 0
+    affected_collections = set()
+    cursor = 0
+    while True:
+        async with get_session() as session:
+            rows = (await session.execute(
+                select(FileMapping.id, FileMapping.code)
+                .where(FileMapping.bot_db_id == bot_db_id,
+                       FileMapping.id > cursor)
+                .order_by(FileMapping.id)
+                .limit(batch_size)
+            )).all()
+            if not rows:
+                break
+            cursor = rows[-1].id
+            codes = [r.code for r in rows]
+            ids = [r.id for r in rows]
+
+            item_rows = (await session.execute(
+                select(CollectionItem.collection_code)
+                .where(CollectionItem.file_code.in_(codes))
+            )).scalars().all()
+            if item_rows:
+                affected_collections.update(item_rows)
+                await session.execute(
+                    delete(CollectionItem).where(CollectionItem.file_code.in_(codes)))
+                total_items += len(item_rows)
+
+            await session.execute(
+                delete(FileMapping).where(FileMapping.id.in_(ids)))
+            total_files += len(rows)
+            await session.commit()
+
+    # 校准受影响集合的 file_count（引用被删文件的项已移除）
+    fixed = 0
+    for col_code in affected_collections:
+        async with get_session() as session:
+            remaining = (await session.execute(
+                select(func.count()).select_from(CollectionItem)
+                .where(CollectionItem.collection_code == col_code)
+            )).scalar() or 0
+            await session.execute(
+                update(Collection).where(Collection.code == col_code)
+                .values(file_count=remaining))
+            await session.commit()
+        fixed += 1
+
+    # 清掉集合文件缓存（引用已变）
+    try:
+        from redis_manager import get_redis
+        r = await get_redis()
+        for col_code in affected_collections:
+            await r.cache_delete(f"col_files:{col_code}")
+    except Exception:
+        logger.debug("purge 后清理集合缓存失败（忽略）", exc_info=True)
+
+    logger.info("清理 Bot %d 的文件记录: files=%d items=%d collections=%d",
+                bot_db_id, total_files, total_items, fixed)
+    return {'deleted_files': total_files, 'removed_items': total_items,
+            'fixed_collections': fixed}

@@ -32,10 +32,18 @@ def generate_raw_code(length: int = CODE_LENGTH) -> str:
 
 
 def parse_file_code(text: str, bot_username: str) -> List[str]:
-    """从文本中解析出所有文件代码"""
+    """从文本中解析出所有文件代码
+
+    本 Bot 前缀 + 通用格式（其他 Bot 备份过来的同资源代码）一起匹配，
+    按出现位置去重排序，实现跨 Bot 同码取回。
+    """
     code_prefix = get_code_prefix(bot_username)
-    pattern = re.compile(rf'{re.escape(code_prefix)}_[pvd]:[A-Za-z0-9]{{{CODE_LENGTH}}}')
-    return pattern.findall(text)
+    specific = re.compile(rf'{re.escape(code_prefix)}_[pvd]:[A-Za-z0-9]{{{CODE_LENGTH}}}')
+    generic = re.compile(rf'[A-Za-z0-9_]+_[pvd]:[A-Za-z0-9]{{{CODE_LENGTH}}}')
+    matches = {m.group(): m.start() for m in generic.finditer(text)}
+    for m in specific.finditer(text):
+        matches.setdefault(m.group(), m.start())
+    return [code for code, _ in sorted(matches.items(), key=lambda kv: kv[1])]
 
 
 def parse_collection_code(text: str, bot_username: str) -> List[str]:

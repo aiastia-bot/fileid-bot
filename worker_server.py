@@ -50,6 +50,7 @@ class WorkerServer:
         app.router.add_post('/internal/stop', self._handle_stop)
         app.router.add_post('/internal/restart', self._handle_restart)
         app.router.add_post('/internal/update_settings', self._handle_update_settings)
+        app.router.add_post('/internal/backup_sync', self._handle_backup_sync)
         app.router.add_post('/internal/status', self._handle_status)
         app.router.add_get('/internal/health', self._handle_health)
 
@@ -228,6 +229,35 @@ class WorkerServer:
 
         logger.info("Worker 更新 Bot %d 内存设置: %s", bot_db_id, ', '.join(updated))
         return web.json_response({'status': 'ok', 'bot_db_id': bot_db_id, 'updated': updated})
+
+    async def _handle_backup_sync(self, request: web.Request) -> web.Response:
+        """存量备份回填：POST /internal/backup_sync
+        Body: {"bot_db_id": 1}
+        在 Bot 所在的 Worker 进程执行（SendQueue 是进程本地的）
+        """
+        if not _verify_secret(request):
+            return web.json_response({'error': 'unauthorized'}, status=403)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({'error': 'invalid json'}, status=400)
+
+        bot_db_id = data.get('bot_db_id')
+        if type(bot_db_id) is not int or bot_db_id <= 0:
+            return web.json_response({'error': 'invalid bot_db_id'}, status=400)
+
+        if not self._bot_manager:
+            return web.json_response({'error': 'bot_manager not ready'}, status=503)
+        if bot_db_id not in self._bot_manager.get_all_apps():
+            return web.json_response({'error': 'bot not running on this worker',
+                                      'bot_db_id': bot_db_id}, status=404)
+
+        from services.backup import _run_sync_local
+        app = self._bot_manager.get_all_apps()[bot_db_id]
+        asyncio.create_task(_run_sync_local(bot_db_id, app))
+        logger.info("Worker 接到 Bot %d 的备份回填任务", bot_db_id)
+        return web.json_response({'status': 'started', 'bot_db_id': bot_db_id})
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         """获取 Worker 状态：GET /internal/status"""

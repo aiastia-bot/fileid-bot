@@ -86,12 +86,13 @@ BASIC_LEVEL = 4
 
 # VIP 特权功能（高等级包含低等级所有特权）
 # forward_mode: Bot 主人可控制发送的图片/视频是否允许转发 (VIP 1+，基础版不含)
+# backup: 级联备份，多 Bot 互备/自动补位 (VIP 2/3 专属)
 VIP_FEATURES = {
-    0: {'forward_mode': False},
-    1: {'forward_mode': True},
-    2: {'forward_mode': True},
-    3: {'forward_mode': True},
-    4: {'forward_mode': False},
+    0: {'forward_mode': False, 'backup': False},
+    1: {'forward_mode': True, 'backup': False},
+    2: {'forward_mode': True, 'backup': True},
+    3: {'forward_mode': True, 'backup': True},
+    4: {'forward_mode': False, 'backup': False},
 }
 
 # 转发模式常量（整数）
@@ -137,6 +138,7 @@ MASTER_USER_COMMANDS = [
     ("delbot", "删除 Bot"),
     ("botstatus", "查看 Bot 运行状态"),
     ("updatetoken", "更新失效的 Token"),
+    ("backup", "级联备份：配置/状态/回填"),
 ]
 
 # 管理员专属（仅管理员的命令菜单可见，普通用户菜单不显示）
@@ -225,6 +227,17 @@ SEND_QUEUE_MAX_RETRIES = int(os.environ.get('SEND_QUEUE_MAX_RETRIES', '3'))
 DATA_RETENTION_DAYS = int(os.environ.get('DATA_RETENTION_DAYS', '30'))
 # Existing installations retain the old behaviour unless explicitly changed.
 FILE_QUOTA_POLICY = os.environ.get('FILE_QUOTA_POLICY', 'retain')  # retain | reject
+
+# ===== 级联备份 =====
+BACKUP_ENABLED = os.environ.get('BACKUP_ENABLED', '1') == '1'   # 全局开关
+BACKUP_FANOUT = int(os.environ.get('BACKUP_FANOUT', '2'))       # 备份 Bot 的分发宽度（主 Bot 固定只推 1 个）
+BACKUP_RECONCILE_INTERVAL = int(os.environ.get('BACKUP_RECONCILE_INTERVAL', '60'))  # 补位检查周期（秒）
+
+# ===== 死亡 Bot 自动清理 =====
+# Token 被撤销(revoked)/被删除(deleted)/被封禁(banned) 超过 N 天后，
+# 自动清理其全部文件记录并移出备份组（期间主人 /updatetoken 恢复即可取消清理）
+# 0 = 禁用自动清理，只靠管理员 /purge 手动清理
+AUTO_PURGE_DEAD_BOT_DAYS = int(os.environ.get('AUTO_PURGE_DEAD_BOT_DAYS', '1'))
 
 
 def validate_config():

@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import AUTO_SEND_INTERVAL, GROUP_SEND_SIZE, FILE_TYPE_MAP
-from db import get_collection, get_collection_files
+from db import get_collection, get_collection_files_for_bot
 from utils import escape_markdown
 from senders import send_file_group, _retry_send
 from send_queue import get_queue_from_context
@@ -319,7 +319,8 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
     """分页发送集合文件：每次发送 PER_PAGE 个，带页码按钮，已发送页显示✅"""
     logger.info("_send_paginated: col_code=%s, sk=%s, page=%d", col_code, sk, page)
 
-    files = await get_collection_files(col_code)
+    _bot_db_id = (context.bot_data.get('bot_record') or {}).get('id')
+    files, _col_missing = await get_collection_files_for_bot(col_code, _bot_db_id)
     col_info = await get_collection(col_code)
 
     if not files or not col_info:
@@ -432,7 +433,8 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
 async def _auto_send(context, chat_id, col_code, user_id, query=None):
     """自动发送集合文件（每组间隔）"""
     logger.info("_auto_send 开始: col_code=%s, chat_id=%s, user_id=%s", col_code, chat_id, user_id)
-    files = await get_collection_files(col_code)
+    _bot_db_id = (context.bot_data.get('bot_record') or {}).get('id')
+    files, _col_missing = await get_collection_files_for_bot(col_code, _bot_db_id)
     col_info = await get_collection(col_code)
     logger.info("_auto_send: 查询到 %d 个文件", len(files) if files else 0)
     if not files or not col_info:
@@ -506,7 +508,8 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
 async def _send_page(context, chat_id, col_code, page, query=None):
     """分页浏览集合（只看列表，不发送文件）"""
     logger.info("_send_page: col_code=%s, page=%d, chat_id=%s", col_code, page, chat_id)
-    files = await get_collection_files(col_code)
+    _bot_db_id = (context.bot_data.get('bot_record') or {}).get('id')
+    files, _col_missing = await get_collection_files_for_bot(col_code, _bot_db_id)
     col_info = await get_collection(col_code)
     logger.info("_send_page: files=%d, col_info=%s", len(files) if files else 0, bool(col_info))
     if not files or not col_info:
@@ -555,7 +558,8 @@ async def _send_page(context, chat_id, col_code, page, query=None):
 async def _send_page_files(context, chat_id, col_code, page, query=None):
     """发送指定页的文件"""
     logger.info("_send_page_files: col_code=%s, page=%d, chat_id=%s", col_code, page, chat_id)
-    files = await get_collection_files(col_code)
+    _bot_db_id = (context.bot_data.get('bot_record') or {}).get('id')
+    files, _col_missing = await get_collection_files_for_bot(col_code, _bot_db_id)
     col_info = await get_collection(col_code)
     logger.info("_send_page_files: files=%d", len(files) if files else 0)
     if not files or not col_info:

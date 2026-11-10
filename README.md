@@ -9,6 +9,7 @@
 - 🏠 **多Bot托管** - 一个服务器运行多个Bot，用户自助管理
 - 🔄 **文件ID互转** - 发送文件获取代码，发送代码获取文件
 - 📦 **集合功能** - 批量打包文件，一次发送多个
+- 🔁 **级联备份** - 多 Bot 互备：A→B，B 分发 C/D；Bot 失效自动补位；同一代码在任意成员 Bot 均可取回
 - 🐳 **Docker部署** - 一键部署，开箱即用
 - 📊 **管理面板** - 平台统计数据一目了然
 - 🌐 **分布式架构** - 支持多机部署，Master-Worker 负载均衡
@@ -214,7 +215,36 @@ curl http://localhost:8080/health
 | `/mybots` | 查看你的Bot列表和状态 |
 | `/delbot @username` | 删除指定Bot |
 | `/botstatus` | 查看Bot运行状态 |
+| `/backup` | 级联备份：配置/状态/回填（见下） |
 | `/platform` | 平台统计（管理员） |
+
+### 级联备份（多 Bot 互备）
+
+前提：所有参与 Bot 都要在 [@BotFather](https://t.me/BotFather) 打开 **Bot-to-Bot Communication Mode**。
+
+```text
+/backup on @主bot @备份1 [@备份2 ...]   # 配置备份组（至少 2 个，均须是本人的 active Bot）
+/backup          # 查看备份树与覆盖情况
+/backup add @bot # 追加成员
+/backup remove @bot
+/backup sync     # 把主 Bot 已有而下游缺的文件批量回填
+/backup off      # 关闭
+```
+
+工作方式：
+
+- 拓扑为树：主 Bot 只推给 1 个备份，备份按 `BACKUP_FANOUT`（默认 2）向下分发，主 Bot 负载恒为 1 份/文件
+- 全部级联：任一成员新保存的文件都会推给自己的下游（接收方静默保存，拿**自己的 file_id** 落库）
+- 自动补位：成员失效（revoked/banned/paused 等）后 ≤ `BACKUP_RECONCILE_INTERVAL` 秒自动重建链路并通知主人
+- 同码取回：把 A 返回的代码发给 B，B 用**自己的** file_id 分发（跨 Bot 靠 `file_unique_id` 关联）
+- 防环：森林拓扑 + 只推向出边 + 目标已有文件即跳过 + 接收方只认配置的父节点
+
+### 存储占用与清理
+
+- 数据库只存「取件凭证」（file_id 字符串等元数据，每行约 300–500 字节），**文件本体始终在 Telegram 服务器**。备份 N 份 = 同一文件 N 行，线性但很慢（1 万文件 × 3 Bot ≈ 45MB/天）。
+- **自动清理**：Bot 失效（Token 撤销/被删/被封）超过 `AUTO_PURGE_DEAD_BOT_DAYS`（默认 1 天）后，自动清理其全部文件记录并移出备份组，通知主人与管理员。宽限期内主人 `/updatetoken` 恢复即取消清理。设为 `0` 禁用，仅手动清理。
+- **手动清理**：管理员 `/purge @bot` — 永久删除该 Bot 的全部文件记录与集合引用（二次确认、分批删除、计数器自动归零、自动移出备份组并补位）。
+- 删除不会自动把磁盘还给操作系统：SQLite 收尾跑 `VACUUM;`，MySQL 跑 `OPTIMIZE TABLE file_mappings;`。
 
 ### 用户Bot命令
 

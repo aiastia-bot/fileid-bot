@@ -59,11 +59,14 @@ async def _auto_stop_revoked_bot(bot_username: str, bot_data: dict):
 
     # A worker records notices; the master sends them through its own limiter.
     try:
-        from config import ADMIN_IDS
+        from config import ADMIN_IDS, AUTO_PURGE_DEAD_BOT_DAYS
         from services.notices import enqueue
+        deadline = (f'{AUTO_PURGE_DEAD_BOT_DAYS} 天后自动清理其文件记录'
+                    if AUTO_PURGE_DEAD_BOT_DAYS > 0 else '文件记录保留，可手动 /purge 清理')
         for admin_id in ADMIN_IDS:
             await enqueue(f'revoked:{bot_db_id}:{admin_id}', admin_id,
-                f'⚠️ Bot @{bot_username} Token 已失效，所有者 {owner_id}，系统已停止该 Bot。')
+                f'⚠️ Bot @{bot_username} Token 已失效，所有者 {owner_id}，系统已停止该 Bot。'
+                f'{deadline}；期内 /updatetoken 可恢复。')
     except Exception:
         logger.exception('Failed recording revoked-bot notice')
 

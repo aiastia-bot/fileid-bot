@@ -1,7 +1,7 @@
 """用户Bot管理相关数据库函数（Async SQLAlchemy）"""
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 
 from sqlalchemy import select, update, func, text
@@ -218,14 +218,14 @@ async def update_user_bot_node(bot_db_id: int, node_id: str) -> bool:
             return False
 
 
-async def get_user_bot_by_username(bot_username: str) -> Optional[Dict]:
-    """根据 bot_username 获取活跃用户Bot"""
+async def get_user_bot_by_username(bot_username: str, include_deleted: bool = False) -> Optional[Dict]:
+    """根据 bot_username 获取用户Bot（默认只返回活跃 Bot；include_deleted 用于清理场景）"""
     async with get_session() as session:
+        query = select(UserBot).where(UserBot.bot_username == bot_username)
+        if not include_deleted:
+            query = query.where(UserBot.status != 'deleted')
         result = await session.execute(
-            select(UserBot).where(
-                UserBot.bot_username == bot_username,
-                UserBot.status != 'deleted'
-            ).order_by(UserBot.created_at.desc()).limit(1)
+            query.order_by(UserBot.created_at.desc()).limit(1)
         )
         bot = result.scalar_one_or_none()
         return _model_to_dict(bot) if bot else None
@@ -381,3 +381,27 @@ async def set_platform_setting(key: str, value: str) -> bool:
         except Exception as e:
             logger.error("设置平台配置失败: %s", e)
             return False
+
+async def get_dead_bots_past_grace(days: int, limit: int = 20,
+                                   not_before: str = None) -> List[Dict]:
+    """死亡超过宽限期的 Bot（revoked/deleted/banned），供自动清理使用
+
+    updated_at 是 "%Y-%m-%d %H:%M:%S" 字符串，字典序即时间序。
+    not_before：只考虑该时刻之后死亡的 Bot（部署基线，保护存量数据）。
+    admin_stopped / paused 属临时状态，不参与自动清理。
+    """
+    if days <= 0:
+        return []
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    async with get_session() as session:
+        query = select(UserBot).where(
+            UserBot.status.in_(['revoked', 'deleted', 'banned']),
+            UserBot.updated_at.isnot(None),
+            UserBot.updated_at < cutoff,
+        )
+        if not_before:
+            query = query.where(UserBot.updated_at >= not_before)
+        rows = (await session.execute(
+            query.order_by(UserBot.updated_at).limit(limit)
+        )).scalars().all()
+    return [_model_to_dict(r) for r in rows]

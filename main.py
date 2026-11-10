@@ -219,6 +219,9 @@ def run_worker():
     worker_server = WorkerServer()
     worker_server.set_bot_manager(bot_manager)
 
+    from services import runtime
+    runtime.configure(bot_manager=bot_manager)
+
     # 全局引用
     sys.modules['__main__'].bot_manager = bot_manager
 
@@ -250,6 +253,11 @@ def _start_vip_expire_job(application: Application):
         await handle_expired_vips()
         await reconcile_all()
         await deliver(context.bot)
+        from services.maintenance import auto_purge_dead_bots
+        try:
+            await auto_purge_dead_bots()
+        except Exception:
+            logger.exception("死亡 Bot 自动清理异常")
 
     async def reminders(context):
         await send_expire_reminders()
@@ -258,6 +266,21 @@ def _start_vip_expire_job(application: Application):
     application.job_queue.run_repeating(renew_master, interval=20, first=1, name='master-lease')
     application.job_queue.run_repeating(maintenance, interval=30, first=5, name='membership-orders', job_kwargs={'max_instances': 1})
     application.job_queue.run_repeating(reminders, interval=86400, first=120, name='reminders-maintenance')
+
+    # 级联备份补位检查（Bot 失效后自动重建链路并通知主人）
+    from config import BACKUP_ENABLED, BACKUP_RECONCILE_INTERVAL
+    if BACKUP_ENABLED:
+        from services.backup import reconcile_all
+
+        async def backup_reconcile(context):
+            try:
+                await reconcile_all()
+            except Exception:
+                logger.exception("备份补位任务异常")
+
+        application.job_queue.run_repeating(
+            backup_reconcile, interval=BACKUP_RECONCILE_INTERVAL,
+            first=15, name='backup-reconcile', job_kwargs={'max_instances': 1})
 
 
 def _register_master_handlers(application: Application):
@@ -326,10 +349,19 @@ def _register_master_handlers(application: Application):
     application.add_handler(CommandHandler("setfree", set_free_cmd))
     application.add_handler(CommandHandler("helpadmin", help_admin_cmd))
 
+    # 级联备份（面向所有 Bot 主人）
+    from handlers.master.backup import backup_command
+    application.add_handler(CommandHandler("backup", backup_command))
+
     # VIP 转发保护设置（Bot 主人设置转发模式）
     from handlers.master.manage import forward_mode_callback, auto_delete_callback
     application.add_handler(CallbackQueryHandler(forward_mode_callback, pattern=r'^fwd_'))
     application.add_handler(CallbackQueryHandler(auto_delete_callback, pattern=r'^adel_'))
+
+    # 死亡 Bot 记录清理（管理员）
+    from handlers.master.manage import purge_cmd, purge_bot_callback
+    application.add_handler(CommandHandler("purge", purge_cmd))
+    application.add_handler(CallbackQueryHandler(purge_bot_callback, pattern=r'^purge_'))
 
     # VIP / 星星支付
     from handlers.master.stars import (

@@ -5,12 +5,13 @@ from db.files import (  # noqa: F401
     save_file, get_file, get_files_by_codes, mark_file_invalid,
     get_active_bot_files, get_all_files_for_export,
     get_files_by_bot_username, get_files_by_bot_db_id,
-    stream_files_by_bot_db_id,
+    stream_files_by_bot_db_id, bot_purge_preview, purge_bot_files,
 )
 from db.collections import (  # noqa: F401
     get_collection, get_collection_by_id, get_collection_files, create_collection,
     add_file_to_collection, complete_collection, delete_collection,
     get_user_collections, batch_add_codes_to_collection,
+    get_collection_items_codes, get_collection_files_for_bot,
 )
 from db.bots import (  # noqa: F401
     add_user_bot, get_user_bots_by_owner, get_user_bot_by_id,
@@ -20,6 +21,7 @@ from db.bots import (  # noqa: F401
     delete_user_bot, update_user_bot_status, update_user_bot_token,
     get_all_active_user_bots, update_user_bot_node, get_active_bots_by_node,
     get_user_bot_by_username, unban_user_bots,
+    get_dead_bots_past_grace,
     add_to_blacklist, remove_from_blacklist, is_user_blacklisted,
     get_blacklist, get_blacklist_count,
     get_platform_setting, set_platform_setting,
@@ -52,4 +54,11 @@ from db.gifts import (  # noqa: F401
 )
 from db.migrations import (  # noqa: F401
     create_migration, get_migration, claim_migration,
+)
+from db.backup import (  # noqa: F401
+    build_edges, get_backup_config, set_backup_members, add_backup_member,
+    remove_backup_member, disable_backup, get_all_backup_configs,
+    get_backup_children, get_backup_parent_telegram_ids, has_file,
+    missing_files_for, coverage_stats, get_owner_edges, reconcile_owner,
+    remove_bot_from_backup,
 )

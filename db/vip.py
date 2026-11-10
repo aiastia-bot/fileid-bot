@@ -144,6 +144,12 @@ async def get_user_vip_level(user_id: int) -> int:
     return info['vip_level'] if info['vip_level'] == BASIC_LEVEL else info['effective_level']
 
 
+async def user_can_use_backup(user_id: int) -> bool:
+    """级联备份是 VIP 2/3 专属特权（按 VIP_FEATURES 判定，管理员另行放行）"""
+    level = await get_user_vip_level(user_id)
+    return bool(VIP_FEATURES.get(level, {}).get('backup'))
+
+
 async def get_user_vip_info(user_id: int) -> Dict:
     from services.membership import get_plan
     user = await get_or_create_user(user_id)

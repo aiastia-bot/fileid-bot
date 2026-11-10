@@ -10,6 +10,7 @@ from db import (
     delete_user_bot as db_delete_user_bot,
     update_user_bot_status, update_user_bot_token,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
+    get_user_bot_by_username,
     set_bot_forward_mode, set_bot_auto_delete,
     get_user_vip_level,
 )
@@ -769,3 +770,96 @@ async def auto_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 logger.debug("编辑自动删除消息失败: %s", e)
         else:
             await query.answer("❌ 设置失败，请重试", show_alert=True)
+
+
+# ==================== /purge 死亡 Bot 记录清理 ====================
+
+async def purge_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/purge @bot — 管理员清理死亡 Bot 的全部文件记录（二次确认）"""
+    from config import ADMIN_IDS
+    from db import bot_purge_preview
+
+    if update.effective_user.id not in ADMIN_IDS:
+        await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
+        return
+
+    if not context.args:
+        await _retry_send(update.message.reply_text,
+            "用法：<code>/purge @bot</code> — 永久删除该 Bot 的全部文件记录\n\n"
+            "用于回收已死亡（ revoked/banned/deleted/暂停 ）Bot 占用的空间。\n"
+            "⚠️ 不可恢复；会同时把它移出备份组并触发补位。",
+            parse_mode='HTML')
+        return
+
+    username = context.args[0].strip().lstrip('@')
+    bot = await get_user_bot_by_username(username, include_deleted=True)
+    if not bot:
+        await _retry_send(update.message.reply_text, f"❌ 找不到 Bot @{username}")
+        return
+
+    bot_db_id = bot['id']
+    stats = await bot_purge_preview(bot_db_id)
+    status = bot.get('status', '?')
+    alive = status == 'active'
+
+    text = (
+        f"🗑 <b>清理预览 — @{bot['bot_username']}</b> (状态: {status})\n\n"
+        f"• 文件记录：{stats['files']:,} 条\n"
+        f"• 引用它们的集合项：{stats['collection_items']:,} 条（涉及 {stats['collections']} 个集合）\n\n"
+        "删除后不可恢复；计数器自动归零；若它在备份组中会同时移除并补位。\n"
+    )
+    if alive:
+        text += "\n⚠️ 注意：该 Bot 仍在运行（active），确认它确实不再使用。"
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🗑 确认永久删除",
+                             callback_data=f"purge_bot|{bot_db_id}"),
+        InlineKeyboardButton("取消", callback_data="purge_cancel"),
+    ]])
+    await _retry_send(update.message.reply_text, text,
+                      parse_mode='HTML', reply_markup=keyboard)
+
+
+async def purge_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """确认按钮：执行清理"""
+    from config import ADMIN_IDS
+    from db import bot_purge_preview, purge_bot_files, remove_bot_from_backup
+
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.callback_query.answer("仅限管理员", show_alert=True)
+        return
+    await update.callback_query.answer()
+
+    if update.callback_query.data == 'purge_cancel':
+        await update.callback_query.edit_message_text("已取消。")
+        return
+
+    _, _, bot_db_id = update.callback_query.data.partition('|')
+    bot_db_id = int(bot_db_id)
+    bot = await get_user_bot_by_id(bot_db_id)
+    if not bot:
+        await update.callback_query.edit_message_text("❌ Bot 不存在（可能已被处理）")
+        return
+
+    before = await bot_purge_preview(bot_db_id)
+    if before['files'] == 0:
+        await update.callback_query.edit_message_text(
+            f"ℹ️ @{bot['bot_username']} 没有可清理的文件记录。")
+        return
+
+    result = await purge_bot_files(bot_db_id)
+    owner_id = await remove_bot_from_backup(bot_db_id)
+
+    text = (
+        f"✅ 已清理 @{bot['bot_username']} 的记录\n\n"
+        f"• 删除文件记录：{result['deleted_files']:,} 条\n"
+        f"• 移除集合项：{result['removed_items']:,} 条"
+        f"（校准 {result['fixed_collections']} 个集合）\n"
+    )
+    if owner_id:
+        text += f"• 已移出备份组并触发主人 {owner_id} 的链路补位\n"
+    text += ("\n💾 SQLite 用户可执行 <code>VACUUM;</code> 把磁盘空间实际归还系统；"
+             "MySQL 用 <code>OPTIMIZE TABLE file_mappings;</code>")
+    await update.callback_query.edit_message_text(text, parse_mode='HTML')
+    logger.info("管理员 %s 清理了 Bot %d (@%s): %s",
+                update.effective_user.id, bot_db_id, bot['bot_username'], result)

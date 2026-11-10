@@ -11,12 +11,52 @@ from config import MAX_COLLECTION_FILES, GROUP_SEND_SIZE, FILE_TYPE_MAP
 from config import RATE_LIMIT_WINDOW, RATE_LIMIT_MAX, RATE_LIMIT_MAX_WAIT
 from db import (
     save_file, get_file, get_files_by_codes, get_collection, get_collection_files,
+    get_collection_files_for_bot,
     create_collection, add_file_to_collection, get_user_forward_protect,
 )
 from db.files import is_bot_over_file_quota
 from utils import get_code_prefix, escape_markdown, generate_raw_code, parse_file_code, parse_collection_code
 from senders import send_file_group, _retry_send
 from send_queue import get_queue_from_context, split_files_to_batches
+from services.backup import kick_propagate
+
+
+# ===== 级联备份：来自其他 Bot 的消息 =====
+
+def _is_bot_sender(update: Update) -> bool:
+    user = getattr(update, 'effective_user', None)
+    return bool(user and user.is_bot)
+
+
+async def _resolve_backup_sender(update: Update, context) -> bool:
+    """来信 Bot 是否为我配置的备份父节点（白名单），未知 Bot 一律拒绝"""
+    from db import get_backup_parent_telegram_ids
+    my_bot_db_id = (context.bot_data.get('bot_record') or {}).get('id')
+    if not my_bot_db_id:
+        return False
+    parents = await get_backup_parent_telegram_ids(my_bot_db_id)
+    return update.effective_user.id in parents
+
+
+async def _save_backup_media(update: Update, context) -> None:
+    """静默保存父节点推来的备份文件并继续级联（不回复、不限流）"""
+    message = update.message
+    file_id, file_type, file_size, file_unique_id = _extract_file_info(message)
+    if not file_id:
+        return
+    bot_record = context.bot_data.get('bot_record') or {}
+    bot_username = context.bot.username
+    code = await save_file(0, file_type, file_id, file_size, file_unique_id, bot_username,
+                           get_code_prefix(bot_username),
+                           bot_db_id=bot_record.get('id'),
+                           source_chat_id=str(message.chat_id),
+                           source_message_id=message.message_id)
+    if code:
+        kick_propagate(context, [{'code': code, 'telegram_file_id': file_id,
+                                  'file_type': file_type, 'file_size': file_size,
+                                  'file_unique_id': file_unique_id}])
+    logger.info("备份文件已接收: code=%s file_type=%s from=%s",
+                code, file_type, update.effective_user.username or update.effective_user.id)
 
 
 async def _is_over_file_quota(context) -> bool:
@@ -109,6 +149,9 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_id = update.effective_user.id
     bot_username = context.bot.username
 
+    if _is_bot_sender(update):
+        return  # Bot 来信由 handle_group_media 的备份分支处理，不当作用户上传
+
     # 用户级限流（排队等待）
     if not await _rate_limit_wait(user_id, bot_username):
         await _retry_send(message.reply_text, "⚠️ 操作太频繁，请稍后再试。")
@@ -137,6 +180,11 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
         logger.info("文件已保存: code=%s file_type=%s user_id=%s chat_id=%s message_id=%s file_unique_id=%s",
                     code, file_type, user_id, message.chat_id, message.message_id, file_unique_id)
+
+        # 级联备份：推给下游节点（fire-and-forget，不阻塞回复）
+        kick_propagate(context, [{'code': code, 'telegram_file_id': file_id,
+                                  'file_type': file_type, 'file_size': file_size,
+                                  'file_unique_id': file_unique_id}])
 
         type_name = FILE_TYPE_MAP.get(file_type, file_type)
 
@@ -254,6 +302,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message = update.message
     if not message or not message.text:
         return
+    if _is_bot_sender(update):
+        return  # 不解析其他 Bot 发来的文本，避免代码往复请求
 
     text = message.text.strip()
     bot_username = context.bot.username
@@ -364,7 +414,8 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
     found_files = await get_files_by_codes(file_codes, current_bot_db_id)
     logger.debug("⏱ _process_file_codes get_files_by_codes(%d codes) 耗时%.3fs", len(file_codes), _time.monotonic() - t1)
 
-    found_codes = {f['code'] for f in found_files}
+    # requested_code：跨 Bot 同码取回时用户实际输入的代码
+    found_codes = {f.get('requested_code') or f['code'] for f in found_files}
     not_found = [c for c in file_codes if c not in found_codes]
 
     if found_files:
@@ -435,9 +486,11 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
         logger.debug("⏱ _process_collection_codes get_collection(%s) 耗时%.3fs", col_code, _time.monotonic() - t1)
 
         current_bot_db_id_col = context.bot_data.get("bot_record", {}).get("id")
-        if not col_info or (current_bot_db_id_col and col_info.get('bot_db_id') and col_info["bot_db_id"] != current_bot_db_id_col):
+        if not col_info:
             await _retry_send(message.reply_text, f"❌ 集合不存在: `{col_code}`", parse_mode="Markdown")
             continue
+        # 跨 Bot 同码取回：别的 Bot 创建的集合也可在本 Bot 使用，
+        # 文件按本 Bot 的备份行（自己的 file_id）解析
 
         safe_name = escape_markdown(col_info['name'])
         if col_info['status'] != 'completed':
@@ -445,8 +498,9 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
             continue
 
         t2 = _time.monotonic()
-        files = await get_collection_files(col_code)
-        logger.debug("⏱ _process_collection_codes get_collection_files(%s) 耗时%.3fs files=%d", col_code, _time.monotonic() - t2, len(files) if files else 0)
+        files, missing_count = await get_collection_files_for_bot(col_code, current_bot_db_id_col)
+        logger.debug("⏱ _process_collection_codes get_collection_files_for_bot(%s) 耗时%.3fs files=%d missing=%d",
+                     col_code, _time.monotonic() - t2, len(files), missing_count)
 
         if not files:
             await _retry_send(message.reply_text, f"⚠️ 集合「{safe_name}」为空。")
@@ -463,6 +517,8 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
         logger.debug("⏱ _process_collection_codes _short_key 耗时%.3fs", _time.monotonic() - t3)
 
         col_text = f"📦 *集合「{safe_name}」*\n\n📊 共 {total_files} 个文件\n📋 {type_stats_text}\n\n请选择操作："
+        if missing_count:
+            col_text += f"\n⚠️ 有 {missing_count} 个文件尚未同步到本 Bot，将跳过"
         keyboard = [
             [InlineKeyboardButton("📖 分页发送", callback_data=f"s|{sk}")],
             [InlineKeyboardButton("▶️ 自动发送", callback_data=f"a|{sk}")],
@@ -480,6 +536,8 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
 async def handle_forward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理转发的非媒体消息"""
     message = update.message
+    if _is_bot_sender(update):
+        return  # 忽略其他 Bot 的转发
     if message.document or message.photo or message.video or message.audio or message.voice:
         await handle_attachment(update, context)
     elif message.text:
@@ -493,6 +551,16 @@ async def handle_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
     message = update.message
     if not message:
         return
+
+    # ===== 备份分支：来自配置父节点的 Bot 推送，静默保存并级联 =====
+    if _is_bot_sender(update):
+        if not await _resolve_backup_sender(update, context):
+            logger.info("忽略未知 Bot 的媒体消息: from=%s", update.effective_user.id)
+            return
+        if not message.media_group_id:
+            await _save_backup_media(update, context)
+            return
+        # 媒体组走下方缓冲流程，但标记 silent 不回复
 
     logger.info("handle_group_media 触发: photo=%s, video=%s, document=%s, audio=%s, voice=%s, media_group_id=%s",
                 bool(message.photo), bool(message.video), bool(message.document),
@@ -512,6 +580,8 @@ async def handle_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     group_data = context.bot_data['pending_media_groups'][media_group_id]
     group_data['messages'].append(message)
+    if _is_bot_sender(update):
+        group_data['silent'] = True   # 备份推送：保存但不回复
     if group_data['timer']:
         group_data['timer'].cancel()
 
@@ -522,6 +592,8 @@ async def handle_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not msgs:
                 return
             codes, over_count = await _save_media_messages(msgs, context)
+            if group_data.get('silent'):
+                return  # 备份推送静默，_save_media_messages 内部已级联
             if codes or over_count:
                 creating_col = context.user_data.get('creating_collection')
                 if creating_col and codes:
@@ -552,6 +624,8 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
     message = update.message
     if not message:
         return
+    if _is_bot_sender(update):
+        return  # 忽略其他 Bot 的转发媒体
 
     logger.info("转发媒体: media_group_id=%s, photo=%s, video=%s, doc=%s",
                 message.media_group_id, bool(message.photo), bool(message.video), bool(message.document))
@@ -680,6 +754,7 @@ async def _save_media_messages(messages, context) -> tuple:
     owner_id = bot_record.get('owner_id')
     codes = []
     over_count = 0
+    saved_files = []
 
     for msg in messages:
         file_id, file_type, file_size, file_unique_id = _extract_file_info(msg)
@@ -688,6 +763,9 @@ async def _save_media_messages(messages, context) -> tuple:
                                    bot_db_id=bot_db_id,
                                    source_chat_id=str(msg.chat_id), source_message_id=msg.message_id)
             if code:
+                saved_files.append({'code': code, 'telegram_file_id': file_id,
+                                    'file_type': file_type, 'file_size': file_size,
+                                    'file_unique_id': file_unique_id})
                 over = await is_bot_over_file_quota(bot_db_id, owner_id)
                 if over:
                     over_count += 1
@@ -695,6 +773,8 @@ async def _save_media_messages(messages, context) -> tuple:
                     codes.append(code)
                 logger.info("媒体组文件已保存: code=%s file_type=%s user_id=%s chat_id=%s message_id=%s file_unique_id=%s over_quota=%s",
                             code, file_type, uid, msg.chat_id, msg.message_id, file_unique_id, over)
+    # 级联备份：推给下游节点（fire-and-forget，不阻塞回复）
+    kick_propagate(context, saved_files)
     return codes, over_count
 
 

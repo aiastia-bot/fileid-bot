@@ -259,3 +259,39 @@ class UserNotice(Base):
     state: Mapped[str] = mapped_column(String(16), default='pending', index=True)
     available_at: Mapped[int] = mapped_column(BigInteger, default=0)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class BackupConfig(Base):
+    """用户的级联备份配置（每主人一条，enabled=1 时生效）"""
+    __tablename__ = 'backup_configs'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[str] = mapped_column(String(32))
+    updated_at: Mapped[str] = mapped_column(String(32))
+
+
+class BackupMember(Base):
+    """备份组成员（有序）：position=0 是主 Bot，其余按顺序参与补位"""
+    __tablename__ = 'backup_members'
+    __table_args__ = (UniqueConstraint('owner_id', 'bot_db_id', name='uq_backup_member'),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    bot_db_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[str] = mapped_column(String(32))
+
+
+class BackupEdge(Base):
+    """备份推送路由边（from 推给 to），由拓扑重建派生维护，不手工编辑"""
+    __tablename__ = 'backup_edges'
+    __table_args__ = (UniqueConstraint('from_bot_db_id', 'to_bot_db_id', name='uq_backup_edge'),
+                      Index('idx_backup_edge_to', 'to_bot_db_id'),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    from_bot_db_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    to_bot_db_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[str] = mapped_column(String(32))
+

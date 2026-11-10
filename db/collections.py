@@ -260,3 +260,36 @@ async def get_user_collections(user_id: int, limit: int = 20, bot_db_id: int = N
             {'code': r[0], 'name': r[1], 'file_count': r[2], 'status': r[3], 'created_at': r[4]}
             for r in rows
         ]
+
+async def get_collection_items_codes(col_code: str) -> List[str]:
+    """集合项的文件代码列表（按 sort_order，不去重——重复项如实返回）"""
+    async with get_session() as session:
+        rows = (await session.execute(
+            select(CollectionItem.file_code)
+            .where(CollectionItem.collection_code == col_code)
+            .order_by(CollectionItem.sort_order)
+        )).scalars().all()
+    return list(rows)
+
+
+async def get_collection_files_for_bot(col_code: str, bot_db_id: int = None) -> tuple:
+    """按接收 Bot 解析集合文件，返回 (files, missing_count)
+
+    优先本 Bot 自己的行（自己的 file_id）；不在本 Bot 的文件走跨 Bot
+    同码兜底（file_unique_id → 本 Bot 备份行）。缺失的文件计入 missing，
+    不阻断其余文件的发送。
+    """
+    from db.files import get_files_by_codes
+    codes = await get_collection_items_codes(col_code)
+    if not codes:
+        return [], 0
+    found = await get_files_by_codes(codes, bot_db_id)
+    by_code = {f.get('requested_code') or f['code']: f for f in found}
+    files, missing = [], 0
+    for code in codes:  # 保持集合顺序，重复项重复出现
+        row = by_code.get(code)
+        if row:
+            files.append(row)
+        else:
+            missing += 1
+    return files, missing
