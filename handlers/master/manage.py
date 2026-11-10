@@ -410,7 +410,7 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     test_bot = None
     try:
         test_bot = Bot(token=token)
-        bot_info = await test_bot.get_me()
+        bot_info = await _retry_send(test_bot.get_me)
     except Exception as e:
         await status_msg.edit_text(
             f"❌ Token 校验失败：{escape(str(e)[:100])}\n\n请检查 Token 是否正确。"

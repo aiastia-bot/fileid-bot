@@ -159,7 +159,7 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
     test_bot = None
     try:
         test_bot = Bot(token=token)
-        bot_info = await test_bot.get_me()
+        bot_info = await _retry_send(test_bot.get_me)
     except Exception as e:
         await status_msg.edit_text(
             f"❌ Token 校验失败：{escape(str(e)[:100])}\n\n请重新输入正确的 Token。"
@@ -322,7 +322,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     test_bot = None
     try:
         test_bot = Bot(token=token)
-        bot_info = await test_bot.get_me()
+        bot_info = await _retry_send(test_bot.get_me)
     except Exception as e:
         await status_msg.edit_text(f"❌ Token 校验失败：{escape(str(e)[:100])}\n\n请检查Token是否正确。")
         return

@@ -32,10 +32,10 @@ MAX_BOTS_PER_USER = int(os.environ.get('MAX_BOTS_PER_USER', '1'))  # 每个用�
 # ===== 发送限速与重试配置 =====
 SEND_RETRY_COUNT = int(os.environ.get('SEND_RETRY_COUNT', '3'))       # 发送失败重试次数
 SEND_RETRY_DELAY = float(os.environ.get('SEND_RETRY_DELAY', '2.0'))   # 重试基础延迟（秒），实际延迟 = delay * (2 ^ retry_count)
-SEND_BATCH_DELAY = float(os.environ.get('SEND_BATCH_DELAY', '1.5'))   # 每组发送之间的延迟（秒）
+SEND_BATCH_DELAY = float(os.environ.get('SEND_BATCH_DELAY', '0.05'))   # 每组发送之间的延迟（秒）
 SEND_INDIVIDUAL_DELAY = float(os.environ.get('SEND_INDIVIDUAL_DELAY', '1'))  # 单个文件发送之间的延迟（秒）
 SEND_MAX_FILES_PER_REQUEST = int(os.environ.get('SEND_MAX_FILES_PER_REQUEST', '30'))  # 单次请求最大发送文件数
-SEND_MIN_INTERVAL = float(os.environ.get('SEND_MIN_INTERVAL', '1.5'))  # 每 Bot 最小发送间隔（秒），避免并发叠加
+SEND_MIN_INTERVAL = float(os.environ.get('SEND_MIN_INTERVAL', '0'))  # 每 Bot 最小发送间隔（秒），避免并发叠加
 API_READ_TIMEOUT = float(os.environ.get('API_READ_TIMEOUT', '30.0'))   # Telegram API 读取超时（秒）
 API_WRITE_TIMEOUT = float(os.environ.get('API_WRITE_TIMEOUT', '30.0')) # Telegram API 写入超时（秒）
 API_CONNECT_TIMEOUT = float(os.environ.get('API_CONNECT_TIMEOUT', '10.0'))  # Telegram API 连接超时（秒）
@@ -242,9 +242,28 @@ def validate_config():
         raise ValueError('Worker requires WORKER_URL, MASTER_URL, WORKER_WEBHOOK_HOST and BOT_MODE=webhook')
     if ROLE == 'worker' and NODE_ID == 'local':
         raise ValueError('Worker requires a unique NODE_ID other than local')
+    import math
+    for value in (API_MESSAGES_PER_SECOND, API_PRIVATE_INTERVAL, API_GROUP_INTERVAL, API_EDIT_INTERVAL):
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError('API message rate and chat/edit intervals must be positive and finite')
+    for value in (BOT_MIN_API_INTERVAL, API_429_JITTER, RETRY_AFTER_MAX_WAIT):
+        if not math.isfinite(value) or value < 0:
+            raise ValueError('API pacing, jitter and retry wait must be non-negative and finite')
+    if API_MAX_INFLIGHT <= 0 or API_429_RETRIES < 0:
+        raise ValueError('API_MAX_INFLIGHT must be positive and API_429_RETRIES non-negative')
     if FILE_QUOTA_POLICY not in ('retain', 'reject'):
         raise ValueError('FILE_QUOTA_POLICY must be retain or reject')
     for value in (INBOX_WORKERS, INBOX_MAX_ATTEMPTS, SEND_QUEUE_MAX_PENDING,
                   SEND_QUEUE_MAX_PER_USER, SEND_QUEUE_MAX_RETRIES, PER_BOT_CONCURRENCY, DATA_RETENTION_DAYS):
         if value <= 0:
             raise ValueError('Concurrency, queue, retry and retention limits must be positive')
+
+
+# Unified Telegram API pacing. Albums count their individual media items.
+API_MESSAGES_PER_SECOND = float(os.environ.get('API_MESSAGES_PER_SECOND', '20'))
+API_PRIVATE_INTERVAL = float(os.environ.get('API_PRIVATE_INTERVAL', '1.1'))
+API_GROUP_INTERVAL = float(os.environ.get('API_GROUP_INTERVAL', '3.2'))
+API_EDIT_INTERVAL = float(os.environ.get('API_EDIT_INTERVAL', '2.0'))
+API_MAX_INFLIGHT = int(os.environ.get('API_MAX_INFLIGHT', '8'))
+API_429_RETRIES = int(os.environ.get('API_429_RETRIES', '2'))
+API_429_JITTER = float(os.environ.get('API_429_JITTER', '0.2'))

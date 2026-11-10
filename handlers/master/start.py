@@ -115,21 +115,9 @@ async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     from config import BOT_TOKEN
     token = None
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/getManagedBotToken",
-                json={"user_id": bot_id},
-                timeout=30
-            )
-            data = resp.json()
-            if data.get("ok"):
-                token = data.get("result")
-                logger.info("成功获取 managed bot token for @%s", bot_username)
-            else:
-                logger.error("getManagedBotToken API 返回错误: %s", data.get("description"))
-                return
-    except Exception as e:
-        logger.error("调用 getManagedBotToken API 失败: %s", e)
+        token = await context.bot.get_managed_bot_token(user_id=bot_id)
+    except Exception as error:
+        logger.warning('getManagedBotToken failed: %s', type(error).__name__)
         return
 
     if not token:

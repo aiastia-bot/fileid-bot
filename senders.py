@@ -30,106 +30,17 @@ from db import mark_file_invalid
 logger = logging.getLogger(__name__)
 
 
-# ===== Per-Bot 全局 API 限速器 =====
-# 解决核心问题：Handler 中的 query.answer / edit_message / send_message 等调用
-# 不经过发送队列，导致与 send_batch 同时并发，触发 Telegram 429
-
-class _BotRateLimiter:
-    """Per-Bot 的 API 调用限速器（令牌桶模式）
-    
-    - 每个 Bot 独立限速，互不影响
-    - 保证同一个 Bot 的所有 API 调用（包括 handler 中的非文件发送调用）
-      都受到 BOT_MIN_API_INTERVAL 的间隔限制
-    - 使用 asyncio.Lock 保证串行化，避免并发调用叠加
-    """
-    def __init__(self):
-        self._bot_locks: Dict[str, asyncio.Lock] = {}
-        self._bot_last_call: Dict[str, float] = {}
-
-    def _get_lock(self, bot_name: str) -> asyncio.Lock:
-        if bot_name not in self._bot_locks:
-            self._bot_locks[bot_name] = asyncio.Lock()
-        return self._bot_locks[bot_name]
-
-    async def acquire(self, bot_name: str):
-        """获取发送许可，等待最小间隔后返回"""
-        lock = self._get_lock(bot_name)
-        await lock.acquire()
-        try:
-            now = time.monotonic()
-            last = self._bot_last_call.get(bot_name, 0.0)
-            wait = BOT_MIN_API_INTERVAL - (now - last)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._bot_last_call[bot_name] = time.monotonic()
-        except Exception:
-            lock.release()
-            raise
-        return lock
-
-    def release(self, bot_name: str):
-        lock = self._bot_locks.get(bot_name)
-        if lock and lock.locked():
-            lock.release()
-
-    def update_time(self, bot_name: str):
-        """更新 Bot 的最后调用时间（用于 RetryAfter 等待后刷新）"""
-        self._bot_last_call[bot_name] = time.monotonic()
-
-    def remove(self, bot_name: str):
-        """移除 Bot 的限速锁和状态（Bot 停止时调用，防止 dict 无限增长）"""
-        self._bot_locks.pop(bot_name, None)
-        self._bot_last_call.pop(bot_name, None)
-
-
-# 全局单例
-_rate_limiter = _BotRateLimiter()
-
-
-def _extract_bot_name(send_func) -> str:
-    """从 send_func 中尝试提取 Bot 用户名（用于限速器标识和日志）
-
-    同时被 bot_api_call 和 _retry_send 复用，避免两份重复实现。
-    """
-    try:
-        bound_self = getattr(send_func, '__self__', None)
-        if bound_self is None:
-            return ''
-        # Bot 对象（如 bot.send_photo）
-        username = getattr(bound_self, 'username', None)
-        if username:
-            return f'@{username}'
-        # Message 对象（如 message.reply_text）→ 通过 get_bot() 获取
-        get_bot = getattr(bound_self, 'get_bot', None)
-        if get_bot:
-            bot = get_bot()
-            username = getattr(bot, 'username', None)
-            if username:
-                return f'@{username}'
-    except Exception:
-        pass
-    return ''
+def _bound_bot(send_func):
+    bound = getattr(send_func, '__self__', None)
+    if hasattr(bound, 'token'):
+        return bound
+    get_bot = getattr(bound, 'get_bot', None)
+    return get_bot() if get_bot else None
 
 
 async def bot_api_call(send_func, *args, **kwargs):
-    """全局限速的 Telegram API 调用（推荐所有 API 调用都通过此函数）
-
-    用法:
-        # 旧写法（无限速）:
-        await context.bot.send_message(chat_id=chat_id, text="hello")
-
-        # 新写法（限速）:
-        from senders import bot_api_call
-        await bot_api_call(context.bot.send_message, chat_id=chat_id, text="hello")
-
-    对 _retry_send 的包装，增加了 per-bot 全局间隔控制。
-    """
-    bot_name = _extract_bot_name(send_func)
-    lock = await _rate_limiter.acquire(bot_name)
-    try:
-        return await send_func(*args, **kwargs)
-    finally:
-        _rate_limiter.release(bot_name)
+    """Compatibility wrapper; ExtBot routes direct and wrapped calls identically."""
+    return await _retry_send(send_func, *args, **kwargs)
 
 
 def _is_invalid_file_error(e):
@@ -149,113 +60,39 @@ class SendBlockedError(Exception):
 
 
 async def _retry_send(send_func, *args, **kwargs):
-    """
-    通用重试包装器：带指数退避的重试机制 + per-bot 全局限速
-    - 每次 API 调用前自动等待 BOT_MIN_API_INTERVAL
-    - RetryAfter（429 Flood）等待指定时间后重试，并刷新限速器时间
-    - TimedOut / NetworkError 自动重试（指数退避）
-    - BadRequest（file_id无效）不重试
-    - 最多重试 SEND_RETRY_COUNT 次
-    """
-    bot_label = _extract_bot_name(send_func)
-    last_exception = None
-    for attempt in range(SEND_RETRY_COUNT + 1):
+    """Network retries only. The ExtBot hook exclusively owns 429 retries."""
+    from services.rate_limit import get_limiter
+    bot = _bound_bot(send_func)
+    managed = getattr(bot, 'rate_limiter', None) is not None
+    for attempt in range(SEND_RETRY_COUNT+1):
         try:
-            # 全局限速：保证同一 Bot 的 API 调用间隔
-            lock = await _rate_limiter.acquire(bot_label)
-            try:
-                result = await send_func(*args, **kwargs)
-            finally:
-                _rate_limiter.release(bot_label)
-            return result
-        except BadRequest as e:
-            if _is_invalid_file_error(e):
-                logger.warning("文件ID无效，跳过重试: %s", e)
+            if bot is not None and not managed:
+                # Legacy plain Bot helpers also participate in the same bot budget.
+                limiter = get_limiter(bot.token)
+                return await limiter.process_request(send_func, args, kwargs,
+                    getattr(send_func, '__name__', '').replace('_', ''), kwargs, None)
+            return await send_func(*args, **kwargs)
+        except (BadRequest, RetryAfter):
             raise
-        except RetryAfter as e:
-            wait = e.retry_after if hasattr(e, 'retry_after') and e.retry_after else SEND_RETRY_DELAY * 4
-            # 限制最大等待时间，避免阻塞 webhook 导致 499
-            if wait > RETRY_AFTER_MAX_WAIT:
-                logger.warning("触发限流 (RetryAfter %.0fs)，超过最大等待 %.0fs，放弃重试让 Telegram 稍后重投 [%s]",
-                               wait, RETRY_AFTER_MAX_WAIT, bot_label)
+        except (TimedOut, NetworkError):
+            if attempt == SEND_RETRY_COUNT:
                 raise
-            logger.warning("触发限流 (RetryAfter)，等待 %.1f 秒后重试 (第 %d/%d 次) [%s]",
-                           wait, attempt + 1, SEND_RETRY_COUNT, bot_label)
-            await asyncio.sleep(wait)
-            # RetryAfter 等待后刷新限速器时间，避免等待完立即又触发限流
-            _rate_limiter.update_time(bot_label)
-            last_exception = e
-        except (TimedOut, NetworkError) as e:
-            if attempt < SEND_RETRY_COUNT:
-                delay = SEND_RETRY_DELAY * (2 ** attempt)
-                logger.warning("发送超时/网络错误: %s，等待 %.1f 秒后重试 (第 %d/%d 次) [%s]",
-                               type(e).__name__, delay, attempt + 1, SEND_RETRY_COUNT, bot_label)
-                await asyncio.sleep(delay)
-                last_exception = e
-            else:
-                logger.error("发送失败，已重试 %d 次: %s [%s]", SEND_RETRY_COUNT, e, bot_label)
-                raise
-        except Exception:
-            raise
-    raise last_exception
+            await asyncio.sleep(SEND_RETRY_DELAY*2**attempt)
 
 
 # ===== 核心：发送一批文件（被队列消费者调用） =====
 
 async def _schedule_auto_delete(bot, chat_id: int, message_ids: list, delay: int):
-    """延迟删除消息（静默失败，带限流保护）
-
-    优化：用 Semaphore 控制并发（默认 3），替代原来"每条删完 sleep 0.3s"的纯串行写法，
-    在消息数量较多时显著缩短总耗时，同时仍保留 RetryAfter 处理避免限流雪崩。
-    """
+    """Batch deletion uses the same API hook and avoids one request per message."""
     try:
         await asyncio.sleep(delay)
-        if not message_ids:
-            return
-
-        # 少量消息直接串行，避免并发开销；较多消息走有限并发
-        if len(message_ids) <= 3:
-            sem = None
-            concurrency = 1
-        else:
-            concurrency = 3
-            sem = asyncio.Semaphore(concurrency)
-
-        deleted_box = [0]  # 用 list 包装以便内部协程累加
-
-        async def _delete_one(msg_id):
-            try:
-                if sem:
-                    async with sem:
-                        await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-                else:
-                    await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-                deleted_box[0] += 1
-            except RetryAfter as e:
-                # 限流：等待后串行重试一次（重试不再并发，避免叠加触发限流）
-                wait = e.retry_after if hasattr(e, 'retry_after') and e.retry_after else 2
-                logger.warning("自动删除触发限流，等待 %ds", wait)
-                await asyncio.sleep(wait)
-                try:
-                    await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-                    deleted_box[0] += 1
-                except Exception:
-                    pass
-            except Exception:
-                pass  # 消息可能已被用户删除
-
-        if concurrency > 1:
-            await asyncio.gather(*[_delete_one(mid) for mid in message_ids],
-                                 return_exceptions=True)
-        else:
-            for mid in message_ids:
-                await _delete_one(mid)
-
-        if deleted_box[0] > 0:
-            logger.debug("自动删除: chat_id=%s 成功删除 %d/%d 条消息",
-                         chat_id, deleted_box[0], len(message_ids))
+        for offset in range(0, len(message_ids), 100):
+            await _retry_send(bot.delete_messages, chat_id=chat_id,
+                              message_ids=message_ids[offset:offset+100])
     except asyncio.CancelledError:
         pass
+    except Exception as error:
+        logger.warning('Auto-delete incomplete for chat %s: %s', chat_id, type(error).__name__)
 
 
 def _collect_msg_ids(result) -> list:

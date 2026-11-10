@@ -461,6 +461,12 @@ class SendQueue:
                 if not self._running or not self._queues:
                     break
 
+                limiter = getattr(self._bot, 'rate_limiter', None)
+                first_chat = next(iter(self._queues))
+                if limiter is not None and limiter.ready_in(first_chat) > 0:
+                    self._queues.move_to_end(first_chat)
+                    continue
+
                 # 取队首（O(1)，无需复制全部 keys）
                 chat_id, tasks = self._queues.popitem(last=False)
 
@@ -553,6 +559,12 @@ class SendQueue:
                     from senders import SendBlockedError
 
                     if isinstance(e, RetryAfter):
+                        from services.rate_limit import RateLimitExhausted
+                        if isinstance(e, RateLimitExhausted):
+                            await self._remove_task(task, 'failed', str(e))
+                            if not task.future.done():
+                                task.future.set_exception(e)
+                            continue
                         # Bot 级别限流：设置整个队列的暂停时间
                         wait = e.retry_after or 30
                         if hasattr(wait, 'total_seconds'):

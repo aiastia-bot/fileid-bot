@@ -7,6 +7,7 @@ import asyncio
 import logging
 from typing import Dict, Optional
 
+from services.rate_limit import get_limiter
 from telegram import Update
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler, MessageHandler,
@@ -56,27 +57,15 @@ async def _auto_stop_revoked_bot(bot_username: str, bot_data: dict):
     except Exception as e:
         logger.error("停止 Bot 失败: %s", e)
 
-    # 通知管理员
+    # A worker records notices; the master sends them through its own limiter.
     try:
-        from config import BOT_TOKEN, ADMIN_IDS
-        import httpx
-        async with httpx.AsyncClient() as client:
-            for admin_id in ADMIN_IDS:
-                await client.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    json={
-                        "chat_id": admin_id,
-                        "text": (
-                            f"⚠️ Bot 已失效\n\n"
-                            f"🤖 @{bot_username} Token 已被撤销\n"
-                            f"👤 所有者: {owner_id}\n"
-                            f"系统已自动停止该 Bot。"
-                        ),
-                    }
-                )
-        logger.info("已通知管理员 Bot @%s 被撤销", bot_username)
-    except Exception as e:
-        logger.error("通知管理员失败: %s", e)
+        from config import ADMIN_IDS
+        from services.notices import enqueue
+        for admin_id in ADMIN_IDS:
+            await enqueue(f'revoked:{bot_db_id}:{admin_id}', admin_id,
+                f'⚠️ Bot @{bot_username} Token 已失效，所有者 {owner_id}，系统已停止该 Bot。')
+    except Exception:
+        logger.exception('Failed recording revoked-bot notice')
 
 
 class BotManager:
@@ -119,6 +108,7 @@ class BotManager:
         application = (
             ApplicationBuilder()
             .token(token)
+            .rate_limiter(get_limiter(token))
             .concurrent_updates(True)
             # PTB 默认连接池上限 256；webhook 模式下每 Bot 并发由
             # PER_BOT_CONCURRENCY 信号量+发送队列控制，16 足够，
@@ -557,28 +547,13 @@ class BotManager:
             if not token:
                 return
 
-            # 直接调用 Telegram API 删除 webhook（不需要 Application 实例）
-            import httpx
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"https://api.telegram.org/bot{token}/deleteWebhook",
-                    json={"drop_pending_updates": True}
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get('ok'):
-                        logger.info("✅ 孤立 webhook 已清理: bot_db_id=%s @%s",
-                                    bot_db_id, bot_record.get('bot_username', '?'))
-                    else:
-                        # Token 无效（Bot 被封），标记状态
-                        err_desc = data.get('description', '')
-                        if 'Unauthorized' in err_desc or '401' in str(data.get('error_code', '')):
-                            logger.warning("孤立 webhook 清理: bot_db_id=%s Token 已失效，标记 revoked", bot_db_id)
-                            await update_user_bot_status(bot_db_id, 'revoked')
-                        else:
-                            logger.warning("孤立 webhook 清理失败: bot_db_id=%s %s", bot_db_id, err_desc)
-                else:
-                    logger.warning("孤立 webhook 清理: bot_db_id=%s HTTP %s", bot_db_id, resp.status_code)
+            from telegram import Bot
+            bot = Bot(token=token)
+            try:
+                await _retry_send(bot.delete_webhook, drop_pending_updates=False)
+                logger.info('Orphan webhook removed for bot %s', bot_db_id)
+            finally:
+                await bot.shutdown()
         except Exception as e:
             logger.error("清理孤立 webhook 异常 (bot_db_id=%s): %s", bot_db_id, e)
 

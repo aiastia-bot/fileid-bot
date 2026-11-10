@@ -23,34 +23,19 @@ _PREMIUM_PLANS = [
 
 async def _get_star_transactions(bot, limit=50, offset=0):
     """调用 Telegram API 获取星星交易记录"""
-    import aiohttp
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"https://api.telegram.org/bot{bot.token}/getStarTransactions",
-            json={"limit": limit, "offset": offset},
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            data = await resp.json()
-        if not data.get("ok"):
-            logger.error("getStarTransactions API 调用失败: %s", data.get("description"))
-            return None, None
-        result = data.get("result", {})
-        return result.get("transactions", []), result.get("pending_transactions", [])
+    try:
+        result = (await bot.get_star_transactions(limit=limit, offset=offset)).to_dict()
+        return result.get('transactions', []), result.get('pending_transactions', [])
+    except TelegramError as error:
+        logger.warning('getStarTransactions failed: %s', type(error).__name__)
+        return None, None
 
 
 async def _get_bot_star_balance(bot):
-    """获取 Bot 的星星余额"""
-    import aiohttp
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"https://api.telegram.org/bot{bot.token}/getStarTransactions",
-            json={"limit": 1},
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            data = await resp.json()
-        if not data.get("ok"):
-            return None
-        return data.get("result", {}).get("star_count", None)
+    try:
+        return (await bot.get_my_star_balance()).amount
+    except TelegramError:
+        return None
 
 
 # ==================== 交易记录格式化 ====================
@@ -232,21 +217,14 @@ async def _get_available_gifts(bot, force_refresh=False):
     if not force_refresh and _gifts_cache and (now - _gifts_cache_time) < _GIFTS_CACHE_TTL:
         return _gifts_cache
 
-    import aiohttp
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"https://api.telegram.org/bot{bot.token}/getAvailableGifts",
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            data = await resp.json()
-        if not data.get("ok"):
-            logger.error("getAvailableGifts API 调用失败: %s", data.get("description"))
-            return None
-
-        gifts = data.get("result", {}).get("gifts", [])
+    try:
+        gifts = (await bot.get_available_gifts()).to_dict().get('gifts', [])
         _gifts_cache = gifts
         _gifts_cache_time = now
         return gifts
+    except TelegramError as error:
+        logger.warning('getAvailableGifts failed: %s', type(error).__name__)
+        return None
 
 
 async def _get_recent_paying_users(bot, limit=8):

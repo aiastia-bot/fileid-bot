@@ -516,7 +516,7 @@ async def stop_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try:
             from telegram import Bot
             temp_bot = Bot(token=bot_record['bot_token'])
-            await temp_bot.delete_webhook()
+            await _retry_send(temp_bot.delete_webhook)
             await temp_bot.shutdown()
             logger.info("已删除 Bot @%s 的 webhook", bot_record['bot_username'])
         except Exception as e:

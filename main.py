@@ -9,6 +9,7 @@ import os
 import signal
 import sys
 
+from services.rate_limit import get_limiter
 from telegram import Update
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler, ContextTypes,
@@ -126,6 +127,7 @@ def run_standalone():
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
+            .rate_limiter(get_limiter(BOT_TOKEN))
             .concurrent_updates(False)
         .post_init(post_init)
         .post_stop(post_stop)
@@ -172,6 +174,7 @@ def run_master():
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
+            .rate_limiter(get_limiter(BOT_TOKEN))
             .concurrent_updates(False)
         .post_init(post_init)
         .post_stop(post_stop)

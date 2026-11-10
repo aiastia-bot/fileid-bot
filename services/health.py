@@ -47,6 +47,8 @@ def add_health_routes(app, manager):
                 values[name] = dict(rows.all())
         from send_queue import _queues
 
+        from services.rate_limit import snapshots
+        values["api_rate_limits"] = snapshots()
         values["bots"] = manager.active_count if manager else 0
         values["pending_in_memory"] = sum(q.pending for q in _queues.values())
         return web.json_response(values)
