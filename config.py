@@ -9,7 +9,7 @@ if env_path.exists():
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
                 key, value = line.split('=', 1)
-                os.environ[key.strip()] = value.strip()
+                os.environ.setdefault(key.strip(), value.strip().strip("\"\'"))
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
 ADMIN_IDS = [int(x) for x in os.environ.get('ADMIN_IDS', '').split(',') if x.strip().isdigit()]
@@ -143,6 +143,9 @@ MASTER_USER_COMMANDS = [
 MASTER_ADMIN_COMMANDS = [
     ("helpadmin", "管理员命令帮助"),
     ("setvip", "会员管理：设置/查询/列表"),
+    ("setplan", "配置套餐价格与权益"),
+    ("vipadmin", "调整时长 / 审计 / 订单核查"),
+    ("tasks", "查看失败消息和发送任务"),
     ("setfree", "免费注册/名额/文件额度管理"),
     ("mystars", "星星资产 / 礼物 / Premium 代充"),
     ("setgroup", "用户 Bot 沟通群组管理"),
@@ -167,6 +170,7 @@ USER_BOT_COMMANDS = [
     ("getid", "回复消息获取文件ID"),
     ("mycol", "查看我的集合"),
     ("stop", "停止所有发送任务"),
+    ("queue", "查看发送进度和等待数量"),
     ("delcol", "删除集合 delcol 代码"),
     ("settings", "用户偏好设置"),
 ]
@@ -209,3 +213,38 @@ HEALTH_CHECK_INTERVAL = int(os.environ.get('HEALTH_CHECK_INTERVAL', '60'))
 
 # Worker 自身对外 Webhook 域名（Worker 模式下需要配置，用于设置 Bot webhook）
 WORKER_WEBHOOK_HOST = os.environ.get('WORKER_WEBHOOK_HOST', '')  # 如 node1.example.com
+
+
+# Reliability and resource limits
+WORKER_URL = os.environ.get('WORKER_URL', '')
+INBOX_WORKERS = int(os.environ.get('INBOX_WORKERS', '4'))
+INBOX_MAX_ATTEMPTS = int(os.environ.get('INBOX_MAX_ATTEMPTS', '8'))
+SEND_QUEUE_MAX_PENDING = int(os.environ.get('SEND_QUEUE_MAX_PENDING', '2000'))
+SEND_QUEUE_MAX_PER_USER = int(os.environ.get('SEND_QUEUE_MAX_PER_USER', '100'))
+SEND_QUEUE_MAX_RETRIES = int(os.environ.get('SEND_QUEUE_MAX_RETRIES', '3'))
+DATA_RETENTION_DAYS = int(os.environ.get('DATA_RETENTION_DAYS', '30'))
+# Existing installations retain the old behaviour unless explicitly changed.
+FILE_QUOTA_POLICY = os.environ.get('FILE_QUOTA_POLICY', 'retain')  # retain | reject
+
+
+def validate_config():
+    if ROLE not in ('standalone', 'master', 'worker') or BOT_MODE not in ('polling', 'webhook'):
+        raise ValueError('Invalid ROLE or BOT_MODE')
+    if DB_TYPE not in ('sqlite', 'mysql'):
+        raise ValueError('DB_TYPE must be sqlite or mysql')
+    if ROLE in ('master', 'worker') and not WORKER_SECRET:
+        raise ValueError('Distributed mode requires WORKER_SECRET')
+    if BOT_MODE == 'webhook':
+        import re
+        if not re.fullmatch(r'[A-Za-z0-9_-]{16,256}', WEBHOOK_SECRET):
+            raise ValueError('Webhook mode requires WEBHOOK_SECRET (16-256 letters, digits, _ or -)')
+    if ROLE == 'worker' and (not WORKER_URL or not MASTER_URL or not WORKER_WEBHOOK_HOST or BOT_MODE != 'webhook'):
+        raise ValueError('Worker requires WORKER_URL, MASTER_URL, WORKER_WEBHOOK_HOST and BOT_MODE=webhook')
+    if ROLE == 'worker' and NODE_ID == 'local':
+        raise ValueError('Worker requires a unique NODE_ID other than local')
+    if FILE_QUOTA_POLICY not in ('retain', 'reject'):
+        raise ValueError('FILE_QUOTA_POLICY must be retain or reject')
+    for value in (INBOX_WORKERS, INBOX_MAX_ATTEMPTS, SEND_QUEUE_MAX_PENDING,
+                  SEND_QUEUE_MAX_PER_USER, SEND_QUEUE_MAX_RETRIES, PER_BOT_CONCURRENCY, DATA_RETENTION_DAYS):
+        if value <= 0:
+            raise ValueError('Concurrency, queue, retry and retention limits must be positive')

@@ -33,6 +33,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=_log_level
 )
+from services.logging import RedactingFormatter
+for _handler in logging.getLogger().handlers:
+    _handler.setFormatter(RedactingFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 # 第三方库始终只显示 WARNING 以上
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -44,11 +47,22 @@ print(f"[启动] 日志级别: {LOG_LEVEL.upper()} (来自 LOG_LEVEL 环境变�
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """主Bot错误处理"""
+    from services.inbox import note_error
+    note_error(context.error)
     logger.error("主Bot异常: %s", context.error, exc_info=context.error)
 
 
 async def post_init(application: Application) -> None:
     """主Bot初始化完成后：设置命令、加载所有用户Bot"""
+    from services import runtime
+    from services.leases import acquire
+    await init_db()
+    if not await acquire('master'):
+        raise RuntimeError('Another master process holds the runtime lease')
+    await _init_redis()
+    runtime.configure(bot_manager=application.bot_data.get('bot_manager'),
+                      bot_scheduler=application.bot_data.get('scheduler'), application=application)
+    application.bot_data['_ready'] = True
     # 注册主Bot命令：默认菜单只显示用户命令；
     # 管理员私聊菜单额外显示管理命令（BotCommandScopeChat 需管理员与 Bot 有过会话，失败忽略）
     try:
@@ -78,6 +92,11 @@ async def post_init(application: Application) -> None:
     # 启动 VIP 过期检查定时任务
     _start_vip_expire_job(application)
 
+    from services.entitlements import reconcile_all
+    await reconcile_all()
+    if scheduler:
+        scheduler.start()
+
     # 加载用户 Bot
     if ROLE == 'master' and scheduler:
         # Master 模式：分配 Bot 到 Worker 节点
@@ -88,6 +107,9 @@ async def post_init(application: Application) -> None:
         loaded = await bot_manager.load_all()
         logger.info("✅ 主Bot启动完成，共加载 %d 个用户Bot", loaded)
 
+    if bot_manager:
+        bot_manager._ready = True
+
 
 # ==================== Standalone 模式 ====================
 
@@ -97,8 +119,6 @@ def run_standalone():
         logger.error("❌ 未设置 BOT_TOKEN 环境变量")
         sys.exit(1)
 
-    asyncio.run(init_db())
-    logger.info("📊 数据库初始化完成")
 
     bot_manager = BotManager()
 
@@ -106,8 +126,10 @@ def run_standalone():
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
-            .concurrent_updates(True)
+            .concurrent_updates(False)
         .post_init(post_init)
+        .post_stop(post_stop)
+        .post_shutdown(post_shutdown)
         .read_timeout(API_READ_TIMEOUT)
         .write_timeout(API_WRITE_TIMEOUT)
         .connect_timeout(API_CONNECT_TIMEOUT)
@@ -121,7 +143,6 @@ def run_standalone():
     _register_master_handlers(application)
 
     # 优雅关闭
-    _setup_graceful_shutdown(application, bot_manager=bot_manager)
 
     # 全局引用
     sys.modules['__main__'].bot_manager = bot_manager
@@ -144,8 +165,6 @@ def run_master():
         logger.error("❌ 未设置 BOT_TOKEN 环境变量")
         sys.exit(1)
 
-    asyncio.run(init_db())
-    logger.info("📊 数据库初始化完成")
 
     bot_manager = BotManager()  # Master 本地也可以运行少量 Bot（fallback）
     scheduler = MasterScheduler()
@@ -153,8 +172,10 @@ def run_master():
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
-            .concurrent_updates(True)
+            .concurrent_updates(False)
         .post_init(post_init)
+        .post_stop(post_stop)
+        .post_shutdown(post_shutdown)
         .read_timeout(API_READ_TIMEOUT)
         .write_timeout(API_WRITE_TIMEOUT)
         .connect_timeout(API_CONNECT_TIMEOUT)
@@ -169,7 +190,6 @@ def run_master():
     _register_master_handlers(application)
 
     # 优雅关闭
-    _setup_graceful_shutdown(application, bot_manager=bot_manager, scheduler=scheduler)
 
     # 全局引用
     sys.modules['__main__'].bot_manager = bot_manager
@@ -191,8 +211,6 @@ def run_worker():
     """Worker 模式：只运行用户Bot，接收Master指令"""
     from worker_server import WorkerServer
 
-    asyncio.run(init_db())
-    logger.info("📊 数据库初始化完成")
 
     bot_manager = BotManager()
     worker_server = WorkerServer()
@@ -213,25 +231,30 @@ def run_worker():
 
 
 def _start_vip_expire_job(application: Application):
-    """启动 VIP 过期检查定时任务"""
     from handlers.master.stars import handle_expired_vips, send_expire_reminders
+    from services.payments import process_pending
+    from services.entitlements import reconcile_all
+    from services.maintenance import cleanup_records
+    from services.leases import acquire
+    from services.notices import deliver
 
-    async def _vip_expire_check(context: ContextTypes.DEFAULT_TYPE):
-        """每小时检查过期VIP"""
+    async def renew_master(context):
+        if not await acquire('master'):
+            application.stop_running()
+
+    async def maintenance(context):
+        await process_pending(context.bot)
         await handle_expired_vips()
+        await reconcile_all()
+        await deliver(context.bot)
 
-    async def _vip_expire_reminder(context: ContextTypes.DEFAULT_TYPE):
-        """每天发送过期提醒"""
+    async def reminders(context):
         await send_expire_reminders()
+        await cleanup_records()
 
-    try:
-        # 每 1 小时检查过期
-        application.job_queue.run_repeating(_vip_expire_check, interval=3600, first=60)
-        # 每天发送到期提醒
-        application.job_queue.run_repeating(_vip_expire_reminder, interval=86400, first=120)
-        logger.info("✅ VIP 过期检查定时任务已启动")
-    except Exception as e:
-        logger.warning("VIP 定时任务启动失败（可能未安装 job_queue 依赖）: %s", e)
+    application.job_queue.run_repeating(renew_master, interval=20, first=1, name='master-lease')
+    application.job_queue.run_repeating(maintenance, interval=30, first=5, name='membership-orders', job_kwargs={'max_instances': 1})
+    application.job_queue.run_repeating(reminders, interval=86400, first=120, name='reminders-maintenance')
 
 
 def _register_master_handlers(application: Application):
@@ -292,7 +315,11 @@ def _register_master_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(update_token_callback, pattern=r'^update_token\|'))
     application.add_handler(CommandHandler("updatetoken", update_token_cmd))
     application.add_handler(CommandHandler("setgroup", set_group_cmd))
-    application.add_handler(CommandHandler("setvip", set_vip_cmd))
+    from handlers.master.membership_admin import setvip_command, setplan_command, vipadmin_command, tasks_command
+    application.add_handler(CommandHandler("setvip", setvip_command))
+    application.add_handler(CommandHandler("setplan", setplan_command))
+    application.add_handler(CommandHandler("vipadmin", vipadmin_command))
+    application.add_handler(CommandHandler("tasks", tasks_command))
     application.add_handler(CommandHandler("setfree", set_free_cmd))
     application.add_handler(CommandHandler("helpadmin", help_admin_cmd))
 
@@ -332,72 +359,43 @@ def _register_master_handlers(application: Application):
     application.add_error_handler(error_handler)
 
 
-def _setup_graceful_shutdown(application: Application, bot_manager: BotManager = None, scheduler=None):
-    """注册优雅关闭信号处理器，确保所有 Bot 停止后才退出"""
-
-    _shutdown_event = asyncio.Event()
-
-    def _signal_handler(signum, frame):
-        sig_name = signal.Signals(signum).name
-        logger.info("📩 收到信号 %s，开始优雅关闭...", sig_name)
-        # 在 asyncio 事件循环中调度关闭
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.call_soon_threadsafe(_shutdown_event.set)
-                # 触发 application 停止
-                loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_do_shutdown(application, bot_manager, scheduler)))
-            else:
-                _shutdown_event.set()
-        except RuntimeError:
-            _shutdown_event.set()
-
-    # 注册信号处理
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            signal.signal(sig, _signal_handler)
-        except (OSError, ValueError):
-            pass  # 非 main 线程无法设置信号
-
-    logger.info("✅ 优雅关闭信号处理器已注册 (SIGINT/SIGTERM)")
+async def post_stop(application):
+    from send_queue import stop_all_queues
+    from services import runtime
+    if runtime.scheduler:
+        await runtime.scheduler.stop()
+    await stop_all_queues()
+    if runtime.manager:
+        await runtime.manager.stop_all()
+    runner = application.bot_data.pop('_health_runner', None)
+    if runner:
+        await runner.cleanup()
 
 
-async def _do_shutdown(application: Application, bot_manager: BotManager = None, scheduler=None):
-    """执行优雅关闭序列"""
-    logger.info("🛑 开始优雅关闭...")
-
-    # 1. 停止调度器（Master 模式）
-    if scheduler:
-        try:
-            if hasattr(scheduler, 'stop'):
-                await scheduler.stop()
-            logger.info("✅ 调度器已停止")
-        except Exception as e:
-            logger.warning("停止调度器失败: %s", e)
-
-    # 2. 停止所有用户 Bot
-    if bot_manager:
-        try:
-            stopped = await bot_manager.stop_all()
-            logger.info("✅ 已停止 %d 个用户 Bot", stopped or 0)
-        except Exception as e:
-            logger.warning("停止用户 Bot 失败: %s", e)
-
-    # 3. 停止主 Bot Application
-    try:
-        await application.stop()
-        await application.shutdown()
-        logger.info("✅ 主 Bot Application 已关闭")
-    except Exception as e:
-        logger.warning("关闭主 Bot Application 失败: %s", e)
-
-    logger.info("🛑 优雅关闭完成")
-    # 强制退出（避免 aiohttp 等框架的信号处理器阻止退出）
-    os._exit(0)
+async def post_shutdown(application):
+    from db.core import close_db
+    from redis_manager import get_redis
+    from services.leases import release
+    await release('master')
+    await (await get_redis()).close()
+    await close_db()
 
 
 def _run_polling(application: Application):
     """Polling 模式启动"""
+    # Polling also exposes /health and /ready on the configured HTTP port.
+    original = application.post_init
+    async def polling_init(app):
+        await original(app)
+        from aiohttp import web
+        from services.health import add_health_routes
+        health_app = web.Application()
+        add_health_routes(health_app, app.bot_data['bot_manager'])
+        runner = web.AppRunner(health_app)
+        await runner.setup()
+        await web.TCPSite(runner, '0.0.0.0', WEBHOOK_PORT).start()
+        app.bot_data['_health_runner'] = runner
+    application.post_init = polling_init
     all_updates = list(Update.ALL_TYPES) + ['managed_bot']
     application.run_polling(allowed_updates=all_updates)
 
@@ -419,11 +417,13 @@ async def _init_redis():
 
 def main():
     """根据 ROLE 选择启动模式"""
+    from config import validate_config
+    validate_config()
     logger.info("🔧 启动模式: %s", ROLE)
 
     # 预初始化 Redis（在 asyncio.run 之外无法 await，由首次调用自动初始化）
     if REDIS_URL:
-        logger.info("📦 检测到 REDIS_URL 配置: %s", REDIS_URL[:30] + '...')
+        logger.info("📦 已配置 Redis")
 
     if ROLE == 'standalone':
         run_standalone()

@@ -11,110 +11,66 @@ logger = logging.getLogger(__name__)
 
 
 def _build_webhook_handler(application: Application, bot_manager: BotManager):
-    """构建通用的 webhook 请求处理器"""
+    from services.security import webhook_authorized
     async def webhook_handler(request):
-        path = request.path
-        body = await request.json()
-
-        # 验证 secret
-        if WEBHOOK_SECRET:
-            secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token', '')
-            if secret != WEBHOOK_SECRET:
-                logger.warning("webhook secret 验证失败: %s", path)
-                return _web_response(403)
-
-        # 分发到主Bot
-        if path == f"{WEBHOOK_PATH}/master":
-            try:
-                update = Update.de_json(body, application.bot)
-                await application.process_update(update)
-            except Exception as e:
-                logger.error("主Bot webhook 处理失败: %s", e)
-            return _web_response(200)
-
-        # 分发到用户Bot
-        parts = path.rstrip('/').split('/')
-        if len(parts) >= 2:
-            try:
-                bot_db_id = int(parts[-1])
-                success = await bot_manager.handle_webhook_update(bot_db_id, body)
-                if not success:
-                    return _web_response(503)  # Telegram 自动重试
-            except (ValueError, Exception) as e:
-                logger.error("用户Bot webhook 处理失败: %s", e)
-                return _web_response(503)
-            return _web_response(200)
-
-        return _web_response(404)
-
+        if not webhook_authorized(request):
+            return _web_response(403)
+        try:
+            body = await request.json()
+            key = 'master' if request.path == f"{WEBHOOK_PATH}/master" else request.match_info['bot_id']
+            await request.app['inbox'].accept(key, body)
+        except (ValueError, TypeError, KeyError):
+            return _web_response(400)
+        except Exception:
+            logger.exception('Durable webhook acceptance failed')
+            return _web_response(503)
+        return _web_response(200)
     return webhook_handler
 
 
 def _build_on_startup(application: Application, bot_manager: BotManager,
                       scheduler=None, role: str = "standalone"):
-    """构建 on_startup 回调，合并 Master 和 Standalone 的公共逻辑"""
-    from aiohttp import web
-
-    async def on_startup(app: web.Application):
+    async def on_startup(app):
+        from db import init_db
+        from services.inbox import Inbox
+        await init_db()
+        from services.leases import acquire
+        if not await acquire('master'):
+            raise RuntimeError('Another master process is active')
         await application.initialize()
         await application.start()
-
-        # 设置主Bot webhook
-        master_webhook_url = f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}/master"
-        all_updates = list(Update.ALL_TYPES) + ['managed_bot']
+        app['inbox'] = Inbox(lambda key: application if key == 'master' else bot_manager.get_all_apps().get(int(key)))
+        app['inbox'].start()
         await application.bot.set_webhook(
-            url=master_webhook_url,
-            secret_token=WEBHOOK_SECRET or None,
-            allowed_updates=all_updates,
-            drop_pending_updates=True,
-        )
-        logger.info("主Bot webhook 已设置: %s", master_webhook_url)
-
-        # 设置用户名引用
-        bot_manager.master_bot_username = application.bot.username
-        if scheduler:
-            scheduler.master_bot_username = application.bot.username
-
-        # 注册主Bot命令
-        try:
-            await application.bot.set_my_commands(MASTER_BOT_COMMANDS)
-        except Exception as e:
-            logger.warning("主Bot注册命令失败: %s", e)
-
-        # 后台异步加载 Bot，不阻塞 webhook 服务器启动
-        async def _bg_load_bots():
-            loaded = 0
+            url=f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}/master",
+            secret_token=WEBHOOK_SECRET, allowed_updates=list(Update.ALL_TYPES)+['managed_bot'],
+            drop_pending_updates=False)
+        bot_manager._loading = True
+        async def load():
             try:
-                if scheduler:
-                    loaded = await scheduler.load_all_to_workers()
-                    logger.info("✅ Master 后台加载完成，已分配 %d 个用户Bot", loaded)
-                else:
-                    loaded = await bot_manager.load_all()
-                    logger.info("✅ Standalone 后台加载完成，共加载 %d 个用户Bot", loaded)
-            except Exception as e:
-                logger.error("后台加载 Bot 失败 (%s): %s", role, e)
-
-        asyncio.create_task(_bg_load_bots())
-
-        # 启动 webhook 定期验证
-        await bot_manager.start_webhook_monitor()
-
+                await application.post_init(application)
+                await bot_manager.start_webhook_monitor()
+            except Exception:
+                logger.exception("Master initialization failed; readiness remains unavailable")
+            finally:
+                bot_manager._loading = False
+        app['startup_task'] = asyncio.create_task(load())
     return on_startup
 
 
 def _build_on_shutdown(application: Application, bot_manager: BotManager):
-    """构建 on_shutdown 回调"""
-    from aiohttp import web
-
-    async def on_shutdown(app: web.Application):
-        logger.info("正在停止所有Bot...")
-        from send_queue import stop_all_queues
-        await stop_all_queues()
-        await bot_manager.stop_all()
+    async def on_shutdown(app):
+        startup = app.get('startup_task')
+        if startup:
+            startup.cancel()
+            await asyncio.gather(startup, return_exceptions=True)
+        await app['inbox'].stop()
         await application.stop()
+        if application.post_stop:
+            await application.post_stop(application)
         await application.shutdown()
-        logger.info("所有Bot已停止")
-
+        if application.post_shutdown:
+            await application.post_shutdown(application)
     return on_shutdown
 
 
@@ -129,9 +85,8 @@ def _register_master_routes(web_app, scheduler):
     from aiohttp import web
 
     def _verify_internal_secret(request: web.Request) -> bool:
-        if not WORKER_SECRET:
-            return True
-        return request.headers.get('X-Worker-Secret', '') == WORKER_SECRET
+        from services.security import internal_authorized
+        return internal_authorized(request)
 
     async def handle_worker_register(request: web.Request):
         if not _verify_internal_secret(request):
@@ -140,7 +95,7 @@ def _register_master_routes(web_app, scheduler):
             data = await request.json()
             await scheduler.handle_worker_register(
                 node_id=data['node_id'],
-                node_url=data.get('node_url', ''),
+                node_url=data['node_url'],
                 webhook_host=data.get('webhook_host', ''),
                 max_bots=data.get('max_bots', 100),
             )
@@ -153,11 +108,11 @@ def _register_master_routes(web_app, scheduler):
             return web.json_response({'error': 'unauthorized'}, status=403)
         try:
             data = await request.json()
-            await scheduler.handle_worker_heartbeat(
+            found = await scheduler.handle_worker_heartbeat(
                 node_id=data['node_id'],
                 active_bots=data.get('active_bots', 0),
             )
-            return web.json_response({'status': 'ok'})
+            return web.json_response({'status': 'ok' if found else 'unknown'}, status=200 if found else 404)
         except Exception as e:
             return web.json_response({'error': str(e)}, status=400)
 
@@ -174,7 +129,7 @@ def _register_master_routes(web_app, scheduler):
     async def handle_worker_status(request: web.Request):
         if not _verify_internal_secret(request):
             return web.json_response({'error': 'unauthorized'}, status=403)
-        workers = scheduler.get_worker_status()
+        workers = await scheduler.get_worker_status()
         return web.json_response({'workers': workers})
 
     web_app.router.add_post("/internal/register", handle_worker_register)
@@ -190,35 +145,6 @@ def _run_webhook_server(application: Application, bot_manager: BotManager,
 
     webhook_handler = _build_webhook_handler(application, bot_manager)
 
-    async def health_handler(request: web.Request):
-        # 内存/队列诊断：便于排查内存增长（RSS 单位换算：Linux KB / macOS bytes）
-        import resource
-        import sys as _sys
-        from send_queue import _queues
-        maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        rss_mb = maxrss / (1024 * 1024) if _sys.platform == 'darwin' else maxrss / 1024
-
-        # 占用 user_data 最多的 5 个 Bot（定位内存大户）
-        top_user_data = []
-        try:
-            sizes = sorted(
-                ((len(app.user_data), bid) for bid, app in bot_manager.get_all_apps().items()),
-                reverse=True,
-            )[:5]
-            top_user_data = [{"bot_db_id": bid, "user_data": n} for n, bid in sizes]
-        except Exception:
-            pass
-
-        return web.json_response({
-            "status": "ok",
-            "role": role,
-            "mode": "webhook",
-            "bots": bot_manager.active_count,
-            "send_queues": len(_queues),
-            "rss_mb": round(rss_mb, 1),
-            "top_user_data": top_user_data,
-        })
-
     web_app = web.Application()
     # Webhook 路由
     web_app.router.add_post(f"{WEBHOOK_PATH}/master", webhook_handler)
@@ -227,7 +153,8 @@ def _run_webhook_server(application: Application, bot_manager: BotManager,
     if scheduler:
         _register_master_routes(web_app, scheduler)
     # 健康检查
-    web_app.router.add_get("/health", health_handler)
+    from services.health import add_health_routes
+    add_health_routes(web_app, bot_manager)
 
     web_app.on_startup.append(_build_on_startup(application, bot_manager, scheduler, role))
     web_app.on_shutdown.append(_build_on_shutdown(application, bot_manager))

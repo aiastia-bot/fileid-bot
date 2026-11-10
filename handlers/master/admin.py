@@ -728,7 +728,7 @@ async def set_group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if groups:
             text += "<b>当前群组：</b>\n"
             for i, g in enumerate(groups, 1):
-                text += f"  {i}\. <a href=\"{escape(g.get('url', ''))}\">{escape(g.get('name', ''))}</a>\n"
+                text += f"  {i}. <a href=\"{escape(g.get('url', ''))}\">{escape(g.get('name', ''))}</a>\n"
         else:
             text += "📭 暂无群组。\n"
 
@@ -822,198 +822,8 @@ async def set_group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # ==================== 管理员设置VIP ====================
 
 async def set_vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/setvip 管理员设置用户VIP等级
-    
-    用法：
-        /setvip <user_id> <level> [months]   — 设置VIP（默认12个月）
-        /setvip <user_id> 0                   — 取消VIP
-        /setvip info <user_id>                — 查看用户VIP信息
-    """
-    from config import ADMIN_IDS
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
-        await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
-        return
-
-    args = context.args or []
-
-    if not args:
-        await _retry_send(update.message.reply_text,
-            "👑 <b>VIP 管理命令</b>\n\n"
-            "用法：\n"
-            "• <code>/setvip info USER_ID</code> — 查看用户VIP信息\n"
-            "• <code>/setvip list</code> — 查看所有付费会员列表\n"
-            "• <code>/setvip USER_ID LEVEL [MONTHS]</code> — 设置VIP等级\n"
-            "• <code>/setvip USER_ID 0</code> — 取消VIP\n\n"
-            "VIP 等级：\n"
-            "  0 = 普通用户\n"
-            "  1 = VIP 1\n"
-            "  2 = VIP 2\n"
-            "  3 = VIP 3\n"
-            "  4 = 基础版\n\n"
-            "默认有效期 12 个月。 Months=0 表示永久。",
-            parse_mode="HTML"
-        )
-        return
-
-    # /setvip info <user_id> — 查看信息
-    if args[0].lower() == 'info':
-        if len(args) < 2:
-            await _retry_send(update.message.reply_text, "❌ 请指定用户ID。\n用法：<code>/setvip info USER_ID</code>", parse_mode="HTML")
-            return
-        try:
-            target_id = int(args[1])
-        except ValueError:
-            await _retry_send(update.message.reply_text, "❌ 用户ID必须是数字。")
-            return
-
-        info = await get_user_vip_info(target_id)
-        status_text = "✅ 有效" if info['is_active'] else "❌ 已过期"
-        expire_text = info.get('vip_expire_at', '永久') or '无'
-
-        await _retry_send(update.message.reply_text,
-            f"👤 <b>用户 VIP 信息</b>\n\n"
-            f"🆔 User ID: <code>{target_id}</code>\n"
-            f"👑 VIP 等级: {info['vip_name']} (Level {info['vip_level']})\n"
-            f"📊 状态: {status_text}\n"
-            f"🤖 最大Bot数: {info['max_bots']}\n"
-            f"📅 到期时间: {expire_text}\n"
-            f"⏳ 剩余天数: {info['remaining_days']}",
-            parse_mode="HTML"
-        )
-        return
-
-    # /setvip list — 列出所有付费会员
-    if args[0].lower() == 'list':
-        from config import VIP_PLANS
-        from db.vip import get_all_vip_users, get_active_bots_by_owner
-
-        users = await get_all_vip_users()
-        if not users:
-            await _retry_send(update.message.reply_text, "📭 暂无付费会员用户。")
-            return
-
-        mgr = get_bot_manager()
-        active_count = 0
-        body = ""
-        for u in users:
-            level = u['vip_level']
-            plan = VIP_PLANS.get(level, {})
-            expire_at = u.get('vip_expire_at')
-            is_active = True
-            if expire_at:
-                try:
-                    is_active = datetime.now() <= datetime.strptime(expire_at, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    is_active = False
-            if is_active:
-                active_count += 1
-
-            name = await _get_user_display_name(context.bot, u['user_id'])
-            expire_text = (expire_at or '永久') + ("" if is_active else "（已过期）")
-            migrated_tag = " 🔄" if u.get('vip_migrated') else ""
-            body += (
-                f"{'✅' if is_active else '❌'} <b>{escape(name)}</b>{migrated_tag}\n"
-                f"   🆔 <a href=\"tg://user?id={u['user_id']}\">{u['user_id']}</a>"
-                f" | {plan.get('name', f'Level {level}')} | 📅 {escape(str(expire_text))}\n"
-            )
-
-            bots = await get_active_bots_by_owner(u['user_id'])
-            if bots:
-                bot_parts = []
-                for b in bots:
-                    running = mgr and b['id'] in mgr.get_all_apps()
-                    st = "🟢" if running else ("⏸️" if b['status'] == 'paused' else "🔴")
-                    bot_parts.append(f"{st} @{escape(b.get('bot_username') or str(b['id']))}")
-                body += "   🤖 " + " | ".join(bot_parts) + "\n"
-            else:
-                body += "   🤖 无 Bot\n"
-
-        text = (
-            f"👑 <b>付费会员列表</b>（共 {len(users)} 人，有效 {active_count}）\n"
-            f"（🔄 = 通过迁移获得的会员）\n\n"
-            f"{body}"
-        )
-
-        # Telegram 消息长度限制，分段发送
-        if len(text) > 4000:
-            parts = []
-            current = ""
-            for line in text.split('\n'):
-                if len(current) + len(line) + 1 > 3900:
-                    parts.append(current)
-                    current = line + '\n'
-                else:
-                    current += line + '\n'
-            if current:
-                parts.append(current)
-            for i, part in enumerate(parts):
-                if i == 0:
-                    await _retry_send(update.message.reply_text, part, parse_mode="HTML")
-                else:
-                    await _retry_send(context.bot.send_message,
-                        chat_id=update.message.chat_id,
-                        text=part, parse_mode="HTML")
-        else:
-            await _retry_send(update.message.reply_text, text, parse_mode="HTML")
-        return
-
-    # /setvip <user_id> <level> [months]
-    if len(args) < 2:
-        await _retry_send(update.message.reply_text,
-            "❌ 参数不足。\n用法：<code>/setvip USER_ID LEVEL [MONTHS]</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    try:
-        target_id = int(args[0])
-    except ValueError:
-        await _retry_send(update.message.reply_text, "❌ 用户ID必须是数字。")
-        return
-
-    try:
-        level = int(args[1])
-    except ValueError:
-        await _retry_send(update.message.reply_text, "❌ VIP等级必须是数字 (0-4)。")
-        return
-
-    if level < 0 or level > 4:
-        await _retry_send(update.message.reply_text, "❌ VIP等级范围: 0-4。")
-        return
-
-    months = int(args[2]) if len(args) > 2 else 12
-
-    if level == 0:
-        # 取消VIP — 设置过期时间为过去
-        success = await update_user_vip(target_id, 0, 0)
-        if success:
-            await _retry_send(update.message.reply_text,
-                f"✅ 已取消用户 <code>{target_id}</code> 的 VIP。",
-                parse_mode="HTML"
-            )
-            logger.info("管理员 %s 取消了用户 %s 的 VIP", user_id, target_id)
-        else:
-            await _retry_send(update.message.reply_text, "❌ 操作失败，用户可能不存在。")
-        return
-
-    # 设置VIP
-    success = await update_user_vip(target_id, level, months)
-    if success:
-        info = await get_user_vip_info(target_id)
-        level_names = {1: 'VIP 1', 2: 'VIP 2', 3: 'VIP 3', 4: '基础版'}
-        await _retry_send(update.message.reply_text,
-            f"✅ <b>VIP 设置成功</b>\n\n"
-            f"👤 User ID: <code>{target_id}</code>\n"
-            f"👑 等级: {level_names.get(level, f'Level {level}')}\n"
-            f"🤖 最大Bot数: {info['max_bots']}\n"
-            f"📅 有效期: {months} 个月\n"
-            f"⏳ 到期时间: {info.get('vip_expire_at', '未知')}",
-            parse_mode="HTML"
-        )
-        logger.info("管理员 %s 设置用户 %s 为 VIP%d (%d个月)", user_id, target_id, level, months)
-    else:
-        await _retry_send(update.message.reply_text, "❌ 设置失败，用户可能不存在。")
+    from handlers.master.membership_admin import setvip_command
+    await setvip_command(update, context)
 
 
 # ==================== 管理员帮助 ====================
@@ -1026,7 +836,8 @@ async def help_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
         return
 
-    basic = VIP_PLANS[BASIC_LEVEL]
+    from services.membership import get_plan
+    basic = await get_plan(BASIC_LEVEL)
     text = (
         "🛠 <b>管理员命令帮助</b>\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
@@ -1100,7 +911,8 @@ async def set_free_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     args = context.args or []
-    basic = VIP_PLANS[BASIC_LEVEL]
+    from services.membership import get_plan
+    basic = await get_plan(BASIC_LEVEL)
 
     if not args:
         closed = await is_free_registration_closed()

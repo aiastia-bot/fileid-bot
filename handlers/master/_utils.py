@@ -7,8 +7,8 @@ logger = logging.getLogger(__name__)
 
 def get_bot_manager():
     """获取全局 BotManager 实例"""
-    import __main__
-    return getattr(__main__, 'bot_manager', None)
+    from services import runtime
+    return runtime.manager
 
 
 def escape(text: str) -> str:
@@ -25,7 +25,8 @@ async def build_free_block_reply():
     from config import VIP_PLANS, BASIC_LEVEL
 
     if await is_free_registration_closed():
-        plan = VIP_PLANS[BASIC_LEVEL]
+        from services.membership import get_plan
+        plan = await get_plan(BASIC_LEVEL)
         text = (
             "⚠️ 免费注册已停止。\n\n"
             f"💡 购买基础版（{plan['monthly_price']}⭐/月）即可创建 {plan['max_bots']} 个 Bot，"
@@ -46,12 +47,13 @@ async def build_free_block_reply():
     return text, markup
 
 
-def build_basic_expired_reply():
+async def build_basic_expired_reply():
     """基础版已过期（max_bots=0）的续费提示，返回 (text, reply_markup)"""
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     from config import VIP_PLANS, BASIC_LEVEL
 
-    plan = VIP_PLANS[BASIC_LEVEL]
+    from services.membership import get_plan
+    plan = await get_plan(BASIC_LEVEL)
     text = (
         "⚠️ 你的基础版已过期，Bot 已暂停。\n\n"
         "💡 续费后 Bot 将自动恢复运行。"

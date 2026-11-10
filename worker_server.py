@@ -15,18 +15,15 @@ from config import (
     WORKER_SECRET, WORKER_PORT, MASTER_URL, NODE_ID,
     MAX_BOTS_PER_WORKER, HEALTH_CHECK_INTERVAL,
     API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT,
-    WEBHOOK_SECRET, WEBHOOK_PATH
+    WEBHOOK_SECRET, WEBHOOK_PATH, WORKER_URL, WORKER_WEBHOOK_HOST
 )
 
 logger = logging.getLogger(__name__)
 
 
 def _verify_secret(request: web.Request) -> bool:
-    """验证内部通信密钥"""
-    if not WORKER_SECRET:
-        return True
-    auth = request.headers.get('X-Worker-Secret', '')
-    return auth == WORKER_SECRET
+    from services.security import internal_authorized
+    return internal_authorized(request)
 
 
 class WorkerServer:
@@ -57,7 +54,10 @@ class WorkerServer:
         app.router.add_get('/internal/health', self._handle_health)
 
         # Webhook 处理（Telegram 消息入口）
-        app.router.add_post(f"{WEBHOOK_PATH}/{{bot_id:int}}", self._handle_webhook)
+        app.router.add_post(WEBHOOK_PATH + r'/{bot_id:\d+}', self._handle_webhook)
+
+        from services.health import add_health_routes
+        add_health_routes(app, self._bot_manager)
 
         # 启动/停止时的钩子
         app.on_startup.append(self._on_startup)
@@ -81,9 +81,14 @@ class WorkerServer:
             return web.json_response({'error': 'invalid json'}, status=400)
 
         bot_db_id = data.get('bot_db_id')
+        if type(bot_db_id) is not int or bot_db_id <= 0:
+            return web.json_response({'error': 'invalid bot_db_id'}, status=400)
         bot_token = data.get('bot_token')
         if not bot_db_id or not bot_token:
             return web.json_response({'error': 'missing bot_db_id or bot_token'}, status=400)
+
+        if self._bot_manager and bot_db_id in self._bot_manager.get_all_apps():
+            return web.json_response({'status': 'started', 'bot_db_id': bot_db_id, 'already_running': True})
 
         # 检查容量
         if self._bot_manager and self._bot_manager.active_count >= MAX_BOTS_PER_WORKER:
@@ -97,6 +102,8 @@ class WorkerServer:
             'bot_id': data.get('bot_id'),
             'bot_username': data.get('bot_username', 'unknown'),
             'bot_firstname': data.get('bot_firstname', ''),
+            'forward_mode': data.get('forward_mode', 0),
+            'auto_delete': data.get('auto_delete', 0),
         }
 
         if not self._bot_manager:
@@ -123,6 +130,8 @@ class WorkerServer:
             return web.json_response({'error': 'invalid json'}, status=400)
 
         bot_db_id = data.get('bot_db_id')
+        if type(bot_db_id) is not int or bot_db_id <= 0:
+            return web.json_response({'error': 'invalid bot_db_id'}, status=400)
         if not bot_db_id:
             return web.json_response({'error': 'missing bot_db_id'}, status=400)
 
@@ -149,6 +158,8 @@ class WorkerServer:
             return web.json_response({'error': 'invalid json'}, status=400)
 
         bot_db_id = data.get('bot_db_id')
+        if type(bot_db_id) is not int or bot_db_id <= 0:
+            return web.json_response({'error': 'invalid bot_db_id'}, status=400)
         if not bot_db_id:
             return web.json_response({'error': 'missing bot_db_id'}, status=400)
 
@@ -166,6 +177,8 @@ class WorkerServer:
             'bot_id': data.get('bot_id'),
             'bot_username': data.get('bot_username', 'unknown'),
             'bot_firstname': data.get('bot_firstname', ''),
+            'forward_mode': data.get('forward_mode', 0),
+            'auto_delete': data.get('auto_delete', 0),
         }
 
         success = await self._bot_manager.start_bot(bot_record)
@@ -187,11 +200,15 @@ class WorkerServer:
             return web.json_response({'error': 'invalid json'}, status=400)
 
         bot_db_id = data.get('bot_db_id')
+        if type(bot_db_id) is not int or bot_db_id <= 0:
+            return web.json_response({'error': 'invalid bot_db_id'}, status=400)
         if not bot_db_id:
             return web.json_response({'error': 'missing bot_db_id'}, status=400)
 
         if not self._bot_manager:
             return web.json_response({'error': 'bot_manager not ready'}, status=503)
+        if ('forward_mode' in data and data['forward_mode'] not in (-1, 0, 1)) or ('auto_delete' in data and (type(data['auto_delete']) is not int or not 0 <= data['auto_delete'] <= 86400)):
+            return web.json_response({'error': 'invalid settings'}, status=400)
 
         # 检查 Bot 是否在本 Worker 运行
         all_apps = self._bot_manager.get_all_apps()
@@ -250,6 +267,9 @@ class WorkerServer:
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """处理 Telegram webhook 更新，分发给对应的 Bot"""
+        from services.security import webhook_authorized
+        if not webhook_authorized(request):
+            return web.Response(status=403)
         bot_db_id = int(request.match_info['bot_id'])
         try:
             body = await request.json()
@@ -259,11 +279,14 @@ class WorkerServer:
         if not self._bot_manager:
             return web.Response(status=503)
 
-        success = await self._bot_manager.handle_webhook_update(bot_db_id, body)
-        if success:
-            return web.Response(status=200)
-        else:
-            return web.Response(status=404)
+        try:
+            await self._inbox.accept(str(bot_db_id), body)
+        except (ValueError, TypeError):
+            return web.Response(status=400)
+        except Exception:
+            logger.exception('Worker inbox acceptance failed')
+            return web.Response(status=503)
+        return web.Response(status=200)
 
     # ==================== 心跳 ====================
 
@@ -271,8 +294,18 @@ class WorkerServer:
         """启动时：向 Master 注册，开始心跳"""
         logger.info("Worker [%s] 启动，监听端口 %d", NODE_ID, WORKER_PORT)
 
-        # 向 Master 注册
-        await self._register_to_master()
+        from db import init_db
+        from services.inbox import Inbox
+        from services import runtime
+        await init_db()
+        self._bot_manager._ready = True
+        runtime.configure(bot_manager=self._bot_manager)
+        self._inbox = Inbox(lambda key: self._bot_manager.get_all_apps().get(int(key)))
+        self._inbox.start()
+        await self._bot_manager.start_webhook_monitor()
+        # Register only after the listener can accept internal requests.
+        # _heartbeat_loop retries registration if master started later.
+        asyncio.get_running_loop().call_soon(lambda: asyncio.create_task(self._register_to_master()))
 
         # 启动心跳任务
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -286,12 +319,17 @@ class WorkerServer:
             except asyncio.CancelledError:
                 pass
 
+        await self._inbox.stop()
         # 停止所有 Bot
         if self._bot_manager:
             await self._bot_manager.stop_all()
 
         # 通知 Master 离线
         await self._notify_master_offline()
+        from db.core import close_db
+        from redis_manager import get_redis
+        await (await get_redis()).close()
+        await close_db()
         logger.info("Worker [%s] 已关闭", NODE_ID)
 
     async def _register_to_master(self):
@@ -306,6 +344,9 @@ class WorkerServer:
                     f"{MASTER_URL}/internal/register",
                     json={
                         'node_id': NODE_ID,
+                        'node_url': WORKER_URL,
+                        'webhook_host': WORKER_WEBHOOK_HOST,
+                        'max_bots': MAX_BOTS_PER_WORKER,
                         'active_bots': self._bot_manager.active_count if self._bot_manager else 0,
                     },
                     headers={'X-Worker-Secret': WORKER_SECRET},
@@ -338,6 +379,7 @@ class WorkerServer:
                         timeout=10.0
                     )
                     if resp.status_code != 200:
+                        await self._register_to_master()
                         logger.warning("心跳发送失败: %s", resp.text)
             except asyncio.CancelledError:
                 break

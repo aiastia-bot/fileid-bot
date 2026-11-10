@@ -110,14 +110,21 @@ async def claim_migration(code: str, to_user_id: int) -> Tuple[str, Optional[Dic
     """
     async with get_session() as session:
         try:
-            # 行锁防并发领取（SQLite WAL 单写者天然串行，MySQL 走 FOR UPDATE）
+            # Reserve the code with a conditional write before reading source
+            # state. FOR UPDATE alone does not lock SQLite reads.
+            reserved = await session.execute(update(VipMigration).where(
+                VipMigration.code == code, VipMigration.status == 'pending'
+            ).values(status='claiming'))
+            if not reserved.rowcount:
+                return 'invalid', None
+            # This write is rolled back on every rejected claim.
             result = await session.execute(
                 select(VipMigration)
                 .where(VipMigration.code == code)
                 .with_for_update()
             )
             mig = result.scalars().first()
-            if not mig or mig.status != 'pending':
+            if not mig or mig.status != 'claiming':
                 return 'invalid', None
 
             # 源账号会员必须仍然有效（领取时以实际状态为准，不信任快照）
@@ -125,7 +132,7 @@ async def claim_migration(code: str, to_user_id: int) -> Tuple[str, Optional[Dic
                 select(User).where(User.user_id == mig.from_user_id).with_for_update()
             )
             user_a = res_a.scalars().first()
-            if not _is_active_member(user_a):
+            if not _is_active_member(user_a) or user_a.vip_migrated:
                 return 'expired', None
 
             if to_user_id == mig.from_user_id:

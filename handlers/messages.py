@@ -378,12 +378,18 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
 
         # 异步提交所有批次到队列（不等待发送完成，避免阻塞 webhook）
         t2 = _time.monotonic()
+        accepted_files = 0
+        queue.clear_chat_cancel(chat_id)
         for batch in batches:
             try:
-                queue.submit_batch_async(chat_id, batch, protect_content=protect,
-                                         auto_delete=auto_delete)
+                task = queue.submit_batch_async(chat_id, batch, protect_content=protect,
+                                                auto_delete=auto_delete)
+                await task.accepted
+                accepted_files += len(batch)
             except Exception as e:
                 logger.error("队列提交失败: %s", e)
+                await _retry_send(message.reply_text, f"⚠️ 已排队 {accepted_files}/{total} 个文件。{e}")
+                break
         logger.debug("⏱ _process_file_codes queue提交(%d 批) 耗时%.3fs", len(batches), _time.monotonic() - t2)
 
         # 发送排队提示后立即返回，webhook 快速响应
@@ -391,7 +397,7 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
         if total > GROUP_SEND_SIZE:
             try:
                 await _retry_send(message.reply_text,
-                    f"📤 已排队 {total} 个文件（{len(batches)} 批），正在后台发送…"
+                    f"📤 已排队 {accepted_files}/{total} 个文件，正在后台发送。使用 /queue 查看进度，/stop 取消。"
                 )
             except Exception:
                 pass

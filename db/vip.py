@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 
 from sqlalchemy import select, update, func, text
+from sqlalchemy.exc import IntegrityError
 
 from db.core import get_session, _model_to_dict
 from db.models import User, StarPayment, UserBot, UserBotPref
@@ -115,7 +116,10 @@ async def get_or_create_user(user_id: int) -> Dict:
                 created_at=now,
             )
             session.add(user)
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
             # 重新查询以获取完整对象
             result = await session.execute(
                 select(User).where(User.user_id == user_id)
@@ -126,86 +130,57 @@ async def get_or_create_user(user_id: int) -> Dict:
 
 
 async def get_user_vip_level(user_id: int) -> int:
-    """获取用户的有效VIP等级（自动检查过期），带缓存"""
-    # 尝试从缓存读取
-    r = await _get_redis()
-    cached = await r.cache_get(f"vip_level:{user_id}")
-    if cached is not None:
-        return int(cached)
-
-    user = await get_or_create_user(user_id)
-    level = user.get('vip_level', 0)
-    expire_at = user.get('vip_expire_at')
-
-    if level > 0 and expire_at:
-        try:
-            expire_dt = datetime.strptime(expire_at, "%Y-%m-%d %H:%M:%S")
-            if datetime.now() > expire_dt:
-                if level == BASIC_LEVEL:
-                    # 基础版过期不降级：保持 level 4 + 过期时间，
-                    # 与存量免费用户（level 0 无到期）区分开，由 max_bots=0 挡住使用
-                    pass
-                else:
-                    # VIP 已过期，降回 0
-                    await _downgrade_expired_user(user_id)
-                    level = 0
-        except ValueError:
-            pass
-
-    # 缓存 5 分钟（过期信息缓存在 VIP 过期前会自动失效）
-    await r.cache_set(f"vip_level:{user_id}", str(level), ttl=300)
-    return level
+    """Compute expiry from current state; no stale entitlement cache past expiry."""
+    info = await get_user_vip_info(user_id)
+    if not info['is_active'] and info['vip_level'] != BASIC_LEVEL:
+        async with get_session() as session:
+            from services.notices import enqueue
+            await enqueue(f"expired:{user_id}:{info['vip_expire_at']}", user_id,
+                          '⚠️ 你的会员已到期，使用 /vip 续费。因会员额度暂停的 Bot 将在续费后恢复。', session)
+            await session.execute(update(User).where(User.user_id == user_id, User.vip_level == info['vip_level'],
+                User.vip_expire_at == info['vip_expire_at']).values(vip_level=0, vip_expire_at=None))
+            await session.commit()
+    # Keep BASIC_LEVEL for expired basic accounts (registration identity).
+    return info['vip_level'] if info['vip_level'] == BASIC_LEVEL else info['effective_level']
 
 
 async def get_user_vip_info(user_id: int) -> Dict:
-    """获取用户VIP完整信息（包含是否过期、剩余天数等）"""
+    from services.membership import get_plan
     user = await get_or_create_user(user_id)
     level = user.get('vip_level', 0)
     expire_at = user.get('vip_expire_at')
-    plan = VIP_PLANS.get(level, VIP_PLANS[0])
-
-    is_active = True
-    remaining_days = 0
-
+    active = True
+    remaining = 0
     if level > 0 and expire_at:
         try:
-            expire_dt = datetime.strptime(expire_at, "%Y-%m-%d %H:%M:%S")
-            now = datetime.now()
-            if now > expire_dt:
-                is_active = False
-                remaining_days = 0
-            else:
-                remaining_days = (expire_dt - now).days
+            expiry = datetime.strptime(expire_at, "%Y-%m-%d %H:%M:%S")
+            active = expiry > datetime.now()
+            remaining = max(0, (expiry-datetime.now()).days)
         except ValueError:
-            is_active = False
-    elif level == 0:
-        is_active = True  # 免费用户始终"有效"
-
-    return {
-        'user_id': user_id,
-        'vip_level': level,
-        'vip_name': plan['name'],
-        'max_bots': plan['max_bots'],
-        'vip_expire_at': expire_at,
-        'is_active': is_active,
-        'remaining_days': remaining_days,
-    }
+            active = False
+    effective = level if active else 0
+    plan = await get_plan(level)
+    effective_plan = await get_plan(effective)
+    maximum = effective_plan['max_bots']
+    if level == BASIC_LEVEL and not active:
+        maximum = 0
+    return dict(user_id=user_id, vip_level=level, effective_level=effective,
+                vip_name=plan['name'], max_bots=maximum, vip_expire_at=expire_at,
+                is_active=active, remaining_days=remaining)
 
 
 async def get_max_bots_for_user(user_id: int) -> int:
-    """获取用户可创建的最大Bot数量（基础版已过期返回 0，续费/升级后恢复）"""
-    info = await get_user_vip_info(user_id)
-    if info['vip_level'] == BASIC_LEVEL and not info['is_active']:
-        return 0
-    return VIP_PLANS.get(info['vip_level'], VIP_PLANS[0])['max_bots']
+    return (await get_user_vip_info(user_id))['max_bots']
 
 
 async def update_user_vip(user_id: int, level: int, months: int) -> bool:
     """升级/续费用户VIP，时间叠加"""
+    if level not in VIP_PLANS or months < 0 or months > 120:
+        return False
     async with get_session() as session:
         try:
             result = await session.execute(
-                select(User).where(User.user_id == user_id)
+                select(User).where(User.user_id == user_id).with_for_update()
             )
             user = result.scalar_one_or_none()
             if not user:
@@ -226,7 +201,7 @@ async def update_user_vip(user_id: int, level: int, months: int) -> bool:
 
             new_expire = base_time + timedelta(days=30 * months)
             user.vip_level = level
-            user.vip_expire_at = new_expire.strftime("%Y-%m-%d %H:%M:%S")
+            user.vip_expire_at = None if level == 0 or months == 0 else new_expire.strftime("%Y-%m-%d %H:%M:%S")
             # 新授予的会员可再迁移（清除「迁移收到」一次性标记）
             user.vip_migrated = 0
 

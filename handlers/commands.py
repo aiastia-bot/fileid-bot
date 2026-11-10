@@ -641,3 +641,14 @@ async def user_forward_callback(update: Update, context: ContextTypes.DEFAULT_TY
             pass
     else:
         await query.answer("❌ 设置失败，请重试", show_alert=True)
+
+
+async def queue_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from send_queue import get_queue_from_context
+    queue = get_queue_from_context(context)
+    info = queue.queue_info(update.effective_chat.id)
+    await _retry_send(update.effective_message.reply_text,
+        f"📤 正在发送：{info['sending_files']} 个文件\n"
+        f"⏳ 等待发送：{info['pending_files']} 个文件（{info['user_pending']} 批）\n"
+        f"🤖 此 Bot 总等待批次：{info['total_pending']}\n"
+        "使用 /stop 取消你的发送任务。")

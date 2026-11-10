@@ -19,3 +19,6 @@ portable-dist/
 *.build/
 *.dist/
 *.c
+
+.pytest_cache/
+.ruff_cache/

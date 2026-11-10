@@ -49,7 +49,7 @@ async def new_bot_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
     if max_bots == 0:
-        text, markup = build_basic_expired_reply()
+        text, markup = await build_basic_expired_reply()
         await _retry_send(update.message.reply_text, text, parse_mode="HTML", reply_markup=markup)
         return ConversationHandler.END
     if len(user_bots) >= max_bots:
@@ -202,7 +202,7 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
     max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
     if max_bots == 0:
-        text, markup = build_basic_expired_reply()
+        text, markup = await build_basic_expired_reply()
         await status_msg.edit_text(text, parse_mode="HTML", reply_markup=markup)
         context.user_data.pop('new_bot_username', None)
         context.user_data.pop('new_bot_name', None)
@@ -278,7 +278,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
     if max_bots == 0:
-        text, markup = build_basic_expired_reply()
+        text, markup = await build_basic_expired_reply()
         await _retry_send(update.message.reply_text, text, parse_mode="HTML", reply_markup=markup)
         return
     if len(user_bots) >= max_bots:
@@ -357,7 +357,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     max_bots = await get_max_bots_for_user(user_id)
     user_bots = await get_user_bots_by_owner(user_id)
     if max_bots == 0:
-        text, markup = build_basic_expired_reply()
+        text, markup = await build_basic_expired_reply()
         await status_msg.edit_text(text, parse_mode="HTML", reply_markup=markup)
         return
     if len(user_bots) >= max_bots:

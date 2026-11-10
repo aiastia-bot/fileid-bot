@@ -29,6 +29,8 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """/vip 查看 VIP 状态和购买选项"""
     user_id = update.effective_user.id
     vip_info = await get_user_vip_info(user_id)
+    from services.membership import get_plans
+    plans = await get_plans()
     free_closed = await is_free_registration_closed()
 
     # 构建状态显示
@@ -37,10 +39,10 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         expire_text = ""
     else:
         if vip_info['is_active']:
-            status_text = f"⭐ <b>当前状态：</b>{vip_info['vip_name']}"
+            status_text = f"⭐ <b>当前状态：</b>{escape(vip_info['vip_name'])}"
             expire_text = f"\n📅 <b>到期时间：</b>{vip_info['vip_expire_at']}\n⏳ <b>剩余天数：</b>{vip_info['remaining_days']} 天"
         else:
-            status_text = f"⚠️ <b>当前状态：</b>{vip_info['vip_name']}（已过期）"
+            status_text = f"⚠️ <b>当前状态：</b>{escape(vip_info['vip_name'])}（已过期）"
             expire_text = ""
 
     bots_count = await get_active_bots_count_by_owner(user_id)
@@ -62,9 +64,9 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     display_levels = [0, BASIC_LEVEL, 1, 2, 3] if free_closed else [0, 1, 2, 3]
 
     for level in display_levels:
-        plan = VIP_PLANS[level]
+        plan = plans[level]
         # 拼接该等级的特权标注（目前只有转发保护）
-        features = VIP_FEATURES.get(level, {})
+        features = plan
         feature_tags = []
         if features.get('forward_mode'):
             feature_tags.append("🔒 含转发保护")
@@ -73,18 +75,18 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         current = "  ✅ 当前" if level == vip_info['vip_level'] and vip_info['is_active'] else ""
 
         if level == 0:
-            text += f"  {plan['name']} — {plan['max_bots']} 个 Bot — 免费{feature_text}\n"
+            text += f"  {escape(plan['name'])} — {plan['max_bots']} 个 Bot — 免费{feature_text}\n"
         elif level == BASIC_LEVEL:
-            text += f"  💎 {plan['name']} — {plan['max_bots']} 个 Bot — 月付 {plan['monthly_price']}⭐ / 年付 {plan['yearly_price']}⭐{current}{feature_text}\n"
+            text += f"  💎 {escape(plan['name'])} — {plan['max_bots']} 个 Bot — 月付 {plan['monthly_price']}⭐ / 年付 {plan['yearly_price']}⭐{current}{feature_text}\n"
         else:
             stars = "⭐" * level
             monthly = plan['monthly_price']
             yearly = plan['yearly_price']
-            text += f"  {stars} {plan['name']} — {plan['max_bots']} 个 Bot — 月付 {monthly}⭐ / 年付 {yearly}⭐{current}{feature_text}\n"
+            text += f"  {stars} {escape(plan['name'])} — {plan['max_bots']} 个 Bot — 月付 {monthly}⭐ / 年付 {yearly}⭐{current}{feature_text}\n"
 
     text += (
         f"\n💡 年付享优惠（约 10 个月价格）\n"
-        f"续费时间会自动叠加，不会浪费\n\n"
+        f"同等级续费叠加；更换等级从购买日起重新计算有效期。\n\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🔒 <b>转发保护</b>（VIP 1+ 独有）\n"
         f"控制你 Bot 发送的图片/视频是否允许被接收者转发或保存。\n\n"
@@ -109,14 +111,16 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     keyboard = []
 
     for level in buy_levels:
-        plan = VIP_PLANS[level]
+        plan = plans[level]
+        if not plan['enabled']:
+            continue
         icon = "💎" if level == BASIC_LEVEL else "⭐" * level
         row_monthly = InlineKeyboardButton(
-            f"{icon} {plan['name']} 月付 {plan['monthly_price']}⭐",
+            f"{icon} {escape(plan['name'])} 月付 {plan['monthly_price']}⭐",
             callback_data=f"buy_vip|{level}|1"
         )
         row_yearly = InlineKeyboardButton(
-            f"{icon} {plan['name']} 年付 {plan['yearly_price']}⭐",
+            f"{icon} {escape(plan['name'])} 年付 {plan['yearly_price']}⭐",
             callback_data=f"buy_vip|{level}|12"
         )
         keyboard.append([row_monthly, row_yearly])
@@ -126,6 +130,7 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if vip_info['vip_level'] > 0 and vip_info['is_active']:
         bottom_row.append(InlineKeyboardButton("📜 支付记录", callback_data="vip_history"))
         bottom_row.append(InlineKeyboardButton("🔄 迁移会员", callback_data="vip_migrate"))
+    bottom_row = bottom_row or [InlineKeyboardButton("📜 支付记录", callback_data="vip_history")]
     keyboard.append(bottom_row)
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -153,8 +158,9 @@ async def buy_vip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.answer("❌ 参数错误", show_alert=True)
         return
 
-    plan = VIP_PLANS.get(level)
-    if not plan:
+    from services.membership import get_plan
+    plan = await get_plan(level)
+    if level not in (1, 2, 3, BASIC_LEVEL):
         await query.answer("❌ 无效的VIP等级", show_alert=True)
         return
 
@@ -171,15 +177,22 @@ async def buy_vip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     user_id = update.effective_user.id
     time_label = period_text
-    title = f"{plan['name']} {time_label}付订阅"
+    title = f"{escape(plan['name'])} {time_label}付订阅"
     description = (
-        f"购买 {plan['name']} {time_label}付订阅\n"
+        f"购买 {escape(plan['name'])} {time_label}付订阅\n"
         f"可创建最多 {plan['max_bots']} 个 Bot\n"
         f"有效期 {30 * months} 天"
     )
 
     # 生成 payload
-    payload = f"vip_{level}_{months}_{user_id}_{int(time.time())}"
+    from services.payments import create_order
+    try:
+        order = await create_order(user_id, 'vip', months, level)
+    except ValueError as exc:
+        await _retry_send(query.message.reply_text, str(exc))
+        return
+    payload = order['payload']
+    price = order['amount']
 
     # 发送 Invoice（Telegram Stars 使用 XTR 货币）
     prices = [LabeledPrice(label=title, amount=price)]
@@ -196,7 +209,7 @@ async def buy_vip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         await _retry_send(query.message.reply_text, 
             f"💳 正在发起支付...\n"
-            f"⭐ {plan['name']} {time_label}付 — {price} 星星",
+            f"⭐ {escape(plan['name'])} {time_label}付 — {price} 星星",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -214,7 +227,11 @@ async def vip_history_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
     user_id = update.effective_user.id
-    history = await get_payment_history(user_id, limit=10)
+    from services.payments import list_orders
+    history = await list_orders(user_id, limit=10)
+    known_payloads = {p['payload'] for p in history}
+    legacy = await get_payment_history(user_id, limit=10)
+    history = (history + [p for p in legacy if p['payload'] not in known_payloads])[:10]
 
     if not history:
         await _retry_send(query.message.reply_text, "📜 暂无支付记录。")
@@ -222,12 +239,13 @@ async def vip_history_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     text = "📜 <b>支付记录</b>\n\n"
     for i, p in enumerate(history, 1):
-        plan = VIP_PLANS.get(p['vip_level'], {})
-        name = plan.get('name', f"VIP {p['vip_level']}")
+        from services.membership import get_plans
+        plan = (await get_plans()).get(p.get('level', p.get('vip_level', 0)), {})
+        name = 'Telegram Premium' if p.get('product') == 'premium' else plan.get('name', '会员')
         months_text = "年付" if p['months'] == 12 else "月付"
         text += (
             f"{i}. {name} {months_text} — {p['amount']}⭐\n"
-            f"   📅 {p['created_at']}\n"
+            f"   📅 {p['created_at']} | 状态：{p.get('status', '历史订单')}\n"
         )
 
     await _retry_send(query.message.reply_text, text, parse_mode="HTML")
@@ -236,394 +254,62 @@ async def vip_history_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 # ==================== PreCheckout 处理 ====================
 
 async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """响应 Telegram 预结账查询（必须在 10 秒内响应）"""
+    from services.payments import checkout_error
     query = update.pre_checkout_query
+    error = await checkout_error(query.invoice_payload, query.from_user.id, query.total_amount, query.currency)
+    await query.answer(ok=error is None, error_message=error)
 
-    # 解析 payload 验证
-    payload = query.invoice_payload
-    parts = payload.split("_")
-
-    if not parts:
-        await query.answer(ok=False, error_message="无效的支付信息")
-        return
-
-    flow = parts[0]
-
-    if flow == "vip":
-        # vip_{level}_{months}_{user_id}_{ts}
-        if len(parts) < 4:
-            await query.answer(ok=False, error_message="无效的支付信息")
-            return
-        try:
-            level = int(parts[1])
-            months = int(parts[2])
-            user_id = int(parts[3])
-        except (ValueError, IndexError):
-            await query.answer(ok=False, error_message="无效的支付信息")
-            return
-
-        # 验证计划是否存在
-        plan = VIP_PLANS.get(level)
-        if not plan:
-            await query.answer(ok=False, error_message="无效的VIP等级")
-            return
-
-        # 基础版仅在免费注册关闭时出售（防止免费开放期的过期按钮）
-        if level == BASIC_LEVEL and not await is_free_registration_closed():
-            await query.answer(ok=False, error_message="基础版暂未开放购买")
-            return
-
-        # 验证价格
-        expected_price = plan['yearly_price'] if months == 12 else plan['monthly_price']
-        if query.total_amount != expected_price:
-            await query.answer(ok=False, error_message="价格不匹配，请重新发起支付")
-            return
-
-        # 验证通过
-        await query.answer(ok=True)
-
-    elif flow == "premium":
-        # premium_{months}_{user_id}_{ts}
-        if len(parts) < 4:
-            await query.answer(ok=False, error_message="无效的支付信息")
-            return
-        try:
-            months = int(parts[1])
-        except (ValueError, IndexError):
-            await query.answer(ok=False, error_message="无效的支付信息")
-            return
-
-        if months not in PREMIUM_GIFT_PRICES:
-            await query.answer(ok=False, error_message="无效的方案")
-            return
-
-        expected_price = PREMIUM_GIFT_PRICES[months] + PREMIUM_USER_MARKUP
-        if query.total_amount != expected_price:
-            await query.answer(ok=False, error_message="价格不匹配，请重新发起支付")
-            return
-
-        await query.answer(ok=True)
-
-    else:
-        await query.answer(ok=False, error_message="无效的支付信息")
-
-
-# ==================== 支付验证 ====================
-
-async def _verify_star_payment(bot, telegram_charge_id: str, expected_user_id: int,
-                                expected_amount: int) -> bool:
-    """通过 Telegram getStarTransactions API 验证支付真实性"""
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"https://api.telegram.org/bot{bot.token}/getStarTransactions",
-                json={"limit": 50},
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                data = await resp.json()
-
-            if not data.get("ok"):
-                logger.error("getStarTransactions API 调用失败: %s", data.get("description"))
-                return False
-
-            transactions = data.get("result", {}).get("transactions", [])
-            for tx in transactions:
-                if tx.get("id") == telegram_charge_id:
-                    # 验证金额和用户
-                    amount = tx.get("amount", 0)
-                    source = tx.get("source", {})
-                    user_id = source.get("user_id") if source.get("type") == "user" else None
-                    # 金额和用户匹配则通过
-                    if amount == expected_amount:
-                        logger.info("支付验证通过: charge_id=%s, amount=%d", telegram_charge_id, amount)
-                        return True
-                    else:
-                        logger.warning("支付金额不匹配: expected=%d, actual=%d", expected_amount, amount)
-                        return False
-
-            logger.warning("未找到支付记录: charge_id=%s", telegram_charge_id)
-            return False
-    except Exception as e:
-        logger.error("支付验证异常: %s", e)
-        # 验证失败时保守处理：不升级
-        return False
-
-
-# ==================== 支付成功处理 ====================
 
 async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理支付成功回调"""
+    from services.payments import receive_payment, fulfill_order
     payment = update.message.successful_payment
-    user_id = update.effective_user.id
-
-    payload = payment.invoice_payload
-    parts = payload.split("_")
-
-    if not parts:
-        logger.warning("收到未知 payload 的支付成功: %s", payload)
-        return
-
-    # Premium 购买走独立处理器（延迟导入避免循环依赖）
-    if parts[0] == "premium":
-        from handlers.master.premium import handle_premium_payment_success
-        await handle_premium_payment_success(update, context)
-        return
-
-    if parts[0] != "vip" or len(parts) < 4:
-        logger.warning("收到未知 payload 的支付成功: %s", payload)
-        return
-
     try:
-        level = int(parts[1])
-        months = int(parts[2])
-    except (ValueError, IndexError):
-        logger.error("解析支付 payload 失败: %s", payload)
+        status = await receive_payment(payment.invoice_payload, update.effective_user.id,
+            payment.total_amount, payment.currency, payment.telegram_payment_charge_id)
+    except ValueError as exc:
+        await _retry_send(update.message.reply_text, str(exc))
         return
-
-    plan = VIP_PLANS.get(level, {})
-    plan_name = plan.get('name', f'VIP {level}')
-
-    # ======== 二次验证：调用 Telegram API 确认交易真实性 ========
-    telegram_charge_id = payment.telegram_payment_charge_id
-
-    verified = await _verify_star_payment(
-        bot=context.bot,
-        telegram_charge_id=telegram_charge_id,
-        expected_user_id=user_id,
-        expected_amount=payment.total_amount,
-    )
-
-    if not verified:
-        logger.warning("用户 %s 支付验证失败，charge_id=%s（可能为伪造请求）", user_id, telegram_charge_id)
-        await _retry_send(update.message.reply_text, 
-            "⚠️ 支付验证失败，请稍后重试或联系管理员。"
-        )
-        return
-
-    # 记录支付
-    await record_star_payment(
-        user_id=user_id,
-        amount=payment.total_amount,
-        vip_level=level,
-        months=months,
-        payload=payload,
-        telegram_charge_id=telegram_charge_id,
-    )
-
-    # 更新VIP
-    success = await update_user_vip(user_id, level, months)
-
-    if success:
-        period_text = "1 个月" if months == 1 else "1 年"
-        vip_info = await get_user_vip_info(user_id)
-
-        text = (
-            f"🎉 <b>支付成功！</b>\n\n"
-            f"⭐ <b>VIP 等级：</b>{plan_name}\n"
-            f"📅 <b>有效期：</b>{period_text}\n"
-            f"📆 <b>到期时间：</b>{vip_info['vip_expire_at']}\n"
-            f"🤖 <b>可创建 Bot 数：</b>{plan['max_bots']} 个\n\n"
-            f"感谢你的支持！🌟"
-        )
-        await _retry_send(update.message.reply_text, text, parse_mode="HTML")
-
-        # 检查是否有暂停的 Bot 可以恢复
-        await _try_resume_paused_bots(user_id, level)
-
-        logger.info("用户 %s 支付成功（已验证）: %s %d个月, %d⭐",
-                    user_id, plan_name, months, payment.total_amount)
-    else:
-        await _retry_send(update.message.reply_text, 
-            "⚠️ 支付已收到但 VIP 升级失败，请联系管理员。"
-        )
-        logger.error("用户 %s VIP 升级失败（支付已验证成功）", user_id)
+    if status in ('received', 'retry'):
+        # Persisted receipt is sufficient for webhook acknowledgement. Processing
+        # runs independently and is resumed by the periodic order worker.
+        context.application.create_task(fulfill_order(context.bot, payment.invoice_payload))
+    await _retry_send(update.message.reply_text,
+        '✅ 已收到支付记录，正在核验和发放。可在 /vip 的支付记录中查看进度。'
+        if status not in ('completed', 'refunded') else '该笔订单已处理，无需重复支付。')
 
 
 # ==================== VIP 过期处理 ====================
 
 async def handle_expired_vips() -> None:
-    """定时任务：处理所有已过期的VIP用户"""
-    from db.vip import get_expired_users
-    from db import update_user_bot_status
-
-    expired = await get_expired_users()
-    if not expired:
-        return
-
-    logger.info("发现 %d 个过期 VIP 用户", len(expired))
-
-    for user_info in expired:
-        user_id = user_info['user_id']
-        old_level = user_info['vip_level']
-
-        if old_level == BASIC_LEVEL:
-            # 基础版过期：保持 level 4（与存量免费用户区分），暂停全部 Bot
-            paused_names = await _pause_excess_bots(user_id, keep=0)
-            notice_header = (
-                f"⚠️ <b>基础版已过期</b>\n\n"
-                f"你的 基础版 已到期。\n"
-            )
-            notice_footer = "\n\n💡 续费基础版或升级 VIP 后，Bot 将自动恢复运行。\n使用 /vip 查看续费选项"
-        else:
-            # VIP 过期：降回 VIP 0，保留免费额度的 Bot
-            from db.vip import _downgrade_expired_user
-            await _downgrade_expired_user(user_id)
-            paused_names = await _pause_excess_bots(user_id)
-            notice_header = (
-                f"⚠️ <b>VIP 已过期</b>\n\n"
-                f"你的 {VIP_PLANS.get(old_level, {}).get('name', 'VIP')} 已到期。\n"
-                f"已恢复为免费用户（最多 1 个 Bot）。\n"
-            )
-            notice_footer = "\n\n使用 /vip 查看续费选项"
-
-        # 通知用户
-        try:
-            import __main__
-            master_app = getattr(__main__, 'master_app', None)
-            if master_app:
-                text = notice_header
-                if paused_names:
-                    text += f"\n以下 Bot 已暂停：\n"
-                    for name in paused_names:
-                        text += f"  🤖 @{escape(name)}\n"
-                    text += f"\n💡 续费后 Bot 将自动恢复运行。"
-
-                text += notice_footer
-                await _retry_send(master_app.bot.send_message,
-                    chat_id=user_id,
-                    text=text,
-                    parse_mode="HTML",
-                )
-        except Exception as e:
-            logger.error("通知过期用户 %s 失败: %s", user_id, e)
+    from db.vip import get_expired_users, get_user_vip_level
+    from services.notices import enqueue
+    from services.entitlements import reconcile_user
+    for user in await get_expired_users():
+        await enqueue(f"expired:{user['user_id']}:{user['vip_expire_at']}", user['user_id'],
+            '⚠️ 你的会员已到期，Bot 运行额度已按当前方案调整。续费后可自动恢复因会员到期暂停的 Bot。使用 /vip 查看。')
+        await get_user_vip_level(user['user_id'])
+        await reconcile_user(user['user_id'])
 
 
 async def send_expire_reminders() -> None:
-    """定时任务：发送即将过期提醒"""
     from db.vip import get_expiring_users
-
-    users = await get_expiring_users(days=VIP_EXPIRE_NOTICE_DAYS)
-    if not users:
-        return
-
-    logger.info("发送 %d 个过期提醒", len(users))
-
-    for user_info in users:
-        user_id = user_info['user_id']
-        level = user_info['vip_level']
-        expire_at = user_info['vip_expire_at']
-        plan = VIP_PLANS.get(level, {})
-
-        try:
-            import __main__
-            master_app = getattr(__main__, 'master_app', None)
-            if master_app:
-                if level == BASIC_LEVEL:
-                    consequence = "到期后你的 Bot 将被暂停。"
-                else:
-                    consequence = f"到期后 Bot 数量限制将恢复为 {VIP_PLANS[0]['max_bots']} 个。"
-                await _retry_send(master_app.bot.send_message,
-                    chat_id=user_id,
-                    text=(
-                        f"⏰ <b>VIP 即将到期</b>\n\n"
-                        f"你的 {plan.get('name', 'VIP')} 将在 {expire_at} 到期。\n"
-                        f"{consequence}\n\n"
-                        f"💡 使用 /vip 续费，时间会自动叠加哦！"
-                    ),
-                    parse_mode="HTML",
-                )
-        except Exception as e:
-            logger.error("发送过期提醒给 %s 失败: %s", user_id, e)
+    from services.notices import enqueue
+    for user in await get_expiring_users(days=VIP_EXPIRE_NOTICE_DAYS):
+        await enqueue(f"reminder:{user['user_id']}:{user['vip_expire_at']}", user['user_id'],
+            f"⏰ 你的会员将在 {user['vip_expire_at']} 到期。使用 /vip 查看方案和续费。")
 
 
 # ==================== 内部辅助函数 ====================
 
-async def _pause_excess_bots(user_id: int, keep: int = None) -> list:
-    """暂停超出限制的Bot，返回被暂停的Bot用户名列表
-    keep 默认为免费用户上限；基础版过期时传 keep=0 暂停全部
-    """
-    if keep is None:
-        keep = VIP_PLANS[0]['max_bots']  # 过期后用免费用户的限制
-    bots = await get_active_bots_by_owner(user_id)
-
-    if len(bots) <= keep:
-        return []
-
-    # 按创建时间排序，保留最早的 keep 个
-    to_pause = bots[keep:]
-    paused_names = []
-
-    mgr = get_bot_manager()
-
-    for bot in to_pause:
-        bot_db_id = bot['id']
-        bot_username = bot.get('bot_username', 'unknown')
-
-        # 数据库标记暂停
-        await pause_user_bot(bot_db_id)
-
-        # 停止运行中的 Bot
-        if mgr and bot_db_id in mgr._apps:
-            await mgr.stop_bot(bot_db_id)
-
-        paused_names.append(bot_username)
-        logger.info("暂停用户 %s 的 Bot @%s (db_id=%s)", user_id, bot_username, bot_db_id)
-
-    return paused_names
+async def _pause_excess_bots(user_id: int, keep=None) -> list:
+    from services.entitlements import reconcile_user
+    await reconcile_user(user_id)
+    return []
 
 
 async def _try_resume_paused_bots(user_id: int, new_level: int) -> None:
-    """支付成功后尝试恢复暂停的Bot"""
-    max_bots = VIP_PLANS[new_level]['max_bots']
-    all_bots = await get_active_bots_by_owner(user_id)
-    paused_bots = await get_paused_bots_by_owner(user_id)
-
-    if not paused_bots:
-        return
-
-    # 当前活跃Bot数量
-    active_count = len([b for b in all_bots if b['status'] != 'paused'])
-    available_slots = max_bots - active_count
-
-    if available_slots <= 0:
-        return
-
-    # 恢复最多 available_slots 个暂停的Bot
-    mgr = get_bot_manager()
-    resumed = 0
-
-    for bot in paused_bots[:available_slots]:
-        bot_db_id = bot['id']
-        bot_username = bot.get('bot_username', 'unknown')
-
-        # 恢复数据库状态
-        await resume_user_bot(bot_db_id)
-
-        # 启动 Bot
-        if mgr:
-            from db import get_user_bot_by_id
-            bot_record = await get_user_bot_by_id(bot_db_id)
-            if bot_record:
-                success = await mgr.start_bot(bot_record)
-                if success:
-                    resumed += 1
-                    logger.info("恢复用户 %s 的 Bot @%s", user_id, bot_username)
-                else:
-                    logger.error("恢复 Bot @%s 启动失败", bot_username)
-
-    if resumed > 0:
-        try:
-            import __main__
-            master_app = getattr(__main__, 'master_app', None)
-            if master_app:
-                await _retry_send(master_app.bot.send_message, 
-                    chat_id=user_id,
-                    text=f"✅ 已自动恢复 {resumed} 个暂停的 Bot！",
-                    parse_mode="HTML",
-                )
-        except Exception:
-            pass
+    from services.entitlements import reconcile_user
+    await reconcile_user(user_id)
 
 
 # ==================== 会员迁移 ====================
@@ -658,7 +344,8 @@ async def vip_migrate_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await _retry_send(query.message.reply_text, "❌ 生成迁移码失败，请稍后重试。")
         return
 
-    plan = VIP_PLANS.get(user['vip_level'], {})
+    from services.membership import get_plan
+    plan = await get_plan(user['vip_level'])
     link = f"https://t.me/{context.bot.username}?start={mig['code']}"
     text = (
         f"🔄 <b>会员迁移码已生成</b>\n\n"
@@ -686,7 +373,8 @@ async def handle_vip_migration_claim(update: Update, context: ContextTypes.DEFAU
     status, info = await claim_migration(code, user_id)
 
     if status == 'ok':
-        plan = VIP_PLANS.get(info['vip_level'], {})
+        from services.membership import get_plan
+        plan = await get_plan(info['vip_level'])
         await _retry_send(update.message.reply_text,
             f"🎉 <b>会员迁移成功！</b>\n\n"
             f"👑 会员等级：{plan.get('name', 'VIP')}\n"

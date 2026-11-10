@@ -187,6 +187,8 @@ async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def blacklist_check_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """黑名单检查中间件 - 在所有命令之前检查用户是否被封禁"""
+    if update.message and update.message.successful_payment:
+        return  # Paid receipts must be recorded even if access was later revoked.
     if not update.effective_user:
         return
 

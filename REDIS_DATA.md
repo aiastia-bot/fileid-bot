@@ -1,5 +1,7 @@
 # Redis 数据结构说明
 
+> 升级说明：发送任务现在以数据库 `send_jobs` 为准，`sq:` 列表仅用于迁移旧任务。未配置 Redis 时也可恢复发送；以下关于 Redis 发送队列写入和纯内存降级的段落描述旧版本。当前部署与会员说明见 [OPERATIONS.md](OPERATIONS.md)。
+
 > FileID Bot 项目中 Redis 存储的所有键类型、数据格式和用途说明
 
 ---

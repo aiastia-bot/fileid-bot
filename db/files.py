@@ -19,26 +19,21 @@ async def get_bot_file_count(bot_db_id: int) -> int:
     """获取 Bot 已保存的文件总数（全部行，含失效行——文件只增不减）"""
     if not bot_db_id:
         return 0
+    from db.models import BotFileCount
     async with get_session() as session:
-        result = await session.execute(
-            select(func.count()).select_from(FileMapping)
-            .where(FileMapping.bot_db_id == bot_db_id)
-        )
-        return result.scalar() or 0
+        row = await session.get(BotFileCount, bot_db_id)
+        return row.count if row else 0
 
 
 async def get_owner_file_limit(owner_id: int) -> int:
     """按 Bot 主人 VIP 等级返回单个 Bot 的文件数上限（0 = 不限制）
     VIP 1-3 不限制；基础版 / 免费为运行时可调上限（/setfree basicfiles|files）
     """
-    from db.vip import get_user_vip_level, get_free_bot_files_limit, get_basic_bot_files_limit
+    from db.vip import get_user_vip_info
+    from services.membership import get_plan
     from config import BASIC_LEVEL
-    level = await get_user_vip_level(owner_id)
-    if level in (1, 2, 3):
-        return 0
-    if level == BASIC_LEVEL:
-        return await get_basic_bot_files_limit()
-    return await get_free_bot_files_limit()
+    info = await get_user_vip_info(owner_id)
+    return (await get_plan(info['effective_level']))['file_limit']
 
 
 async def is_bot_over_file_quota(bot_db_id: int, owner_id: int) -> bool:
@@ -98,16 +93,39 @@ async def save_file(user_id: int, file_type: str, file_id: str,
                     source_chat_id: str = None, source_message_id: int = None) -> Optional[str]:
     """保存文件到数据库，返回完整代码"""
     from config import CODE_LENGTH, FILE_TYPE_PREFIX
+    file_unique_id = file_unique_id or None
+    from config import FILE_QUOTA_POLICY
+    quota_limit = 0
+    if bot_db_id and FILE_QUOTA_POLICY == 'reject':
+        from db.models import UserBot
+        async with get_session() as lookup:
+            owner = await lookup.get(UserBot, bot_db_id)
+        if owner:
+            quota_limit = await get_owner_file_limit(owner.owner_id)
 
     async with get_session() as session:
         try:
+            if bot_db_id:
+                from sqlalchemy import update
+                from db.models import UserBot
+                from config import FILE_QUOTA_POLICY
+                # Write reservation serializes quota decisions with file insertion.
+                await session.execute(update(UserBot).where(UserBot.id == bot_db_id).values(updated_at=UserBot.updated_at))
+                if FILE_QUOTA_POLICY == 'reject' and quota_limit:
+                    from db.models import BotFileCount
+                    count = await session.get(BotFileCount, bot_db_id)
+                    if count and count.count >= quota_limit:
+                        duplicate = (await session.execute(select(FileMapping.code).where(
+                            FileMapping.bot_db_id == bot_db_id, FileMapping.file_unique_id == file_unique_id
+                        ))).scalars().first() if file_unique_id else None
+                        return duplicate
             # 去重：如果同一 bot 下已存在相同 file_unique_id，直接返回已有代码
             if file_unique_id:
                 if bot_db_id:
                     existing = await session.execute(
                         select(FileMapping.code).where(
                             FileMapping.file_unique_id == file_unique_id,
-                            or_(FileMapping.bot_db_id == bot_db_id, FileMapping.bot_db_id.is_(None))
+                            FileMapping.bot_db_id == bot_db_id
                         )
                     )
                 else:
@@ -117,9 +135,13 @@ async def save_file(user_id: int, file_type: str, file_id: str,
                             FileMapping.bot_username == bot_username
                         )
                     )
-                existing_row = existing.scalar_one_or_none()
+                existing_row = existing.scalars().first()
                 if existing_row:
                     logger.info("文件已存在，复用代码: %s (file_unique_id=%s)", existing_row, file_unique_id)
+                    await session.execute(update(FileMapping).where(FileMapping.code == existing_row).values(
+                        telegram_file_id=file_id, is_valid=1, file_size=file_size,
+                        source_chat_id=source_chat_id, source_message_id=source_message_id))
+                    await session.commit()
                     return existing_row
 
             # 生成唯一代码

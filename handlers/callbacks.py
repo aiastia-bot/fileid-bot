@@ -363,7 +363,7 @@ async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
     logger.info("_send_paginated: 发送第 %d 页, %d 个文件, protect=%s", page, len(page_files), protect)
     try:
         queue = get_queue_from_context(context)
-        queue.clear_chat_pending(chat_id)  # 清除 Redis 恢复的旧任务，避免重复发送
+        queue.clear_chat_cancel(chat_id)
         sent = await queue.submit_batch(chat_id, page_files, protect_content=protect,
                                         auto_delete=auto_delete)
         logger.info("_send_paginated: 第 %d 页发送完成, sent=%d", page, sent)
@@ -465,7 +465,7 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
 
     sent_count = 0
     queue = get_queue_from_context(context)
-    queue.clear_chat_pending(chat_id)  # 清除 Redis 恢复的旧任务，避免重复发送
+    queue.clear_chat_cancel(chat_id)
     for idx, group in enumerate(all_groups):
         # 检查两种停止标志：user_data 标记 + 队列 cancel_chat 标记
         if context.user_data.get('stop_auto_send') or queue.is_chat_cancelled(chat_id):
@@ -576,7 +576,7 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
 
     logger.info("_send_page_files: 准备发送 %d 个文件, protect=%s", len(page_files), protect)
     queue = get_queue_from_context(context)
-    queue.clear_chat_pending(chat_id)  # 清除 Redis 恢复的旧任务，避免重复发送
+    queue.clear_chat_cancel(chat_id)
     sent = await queue.submit_batch(chat_id, page_files, protect_content=protect,
                                     auto_delete=auto_delete)
     result_text = f"✅ 已发送第{page}页文件 ({sent}/{len(page_files)})"

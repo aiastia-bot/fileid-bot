@@ -24,8 +24,8 @@ _FWD_MODE_LABELS = {0: '✅ 允许转发', -1: '🚫 禁止转发', 1: '👤 用
 
 async def _check_vip_forward(user_id: int) -> bool:
     """检查用户是否有转发保护设置权限（VIP 1+）"""
-    vip_level = await get_user_vip_level(user_id)
-    return VIP_FEATURES.get(vip_level, VIP_FEATURES[0]).get('forward_mode', False)
+    from services.membership import member_feature
+    return await member_feature(user_id, 'forward_mode')
 
 
 async def my_bots_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -40,9 +40,11 @@ async def my_bots_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     mgr = get_bot_manager()
+    from db import get_all_worker_nodes
+    online_nodes = {n["node_id"] for n in await get_all_worker_nodes() if n["status"] == "online"}
     text = "📋 <b>我的 Bot 列表：</b>\n\n"
     for i, bot in enumerate(bots, 1):
-        is_running = mgr and bot['id'] in mgr.get_all_apps()
+        is_running = bool(mgr and bot['id'] in mgr.get_all_apps()) or (bot['status'] == 'active' and bot.get('node_id') in online_nodes)
         status_emoji = "🟢" if is_running else "🔴"
         text += (
             f"{i}. {status_emoji} <b>{escape(bot['bot_firstname'])}</b>\n"
@@ -53,26 +55,30 @@ async def my_bots_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # VIP 1+ 可以看到转发保护设置按钮
     vip_level = await get_user_vip_level(user_id)
-    has_forward_feature = VIP_FEATURES.get(vip_level, VIP_FEATURES[0]).get('forward_mode', False)
+    from services.membership import member_feature
+    has_forward_feature = await member_feature(user_id, 'forward_mode')
+    has_auto_delete = await member_feature(user_id, 'auto_delete')
 
     keyboard = []
-    if has_forward_feature:
+    if has_forward_feature or has_auto_delete:
         for i, bot in enumerate(bots, 1):
             forward_mode = bot.get('forward_mode', 0)
             mode_labels = {0: '✅ 允许转发', -1: '🚫 禁止转发', 1: '👤 用户自选'}
             mode_text = mode_labels.get(forward_mode, '✅ 允许转发')
             auto_del = bot.get('auto_delete', 0)
             del_text = f"⏱ {auto_del}s 后删除" if auto_del else "⏱ 不自动删除"
-            keyboard.append([
-                InlineKeyboardButton(
+            row = []
+            if has_forward_feature:
+                row.append(InlineKeyboardButton(
                     f"🔒 @{bot['bot_username']} - {mode_text}",
                     callback_data=f"fwd_menu|{bot['id']}"
-                ),
-                InlineKeyboardButton(
+                ))
+            if has_auto_delete:
+                row.append(InlineKeyboardButton(
                     del_text,
                     callback_data=f"adel_menu|{bot['id']}"
-                ),
-            ])
+                ))
+            keyboard.append(row)
 
     if keyboard:
         text += "\n🔒 点击设置转发保护 | ⏱ 点击设置自动删除："
@@ -156,11 +162,13 @@ async def bot_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     mgr = get_bot_manager()
+    from db import get_all_worker_nodes
+    online_nodes = {n["node_id"] for n in await get_all_worker_nodes() if n["status"] == "online"}
     text = "🚀 <b>Bot 运行状态：</b>\n\n"
     stopped_buttons = []
 
     for bot in bots:
-        is_running = mgr and bot['id'] in mgr.get_all_apps()
+        is_running = bool(mgr and bot['id'] in mgr.get_all_apps()) or (bot['status'] == 'active' and bot.get('node_id') in online_nodes)
         if is_running:
             status = "🟢 运行中"
         elif bot['status'] == 'admin_stopped':
@@ -230,6 +238,12 @@ async def restart_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.answer("⏸️ 此 Bot 已被系统停止，无法重启。", show_alert=True)
         return
 
+    from db.vip import get_max_bots_for_user
+    maximum = await get_max_bots_for_user(user_id)
+    others = [b for b in await get_user_bots_by_owner(user_id) if b['status'] == 'active' and b['id'] != bot_db_id]
+    if len(others) >= maximum:
+        await query.answer('会员已过期或运行额度已满，请先续费或升级。', show_alert=True)
+        return
     await query.answer("⏳ 正在重启...")
     await query.edit_message_text(f"⏳ 正在重启 @{escape(bot_record['bot_username'])}...")
 
@@ -586,8 +600,8 @@ async def forward_mode_callback(update: Update, context: ContextTypes.DEFAULT_TY
             else:
                 # master+worker 模式：通过 scheduler 通知 Worker
                 try:
-                    import sys
-                    scheduler = getattr(sys.modules.get('__main__'), 'scheduler', None)
+                    from services import runtime
+                    scheduler = runtime.scheduler
                     if scheduler:
                         await scheduler.notify_settings_update(bot_db_id, {'forward_mode': mode})
                 except Exception as e:
@@ -647,7 +661,8 @@ async def auto_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer("❌ 无权操作此 Bot", show_alert=True)
             return
 
-        if not await _check_vip_forward(user_id):
+        from services.membership import member_feature
+        if not await member_feature(user_id, 'auto_delete'):
             await query.answer("⛔ 此功能需要 VIP 1 及以上", show_alert=True)
             return
 
@@ -693,7 +708,8 @@ async def auto_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer("❌ 无权操作此 Bot", show_alert=True)
             return
 
-        if not await _check_vip_forward(user_id):
+        from services.membership import member_feature
+        if not await member_feature(user_id, 'auto_delete'):
             await query.answer("⛔ 此功能需要 VIP 1 及以上", show_alert=True)
             return
 
@@ -720,8 +736,8 @@ async def auto_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             else:
                 # master+worker 模式：通过 scheduler 通知 Worker
                 try:
-                    import sys
-                    scheduler = getattr(sys.modules.get('__main__'), 'scheduler', None)
+                    from services import runtime
+                    scheduler = runtime.scheduler
                     if scheduler:
                         await scheduler.notify_settings_update(bot_db_id, {'auto_delete': seconds})
                 except Exception as e:

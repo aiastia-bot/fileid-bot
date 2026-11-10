@@ -27,47 +27,6 @@ os.environ.setdefault('SEND_BATCH_DELAY', '0')
 os.environ.setdefault('SEND_INDIVIDUAL_DELAY', '0')
 os.environ.setdefault('BOT_MIN_API_INTERVAL', '0')
 
-# ===== Stub 掉外部依赖，使测试无需安装 python-telegram-bot / redis =====
-# senders.py 顶层 import telegram，send_queue 的消费循环会 `from senders import send_batch`
-# 这里预置一个 senders 模块占位，后续在 make_queue 里再替换 send_batch。
-
-if 'senders' not in sys.modules:
-    _stub_senders = types.ModuleType('senders')
-
-    class _SendBlockedError(Exception):
-        pass
-
-    _stub_senders.SendBlockedError = _SendBlockedError
-    # 占位 send_batch，会被测试覆盖
-    async def _stub_send_batch(*a, **kw):
-        return 0
-    _stub_senders.send_batch = _stub_send_batch
-    sys.modules['senders'] = _stub_senders
-
-# Stub telegram.error.RetryAfter（senders 重构后消费循环会用到）
-if 'telegram' not in sys.modules:
-    _tg = types.ModuleType('telegram')
-    _err = types.ModuleType('telegram.error')
-
-    class RetryAfter(Exception):
-        def __init__(self, retry_after=1):
-            self.retry_after = retry_after
-            super().__init__(f"Retry after {retry_after}s")
-
-    _err.RetryAfter = RetryAfter
-    _tg.error = _err
-    sys.modules['telegram'] = _tg
-    sys.modules['telegram.error'] = _err
-
-# Stub config（send_queue 顶层 from config import ...）
-if 'config' not in sys.modules:
-    _cfg = types.ModuleType('config')
-    _cfg.SEND_BATCH_DELAY = 0.0
-    _cfg.SEND_MIN_INTERVAL = 0.0
-    _cfg.GROUP_SEND_SIZE = 10
-    _cfg.SEND_INDIVIDUAL_DELAY = 0.0
-    sys.modules['config'] = _cfg
-
 from send_queue import SendQueue, SendTask  # noqa: E402
 # 测试里直接用 senders 模块对象替换 send_batch
 import senders  # noqa: E402
@@ -112,7 +71,10 @@ def make_queue(controller, bot_name="testbot"):
     关键：消费循环里是 `from senders import send_batch`，所以要替换的是
     senders 模块的属性，而不是 send_queue 模块的。
     """
-    q = SendQueue(bot_name)
+    q = SendQueue(bot_name, durable=False)
+    import send_queue
+    send_queue.SEND_BATCH_DELAY = 0
+    send_queue.SEND_MIN_INTERVAL = 0
     q._bot = object()  # 占位，不被 fake 使用
     # 让 _get_redis 返回 None（纯内存）
     q._redis = False

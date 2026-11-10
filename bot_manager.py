@@ -23,7 +23,7 @@ from config import (
     BOT_MODE, WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET,
     ALLOW_GROUP, ROLE,
     WEBHOOK_UPDATE_TIMEOUT, PER_BOT_CONCURRENCY,
-    USER_BOT_COMMANDS,
+    USER_BOT_COMMANDS, NODE_ID, WORKER_WEBHOOK_HOST,
 )
 
 # 启动并发数限制，避免同时发起过多 Telegram API 请求
@@ -91,6 +91,9 @@ class BotManager:
     """
 
     def __init__(self):
+        self._ready = False
+        self._start_locks = {}
+        self._lease_task = None
         self._apps: Dict[int, Application] = {}  # bot_db_id -> Application
         self.master_bot_username: str = ""  # 主Bot用户名，由 main.py 设置
         self._webhook_monitor_task: Optional[asyncio.Task] = None  # webhook 监控任务
@@ -105,7 +108,7 @@ class BotManager:
             start_command, create_collection_cmd, done_collection_cmd,
             cancel_collection_cmd, get_id_command, my_collections_cmd,
             delete_collection_cmd, stop_command, ex_command,
-            pack_command, settings_command, user_forward_callback
+            pack_command, settings_command, user_forward_callback, queue_status_command
         )
         from handlers.messages import (
             handle_attachment, handle_text, handle_forward,
@@ -132,6 +135,7 @@ class BotManager:
         chat_filter = filters.ChatType.PRIVATE if not ALLOW_GROUP else filters.ALL
 
         # 注册命令处理器
+        application.add_handler(CommandHandler("queue", queue_status_command, filters=chat_filter))
         application.add_handler(CommandHandler("start", start_command, filters=chat_filter))
         application.add_handler(CommandHandler("help", start_command, filters=chat_filter))
         application.add_handler(CommandHandler("create", create_collection_cmd, filters=chat_filter))
@@ -188,6 +192,8 @@ class BotManager:
 
         # 错误处理（含 Token 撤销检测）
         async def user_bot_error_handler(update: object, context):
+            from services.inbox import note_error
+            note_error(context.error)
             error_str = str(context.error)
             error_type = type(context.error).__name__
 
@@ -248,13 +254,60 @@ class BotManager:
 
     def _get_webhook_url(self, bot_db_id: int) -> str:
         """生成 Bot 的 webhook URL"""
-        return f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}/{bot_db_id}"
+        host = WORKER_WEBHOOK_HOST if ROLE == 'worker' else WEBHOOK_HOST
+        return f"https://{host}{WEBHOOK_PATH}/{bot_db_id}"
 
     def _get_webhook_url_for_master(self) -> str:
         """生成主 Bot 的 webhook URL"""
         return f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}/master"
 
     async def start_bot(self, bot_record: dict, max_retries: int = 2) -> bool:
+        from services.leases import acquire, release
+        from services import runtime
+        from db.vip import get_max_bots_for_user
+        from db.bots import get_user_bots_by_owner
+        maximum = await get_max_bots_for_user(bot_record['owner_id'])
+        others = [b for b in await get_user_bots_by_owner(bot_record['owner_id'])
+                  if b['status'] == 'active' and b['id'] != bot_record['id']]
+        if len(others) >= maximum:
+            return False
+        if ROLE == 'master' and runtime.scheduler:
+            return bool(await runtime.scheduler.assign_bot_to_worker(bot_record))
+        bid = bot_record['id']
+        lock = self._start_locks.setdefault(bid, asyncio.Lock())
+        async with lock:
+            if bid in self._apps:
+                return True
+            if not await acquire(f'bot:{bid}'):
+                logger.warning('Bot %s is leased by another process', bid)
+                return False
+            try:
+                success = await self._start_bot(bot_record, max_retries)
+            except BaseException:
+                await release(f'bot:{bid}')
+                raise
+            if not success:
+                await release(f'bot:{bid}')
+            elif not self._lease_task or self._lease_task.done():
+                self._lease_task = asyncio.create_task(self._renew_leases())
+            return success
+
+    async def _renew_leases(self):
+        from services.leases import acquire
+        while True:
+            await asyncio.sleep(20)
+            for bid in list(self._apps):
+                try:
+                    from db import get_user_bot_by_id
+                    record = await get_user_bot_by_id(bid)
+                    owned = record and record['status'] == 'active' and await acquire(f'bot:{bid}')
+                except Exception:
+                    logger.exception('Bot lease refresh failed; stopping bot %s', bid)
+                    owned = False
+                if not owned:
+                    await self.stop_bot(bid)
+
+    async def _start_bot(self, bot_record: dict, max_retries: int = 2) -> bool:
         """创建并启动一个用户Bot（网络错误时自动重试，支持 polling/webhook 模式）"""
         bot_db_id = bot_record['id']
         if bot_db_id in self._apps:
@@ -265,6 +318,7 @@ class BotManager:
         last_error = None
 
         for attempt in range(max_retries + 1):
+            app = None
             try:
                 app = self._create_user_bot_app(bot_record['bot_token'])
                 app.bot_data['bot_record'] = bot_record
@@ -302,15 +356,40 @@ class BotManager:
                 else:
                     # Polling 模式
                     await app.updater.start_polling(
-                        drop_pending_updates=True,
+                        drop_pending_updates=False,
                         allowed_updates=Update.ALL_TYPES
                     )
 
+                from send_queue import get_queue
+                queue = get_queue(str(app.bot.id))
+                queue.bot_name = app.bot.username
+                queue.set_bot(app.bot)
+                queue.owner_id = bot_record['owner_id']
+                # Restore durable jobs even if the user never sends a new message.
+                await asyncio.wait_for(queue._ready.wait(), timeout=30)
+                from services.inbox import rehome
+                await rehome(bot_db_id, NODE_ID if ROLE == 'worker' else ROLE)
                 self._apps[bot_db_id] = app
                 logger.info("用户Bot @%s 启动成功 (db_id=%s, mode=%s)", name, bot_db_id, BOT_MODE)
                 return True
 
-            except Exception as e:
+            except BaseException as e:
+                if app is not None:
+                    try:
+                        from send_queue import stop_queue
+                        try:
+                            await stop_queue(str(app.bot.id))
+                        except RuntimeError:
+                            pass
+                        if app.updater and app.updater.running:
+                            await app.updater.stop()
+                        if app.running:
+                            await app.stop()
+                        await app.shutdown()
+                    except Exception:
+                        logger.exception('Failed startup cleanup')
+                if isinstance(e, asyncio.CancelledError):
+                    raise
                 last_error = e
                 error_str = str(e)
 
@@ -332,50 +411,27 @@ class BotManager:
         return False
 
     async def stop_bot(self, bot_db_id: int) -> bool:
-        """停止一个用户Bot"""
+        from services import runtime
+        if ROLE == 'master' and runtime.scheduler and bot_db_id not in self._apps:
+            return await runtime.scheduler.stop_bot_on_worker(bot_db_id)
         app = self._apps.pop(bot_db_id, None)
         if not app:
             return False
-
-        # 记录用户名，停止后用于清理该 Bot 的发送队列/限速状态
-        bot_username = None
+        from services.leases import release
+        from send_queue import stop_queue
         try:
-            bot_username = app.bot.username
-        except Exception:
-            pass
-
-        try:
-            if BOT_MODE == 'webhook':
-                # Webhook 模式：删除 webhook 再关闭
-                try:
-                    await app.bot.delete_webhook()
-                except Exception:
-                    pass
-            else:
+            await stop_queue(str(app.bot.id))
+            if app.updater and app.updater.running:
                 await app.updater.stop()
-            await app.stop()
+            if app.running:
+                await app.stop()
             await app.shutdown()
-            logger.info("用户Bot (db_id=%s) 已停止", bot_db_id)
-            return True
-        except Exception as e:
-            logger.error("停止用户Bot失败: %s", e)
-            return False
-        finally:
-            # 清理该 Bot 的发送队列与限速状态：
-            # 队列消费者协程和 _bot 会强引用已停止的 Application/HTTPX 连接池，
-            # 不清理会随 Bot 增删累积内存
-            if bot_username:
-                try:
-                    from send_queue import stop_queue
-                    await stop_queue(bot_username)
-                except Exception as e:
-                    logger.warning("清理发送队列失败 (@%s): %s", bot_username, e)
-                try:
-                    from senders import _rate_limiter
-                    _rate_limiter.remove(f'@{bot_username}')
-                except Exception as e:
-                    logger.warning("清理限速器失败 (@%s): %s", bot_username, e)
+            await release(f'bot:{bot_db_id}')
             self._bot_semaphores.pop(bot_db_id, None)
+            return True
+        except Exception:
+            logger.exception('Failed stopping bot %s', bot_db_id)
+            return False
 
     def _get_semaphore(self, bot_db_id: int) -> asyncio.Semaphore:
         """获取或创建每个 Bot 的并发信号量"""
@@ -450,6 +506,10 @@ class BotManager:
 
     async def stop_all(self):
         """停止所有用户Bot"""
+        if self._lease_task:
+            self._lease_task.cancel()
+            await asyncio.gather(self._lease_task, return_exceptions=True)
+            self._lease_task = None
         # 停止 webhook 监控
         if self._webhook_monitor_task and not self._webhook_monitor_task.done():
             self._webhook_monitor_task.cancel()
@@ -556,7 +616,7 @@ class BotManager:
 
     async def _verify_all_webhooks(self):
         """验证所有用户 Bot：getMe 心跳检查 Token 有效性 + webhook 地址校验"""
-        if not WEBHOOK_HOST:
+        if not (WORKER_WEBHOOK_HOST if ROLE == 'worker' else WEBHOOK_HOST):
             return
 
         checked = 0
@@ -592,7 +652,7 @@ class BotManager:
                         url=expected_url,
                         secret_token=WEBHOOK_SECRET or None,
                         allowed_updates=Update.ALL_TYPES,
-                        drop_pending_updates=True,
+                        drop_pending_updates=False,
                     )
                     recovered += 1
                     logger.info("✅ Bot @%s (db_id=%s) 的 webhook 已恢复", app.bot.username, bot_db_id)

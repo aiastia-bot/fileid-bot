@@ -1,6 +1,6 @@
 """Worker 节点管理相关数据库函数（Async SQLAlchemy）"""
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 
 from sqlalchemy import select, update
@@ -44,13 +44,13 @@ async def update_worker_heartbeat(node_id: str, active_bots: int) -> bool:
     async with get_session() as session:
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            await session.execute(
+            result = await session.execute(
                 update(WorkerNode)
                 .where(WorkerNode.node_id == node_id)
                 .values(status='online', current_bots=active_bots, last_heartbeat=now)
             )
             await session.commit()
-            return True
+            return bool(result.rowcount)
         except Exception as e:
             logger.error("更新 Worker 心跳失败: %s", e)
             return False
@@ -98,7 +98,7 @@ async def get_best_worker_node() -> Optional[Dict]:
     async with get_session() as session:
         result = await session.execute(
             select(WorkerNode)
-            .where(WorkerNode.status == 'online')
+            .where(WorkerNode.status == 'online', WorkerNode.current_bots < WorkerNode.max_bots)
             .order_by(WorkerNode.current_bots)
             .limit(1)
         )
@@ -123,3 +123,16 @@ async def remove_worker_node(node_id: str) -> bool:
         except Exception as e:
             logger.error("移除 Worker 节点失败: %s", e)
             return False
+
+async def reserve_worker_slot(node_id):
+    async with get_session() as session:
+        await session.execute(update(WorkerNode).where(WorkerNode.node_id == node_id).values(current_bots=WorkerNode.current_bots+1))
+        await session.commit()
+
+
+async def expire_workers():
+    from config import HEALTH_CHECK_INTERVAL
+    cutoff = (datetime.now()-timedelta(seconds=max(120, HEALTH_CHECK_INTERVAL*3))).strftime('%Y-%m-%d %H:%M:%S')
+    async with get_session() as session:
+        await session.execute(update(WorkerNode).where(WorkerNode.status == 'online', WorkerNode.last_heartbeat < cutoff).values(status='offline'))
+        await session.commit()

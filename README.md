@@ -2,6 +2,8 @@
 
 基于 [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) 的多Bot托管平台，用户可以通过主Bot创建和管理自己的 FileID Bot，无需独立服务器。
 
+升级现有部署请先阅读 [升级与运维](OPERATIONS.md)，包含三阶段改动、会员配置命令、备份及回滚步骤。
+
 ## ✨ 特性
 
 - 🏠 **多Bot托管** - 一个服务器运行多个Bot，用户自助管理
@@ -82,7 +84,7 @@ docker compose up -d
 ### 4. 手动部署
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.lock
 python main.py
 ```
 
@@ -157,8 +159,8 @@ WEBHOOK_PORT=8080
 # Webhook URL 基路径（默认 /webhook）
 WEBHOOK_PATH=/webhook
 
-# 可选：验证请求来源的密钥
-WEBHOOK_SECRET=your_random_secret_here
+# 必填：验证请求来源的密钥（16-256位字母、数字、_ 或 -）
+WEBHOOK_SECRET=replace_with_a_long_random_secret
 ```
 
 **3. 启动服务**
@@ -193,7 +195,7 @@ curl http://localhost:8080/health
 - Webhook 模式要求服务器**公网可达**，Telegram 需要能访问到你的域名
 - 必须使用 **HTTPS**（通过反代实现，程序本身只监听 HTTP）
 - 切换模式后需要**重启服务**
-- `WEBHOOK_SECRET` 建议设置，防止非法请求伪造更新
+- `WEBHOOK_SECRET` 必须设置，防止非法请求伪造更新
 
 ## 📱 使用方法
 

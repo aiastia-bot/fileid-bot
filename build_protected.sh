@@ -77,12 +77,14 @@ done
 PACKAGES=(
     "db"
     "handlers"
+    "services"
 )
 
 for pkg in "${PACKAGES[@]}"; do
     if [ -d "$pkg" ]; then
         echo "🔧 编译包: $pkg/"
         $PYTHON -m nuitka "${COMMON_FLAGS[@]}" \
+            --include-package="$pkg" \
             --output-dir="$BUILD_DIR" \
             "$pkg" 2>&1
         echo "✅ 完成包: $pkg/"
@@ -124,9 +126,15 @@ if [ -d "$BUILD_DIR/handlers/master" ]; then
     cp -r "$BUILD_DIR/handlers/master/"* "$DIST_DIR/handlers/master/" 2>/dev/null || true
 fi
 
+if [ -d "$BUILD_DIR/services" ]; then
+    mkdir -p "$DIST_DIR/services"
+    cp -r "$BUILD_DIR/services/"* "$DIST_DIR/services/"
+fi
+
 # 复制启动入口和配置文件
 cp run.py "$DIST_DIR/"
-cp requirements.txt "$DIST_DIR/"
+cp requirements.txt requirements.lock "$DIST_DIR/"
+cp -r scripts "$DIST_DIR/"
 cp .env.example "$DIST_DIR/" 2>/dev/null || true
 
 # 创建数据目录

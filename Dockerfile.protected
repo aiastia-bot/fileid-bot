@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Nuitka 和项目依赖
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
+COPY requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock \
     && pip install --no-cache-dir nuitka ordered-set zstandard
 
 # 复制源码
@@ -35,8 +35,8 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone &
 WORKDIR /app
 
 # 安装运行时 Python 依赖（不含编译工具）
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
 
 # 只复制编译后的二进制模块和必要文件（不含源码）
 COPY --from=builder /build/fileid-bot-protected/ .
