@@ -201,36 +201,39 @@ class RedisManager:
                 pipe = self._redis.pipeline(transaction=True)
                 pipe.zremrangebyscore(key, 0, window_start)
                 pipe.zcard(key)
-                pipe.zadd(key, {str(now): now})
                 pipe.expire(key, window + 1)
                 results = await pipe.execute()
                 current = results[1]
 
                 if current >= limit:
-                    # 获取最早的请求时间，计算等待时间
+                    # 获取最早的请求时间，计算等待时间。
+                    # 被拒绝的检查不写入记录：否则等待循环的每次重查都会自我续期，
+                    # 窗口永远无法腾空，rate_limit_wait 将无限排队直至 webhook 超时
                     earliest = await self._redis.zrange(key, 0, 0, withscores=True)
                     if earliest:
                         wait = earliest[0][1] + window - now
                         return False, current, max(0, wait)
                     return False, current, window
+                await self._redis.zadd(key, {str(now): now})
+                await self._redis.expire(key, window + 1)
                 return True, current + 1, 0
             except Exception as e:
                 logger.warning("Redis rate_limit 失败: %s", e)
                 return True, 0, 0  # 降级时放行
         else:
             # 内存降级
-            timestamps = self._rate_windows.get(key, [])
             # 清理过期
-            timestamps = [t for t in timestamps if t > window_start]
-            timestamps.append(now)
-            self._rate_windows[key] = timestamps
-
+            timestamps = [t for t in self._rate_windows.get(key, []) if t > window_start]
             current = len(timestamps)
-            if current > limit:
+            if current >= limit:
+                # 与 Redis 分支对齐：被拒绝的检查不追加记录，
+                # 否则等待循环的重查会自我续期，窗口永远无法腾空
                 wait = timestamps[0] + window - now
                 return False, current, max(0, wait)
+            timestamps.append(now)
+            self._rate_windows[key] = timestamps
             self._maybe_gc()
-            return True, current, 0
+            return True, current + 1, 0
 
     async def rate_limit_wait(self, key: str, limit: int, window: int, max_wait: float = 30.0) -> bool:
         """限流等待（排队模式）

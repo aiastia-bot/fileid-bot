@@ -270,6 +270,15 @@ def validate_config():
                   SEND_QUEUE_MAX_PER_USER, SEND_QUEUE_MAX_RETRIES, PER_BOT_CONCURRENCY, DATA_RETENTION_DAYS):
         if value <= 0:
             raise ValueError('Concurrency, queue, retry and retention limits must be positive')
+    if RATE_LIMIT_WINDOW <= 0 or RATE_LIMIT_MAX <= 0:
+        raise ValueError('RATE_LIMIT_WINDOW and RATE_LIMIT_MAX must be positive')
+    if RATE_LIMIT_MAX_WAIT < 0:
+        raise ValueError('RATE_LIMIT_MAX_WAIT must be non-negative')
+    if RATE_LIMIT_MAX_WAIT > WEBHOOK_UPDATE_TIMEOUT - 5:
+        raise ValueError(
+            f'RATE_LIMIT_MAX_WAIT must stay below WEBHOOK_UPDATE_TIMEOUT '
+            f'(currently {WEBHOOK_UPDATE_TIMEOUT}s) with headroom, otherwise rate-limit '
+            'queueing exceeds the inbox processing timeout and stalls all workers')
 
 
 # Unified Telegram API pacing. Albums count their individual media items.
