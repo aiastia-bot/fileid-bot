@@ -397,6 +397,13 @@ def _register_master_handlers(application: Application):
 async def post_stop(application):
     from send_queue import stop_all_queues
     from services import runtime
+    # 补发未完成的附件汇总（文件已入库只差通知；bot 仍在 shutdown 前，可发送）
+    from handlers.messages import flush_all_attachment_reply_buffers
+    apps = [application]
+    if runtime.manager:
+        apps += list(runtime.manager.get_all_apps().values())
+    for app in apps:
+        await flush_all_attachment_reply_buffers(app)
     if runtime.scheduler:
         await runtime.scheduler.stop()
     await stop_all_queues()
