@@ -385,8 +385,8 @@ async def test_webhook_uses_common_initialization_and_jobs(database, monkeypatch
     assert manager._ready
     manager.load_all.assert_awaited_once()
     manager.start_webhook_monitor.assert_awaited_once()
-    # 3 个基础周期任务 + 备份补位检查（backup-reconcile）
-    assert app.job_queue.run_repeating.call_count == 4
+    # 3 个基础周期任务 + 备份补位检查（backup-reconcile）+ 失败 Bot 重载（bot-reload）
+    assert app.job_queue.run_repeating.call_count == 5
     bot.set_my_commands.assert_awaited_once()
     assert bot.set_webhook.call_args.kwargs["drop_pending_updates"] is False
     await _build_on_shutdown(app, manager)(webapp)
