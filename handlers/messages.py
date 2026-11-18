@@ -25,6 +25,9 @@ ATTACH_REPLY_DEBOUNCE = 3.0    # 静默 N 秒后合并发送汇总（每条新�
 ATTACH_REPLY_MAX_WAIT = 15.0   # 连续上传时的强制汇总上限，避免全程静默
 ATTACH_SUMMARY_COLLAPSE = 15   # 汇总超过该文件数时用可折叠引用（blockquote）
 
+CODE_MERGE_WINDOW = 0.8        # 代码合并窗口（秒）：合并同一次粘贴被切割的碎片消息，
+                               # 0.8s 足够覆盖粘贴碎片（间隔通常 <0.3s），又不会拖慢单条查询
+
 
 # ===== 级联备份：来自其他 Bot 的消息 =====
 
@@ -456,8 +459,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_id = message.from_user.id if message.from_user else 0
 
     # ===== 消息合并缓冲：收集同一用户短时间内连续发送的代码 =====
-    # 当代码数量较多时，Telegram 可能会将一条消息切割成多条
-    # 等待 2 秒，收集同一用户的所有代码消息后统一处理
+    # 当代码数量较多时，Telegram 可能会将一条消息切割成多条，
+    # 等待 CODE_MERGE_WINDOW 收集同一用户的所有代码消息后统一处理
     if file_codes:
         if 'pending_code_buffer' not in context.bot_data:
             context.bot_data['pending_code_buffer'] = {}
@@ -481,7 +484,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             """处理合并后的所有代码"""
             t1 = _time.monotonic()
             try:
-                await asyncio.sleep(2)  # 等待2秒收集可能的后续消息
+                await asyncio.sleep(CODE_MERGE_WINDOW)
                 logger.debug("⏱ process_buffered_codes sleep后 耗时%.3fs", _time.monotonic() - t1)
 
                 buf = context.bot_data.get('pending_code_buffer', {}).pop(buffer_key, None)
