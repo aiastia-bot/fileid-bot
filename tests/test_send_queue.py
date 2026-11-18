@@ -249,7 +249,10 @@ class TestRetryAfter(unittest.IsolatedAsyncioTestCase):
             q._rate_limit_until = 0.0
 
             q.submit_batch_async(100, make_files(1))
-            await asyncio.sleep(0.05)  # 让限流触发
+            # 让限流触发：CI 慢机器上固定 sleep 会漂，改为轮询等待条件成立
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and q._rate_limit_until <= 0.0:
+                await asyncio.sleep(0.02)
 
             self.assertGreater(q._rate_limit_until, 0.0,
                               "_rate_limit_until 应被设置")
