@@ -48,8 +48,12 @@ print(f"[启动] 日志级别: {LOG_LEVEL.upper()} (来自 LOG_LEVEL 环境变�
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """主Bot错误处理"""
-    from services.inbox import note_error
+    from services.inbox import note_error, _is_permanent_user_error
     note_error(context.error)
+    if _is_permanent_user_error(context.error):
+        # 用户拉黑/销号：已知永久错误且重试无用，单行记录即可
+        logger.info("主Bot 用户侧永久错误（已忽略）: %s", context.error)
+        return
     logger.error("主Bot异常: %s", context.error, exc_info=context.error)
 
 
