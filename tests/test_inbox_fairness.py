@@ -111,6 +111,32 @@ async def test_dead_bot_warning_suppressed_during_startup(database, caplog):
     assert any("应用未加载" in r.message for r in caplog.records)
 
 
+async def test_metrics_exposes_inbox_workers(database, monkeypatch):
+    """/internal/metrics 暴露 worker 数与运行状态，验证 INBOX_WORKERS 生效"""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from services.health import add_health_routes
+
+    monkeypatch.setattr("services.security.WORKER_SECRET", "internal-secret")
+    app = web.Application()
+    inbox = Inbox(lambda key: None)
+    inbox.running = True
+    inbox.tasks = [SimpleNamespace() for _ in range(3)]
+    app["inbox"] = inbox
+    add_health_routes(app, SimpleNamespace(active_count=7))
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/internal/metrics", headers={"X-Worker-Secret": "internal-secret"}
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["inbox_workers"] == 3
+        assert data["inbox_running"] is True
+        assert data["bots"] == 7
+
+
 async def test_timeout_is_logged_compactly(database, alive_app, caplog):
     """处理超时走单行 WARNING，不刷完整堆栈"""
     import asyncio

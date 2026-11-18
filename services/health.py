@@ -51,6 +51,11 @@ def add_health_routes(app, manager):
         values["api_rate_limits"] = snapshots()
         values["bots"] = manager.active_count if manager else 0
         values["pending_in_memory"] = sum(q.pending for q in _queues.values())
+        inbox = request.app.get("inbox")
+        if inbox is not None:
+            # 忙碌 worker 数 = 当前 processing 行数（本端点 inbox 字段可见）
+            values["inbox_workers"] = len(inbox.tasks)
+            values["inbox_running"] = inbox.running
         return web.json_response(values)
 
     app.router.add_get("/health", live)
