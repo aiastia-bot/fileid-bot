@@ -5,7 +5,8 @@ import contextvars
 import json
 import logging
 import time
-from sqlalchemy import select, update, or_, and_
+from types import SimpleNamespace
+from sqlalchemy import select, update, or_, and_, func
 from sqlalchemy.exc import IntegrityError
 from telegram import Update
 from telegram.error import Forbidden
@@ -37,6 +38,8 @@ class Inbox:
         self.wake = asyncio.Event()
         self.locks = {}
         self.running = False
+        self._rr = 0                # 按 bot 轮转的取任务起点
+        self._dead_bot_warned = {}  # bot_key -> 上次告警时间（防刷屏）
 
     async def accept(self, bot_key, body):
         if not isinstance(body, dict) or type(body.get("update_id")) is not int:
@@ -73,83 +76,112 @@ class Inbox:
         await asyncio.gather(*self.tasks, return_exceptions=True)
         self.tasks.clear()
 
+    @staticmethod
+    def _eligible(now):
+        return or_(
+            and_(UpdateInbox.state == "pending", UpdateInbox.available_at <= now),
+            and_(UpdateInbox.state == "processing", UpdateInbox.available_at <= now),
+        )
+
+    def _note_dead_bot(self, bot_key):
+        """Bot 应用未加载时其积压会被无限跳过——必须让运维看得见（每小时最多一次）"""
+        now = time.time()
+        if now - self._dead_bot_warned.get(bot_key, 0) >= 3600:
+            self._dead_bot_warned[bot_key] = now
+            logger.error(
+                "Bot %s 的应用未加载，其积压 update 全部被跳过；"
+                "如持续出现请重启容器重新加载 Bot", bot_key)
+
+    async def _try_claim(self, session, row, now):
+        """尝试领取一行；成功返回 job 元组，不可处理返回 None"""
+        app = self.resolve_app(row.bot_key)
+        if app is None:
+            self._note_dead_bot(row.bot_key)
+            return None
+        body = json.loads(row.body)
+        message = body.get("message", body.get("edited_message", {}))
+        callback = body.get("callback_query", {})
+        chat = message.get("chat", callback.get("message", {}).get("chat", {}))
+        # Serialize one conversation, while other users and /stop can run.
+        user = chat.get(
+            "id",
+            callback.get(
+                "from", body.get("pre_checkout_query", {}).get("from", {})
+            ).get("id", "system"),
+        )
+        is_control = (
+            message.get("text", "").split(" ", 1)[0].split("@")[0]
+            in ("/stop", "/queue")
+            or callback.get("data") == "stop_auto"
+        )
+        lock_key = (
+            row.bot_key,
+            str(user),
+            "control" if is_control else "conversation",
+        )
+        if self.locks.get(lock_key, False):
+            return None
+        changed = await session.execute(
+            update(UpdateInbox)
+            .where(
+                UpdateInbox.bot_key == row.bot_key,
+                UpdateInbox.update_id == row.update_id,
+                UpdateInbox.state == row.state,
+                UpdateInbox.available_at == row.available_at,
+            )
+            .values(
+                state="processing",
+                available_at=now + int(WEBHOOK_UPDATE_TIMEOUT) + 30,
+                attempts=UpdateInbox.attempts + 1,
+            )
+        )
+        if not changed.rowcount:
+            return None
+        self.locks[lock_key] = True
+        await session.commit()
+        return (
+            row.bot_key,
+            row.update_id,
+            row.body,
+            row.attempts,
+            app,
+            lock_key,
+        )
+
     async def _next(self):
         now = int(time.time())
         async with get_session() as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(UpdateInbox)
-                        .where(
-                            UpdateInbox.node_id == self.node_id,
-                            or_(
-                                and_(
-                                    UpdateInbox.state == "pending",
-                                    UpdateInbox.available_at <= now,
-                                ),
-                                and_(
-                                    UpdateInbox.state == "processing",
-                                    UpdateInbox.available_at <= now,
-                                ),
-                            ),
-                        )
-                        .order_by(UpdateInbox.created_at, UpdateInbox.update_id)
-                        .limit(100)
-                    )
-                )
-                .scalars()
-                .all()
+            # 候选 = 每个 bot 的最老一条待处理 update（窗口函数按 bot 分组取头）：
+            # 单一 bot 的洪峰或死 Bot 积压都无法推迟其他 bot 的响应
+            # （row_number 需 SQLite 3.25+ / MySQL 8+）
+            rn = func.row_number().over(
+                partition_by=UpdateInbox.bot_key,
+                order_by=[UpdateInbox.created_at, UpdateInbox.update_id],
+            ).label("rn")
+            sub = (
+                select(UpdateInbox)
+                .where(UpdateInbox.node_id == self.node_id, self._eligible(now))
+                .add_columns(rn)
+                .subquery()
             )
-            for row in rows:
-                app = self.resolve_app(row.bot_key)
-                body = json.loads(row.body)
-                message = body.get("message", body.get("edited_message", {}))
-                callback = body.get("callback_query", {})
-                chat = message.get("chat", callback.get("message", {}).get("chat", {}))
-                # Serialize one conversation, while other users and /stop can run.
-                user = chat.get(
-                    "id",
-                    callback.get(
-                        "from", body.get("pre_checkout_query", {}).get("from", {})
-                    ).get("id", "system"),
+            rows = (
+                await session.execute(
+                    select(sub)
+                    .where(sub.c.rn == 1)
+                    .order_by(sub.c.created_at, sub.c.update_id)
+                    .limit(300)
                 )
-                is_control = (
-                    message.get("text", "").split(" ", 1)[0].split("@")[0]
-                    in ("/stop", "/queue")
-                    or callback.get("data") == "stop_auto"
-                )
-                lock_key = (
-                    row.bot_key,
-                    str(user),
-                    "control" if is_control else "conversation",
-                )
-                if app is None or self.locks.get(lock_key, False):
-                    continue
-                changed = await session.execute(
-                    update(UpdateInbox)
-                    .where(
-                        UpdateInbox.bot_key == row.bot_key,
-                        UpdateInbox.update_id == row.update_id,
-                        UpdateInbox.state == row.state,
-                        UpdateInbox.available_at == row.available_at,
-                    )
-                    .values(
-                        state="processing",
-                        available_at=now + int(WEBHOOK_UPDATE_TIMEOUT) + 30,
-                        attempts=UpdateInbox.attempts + 1,
-                    )
-                )
-                if changed.rowcount:
-                    self.locks[lock_key] = True
-                    await session.commit()
-                    return (
-                        row.bot_key,
-                        row.update_id,
-                        row.body,
-                        row.attempts,
-                        app,
-                        lock_key,
-                    )
+            ).all()
+            if not rows:
+                return None
+            # 轮转起点：候选仍按全局年龄排序，但每次调用从不同 bot 起步，
+            # 高频 bot 不会被无限偏袒
+            offset = self._rr % len(rows)
+            self._rr += 1
+            for r in rows[offset:] + rows[:offset]:
+                job = await self._try_claim(session, SimpleNamespace(**r._mapping), now)
+                if job:
+                    return job
         return None
 
     @staticmethod
