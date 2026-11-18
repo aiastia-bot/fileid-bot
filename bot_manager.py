@@ -498,6 +498,37 @@ class BotManager:
             self._loading = False
             logger.info("Bot 加载完成，共加载 %d 个，_loading=False", loaded)
 
+    async def retry_failed_bots(self) -> int:
+        """重试加载启动时失败的活跃 Bot。
+
+        启动加载只跑一次，网络抖动会让个别 Bot 初始化失败并一直处于
+        「应用未加载」状态（其积压 update 被静默跳过）直到下次重启。
+        由定时任务周期调用，为这批 Bot 提供自愈；Token 已失效/冻结的
+        Bot 会被自动标记停止并移出活跃列表，不会无限重试。
+        """
+        if self._loading:
+            return 0
+        bots = await get_all_active_user_bots()
+        missing = [b for b in bots if b.get('id') not in self._apps]
+        if not missing:
+            return 0
+        logger.info("重试加载 %d 个未就绪的活跃 Bot", len(missing))
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_STARTS)
+
+        async def _start_one(bot):
+            async with semaphore:
+                return bot, await self.start_bot(bot)
+
+        results = await asyncio.gather(*[_start_one(b) for b in missing])
+        recovered = sum(1 for _, ok in results if ok)
+        for bot, ok in results:
+            name = bot.get('bot_username', 'unknown')
+            if ok:
+                logger.info("  ✅ @%s 重试加载成功", name)
+            else:
+                logger.warning("  ⏳ @%s 仍未加载成功，下个周期再试", name)
+        return recovered
+
     async def stop_all(self):
         """停止所有用户Bot"""
         if self._lease_task:

@@ -271,6 +271,23 @@ def _start_vip_expire_job(application: Application):
     application.job_queue.run_repeating(maintenance, interval=30, first=5, name='membership-orders', job_kwargs={'max_instances': 1})
     application.job_queue.run_repeating(reminders, interval=86400, first=120, name='reminders-maintenance')
 
+    # 启动时加载失败的 Bot 定期重试（网络抖动兜底，否则死到下次重启）
+    if ROLE == 'standalone':
+        from services import runtime
+
+        async def retry_failed_bots(context):
+            manager = runtime.manager
+            if manager is None:
+                return
+            try:
+                await manager.retry_failed_bots()
+            except Exception:
+                logger.exception("Bot 重试加载任务异常")
+
+        application.job_queue.run_repeating(
+            retry_failed_bots, interval=60, first=90,
+            name='bot-reload', job_kwargs={'max_instances': 1})
+
     # 级联备份补位检查（Bot 失效后自动重建链路并通知主人）
     from config import BACKUP_ENABLED, BACKUP_RECONCILE_INTERVAL
     if BACKUP_ENABLED:
