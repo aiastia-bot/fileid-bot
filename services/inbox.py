@@ -40,6 +40,8 @@ class Inbox:
         self.running = False
         self._rr = 0                # 按 bot 轮转的取任务起点
         self._dead_bot_warned = {}  # bot_key -> 上次告警时间（防刷屏）
+        # 启动竞态：bot 应用异步加载完成前 resolve_app 全部落空，属正常现象
+        self.suppress_dead_bot_warnings = False
 
     async def accept(self, bot_key, body):
         if not isinstance(body, dict) or type(body.get("update_id")) is not int:
@@ -85,6 +87,8 @@ class Inbox:
 
     def _note_dead_bot(self, bot_key):
         """Bot 应用未加载时其积压会被无限跳过——必须让运维看得见（每小时最多一次）"""
+        if self.suppress_dead_bot_warnings:
+            return  # 启动加载期 resolve_app 落空是暂态，不是死 Bot
         now = time.time()
         if now - self._dead_bot_warned.get(bot_key, 0) >= 3600:
             self._dead_bot_warned[bot_key] = now

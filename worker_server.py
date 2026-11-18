@@ -331,7 +331,12 @@ class WorkerServer:
         self._bot_manager._ready = True
         runtime.configure(bot_manager=self._bot_manager)
         self._inbox = Inbox(lambda key: self._bot_manager.get_all_apps().get(int(key)))
+        # bot 由 master 分配后异步启动，启动窗口内 resolve_app 落空属正常，
+        # 30 秒宽限期后再启用死 Bot 告警
+        self._inbox.suppress_dead_bot_warnings = True
         self._inbox.start()
+        asyncio.get_running_loop().call_later(
+            30, lambda: setattr(self._inbox, "suppress_dead_bot_warnings", False))
         await self._bot_manager.start_webhook_monitor()
         # Register only after the listener can accept internal requests.
         # _heartbeat_loop retries registration if master started later.

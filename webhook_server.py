@@ -40,6 +40,7 @@ def _build_on_startup(application: Application, bot_manager: BotManager,
         await application.initialize()
         await application.start()
         app['inbox'] = Inbox(lambda key: application if key == 'master' else bot_manager.get_all_apps().get(int(key)))
+        app['inbox'].suppress_dead_bot_warnings = True  # bot 异步加载完成前会误报
         app['inbox'].start()
         await application.bot.set_webhook(
             url=f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}/master",
@@ -54,6 +55,7 @@ def _build_on_startup(application: Application, bot_manager: BotManager,
                 logger.exception("Master initialization failed; readiness remains unavailable")
             finally:
                 bot_manager._loading = False
+                app['inbox'].suppress_dead_bot_warnings = False  # 加载完毕，恢复死 Bot 告警
         app['startup_task'] = asyncio.create_task(load())
     return on_startup
 

@@ -90,3 +90,21 @@ async def test_dead_bot_warning_emitted_once_per_hour(database, caplog):
     warnings = [r for r in caplog.records if "应用未加载" in r.message]
     assert len(warnings) == 1          # 3 次轮询只告警一次，防刷屏
     assert inbox._dead_bot_warned["dead"] <= time.time()
+
+
+async def test_dead_bot_warning_suppressed_during_startup(database, caplog):
+    """启动加载期 resolve_app 落空是暂态，不应触发死 Bot 告警"""
+    now = int(time.time())
+    await insert_update("dead", 1, now - 10)
+    inbox = Inbox(lambda key: None)
+    inbox.suppress_dead_bot_warnings = True
+    with caplog.at_level(logging.ERROR, logger="services.inbox"):
+        await claimed_bot_keys(inbox, 2)
+    assert not [r for r in caplog.records if "应用未加载" in r.message]
+    assert not inbox._dead_bot_warned
+
+    # 加载完成（开关复位）后恢复告警
+    inbox.suppress_dead_bot_warnings = False
+    with caplog.at_level(logging.ERROR, logger="services.inbox"):
+        await claimed_bot_keys(inbox, 1)
+    assert any("应用未加载" in r.message for r in caplog.records)
