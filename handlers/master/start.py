@@ -1,6 +1,6 @@
 """主Bot入口处理 - start命令、managed_bot处理、黑名单检查中间件"""
 import logging
-from senders import _retry_send
+from senders import _retry_send, send_later
 
 import httpx
 
@@ -74,7 +74,7 @@ async def master_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "其他 Bot 框架等）。多处使用同一个 Token 会导致冲突，"
         "可能造成 Bot 被自动封禁或 Token 失效。"
     )
-    await _retry_send(update.message.reply_text, text, parse_mode="HTML")
+    send_later(update.message.reply_text, text, parse_mode="HTML")
 
 
 # ==================== Managed Bot 自动处理 ====================

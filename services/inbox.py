@@ -235,6 +235,21 @@ class Inbox:
                     # 拉黑/销号：重试永远失败，直接终结，不刷重试日志
                     logger.info("用户侧永久错误，跳过重试: %s", exc)
                     await self._finish(job[0], job[1], "completed", str(exc))
+                elif isinstance(exc, asyncio.TimeoutError):
+                    # 处理超时是已知暂态（限速排队满等），单行日志即可，不刷堆栈
+                    if job:
+                        state = "failed" if job[3] >= INBOX_MAX_ATTEMPTS else "pending"
+                        logger.warning(
+                            "Inbox update 处理超时(%ss)，%s: bot=%s update=%s",
+                            WEBHOOK_UPDATE_TIMEOUT,
+                            "已达重试上限，放弃" if state == "failed" else "稍后重试",
+                            job[0], job[1],
+                        )
+                        await self._finish(
+                            job[0], job[1], state, str(exc), min(300, 2 ** job[3])
+                        )
+                    else:
+                        await asyncio.sleep(1)
                 else:
                     logger.exception("Inbox processing failed")
                     if job:

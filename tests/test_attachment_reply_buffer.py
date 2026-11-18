@@ -148,6 +148,21 @@ async def test_shutdown_flush_sends_pending_summary(fast_send, no_hint):
 
     await messages.flush_all_attachment_reply_buffers(app)
 
-    assert not app.bot_data["_attachment_reply_buffer"]
+    assert not app.bot_data.get("_attachment_reply_buffer")
     texts = [t for _, t, _ in app.bot.sent] + [e[0] for e in app.bot.edits]
     assert any("✅ 已保存 2 个文件" in t for t in texts)
+
+
+async def test_send_later_delivers_without_blocking(monkeypatch):
+    """内联回复改后台发送：调用方立即返回，消息稍后送达"""
+    from senders import send_later
+
+    async def passthrough(fn, *a, **kw):
+        return await fn(*a, **kw)
+
+    monkeypatch.setattr("senders._retry_send", passthrough)
+    context = make_context()
+    task = send_later(context.bot.send_message, 1, "稍后送达")
+    assert not context.bot.sent          # 立即返回，尚未执行
+    await task
+    assert context.bot.sent == [(1, "稍后送达", {})]

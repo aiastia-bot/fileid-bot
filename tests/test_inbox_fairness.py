@@ -6,6 +6,7 @@
 """
 import logging
 import time
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -108,3 +109,36 @@ async def test_dead_bot_warning_suppressed_during_startup(database, caplog):
     with caplog.at_level(logging.ERROR, logger="services.inbox"):
         await claimed_bot_keys(inbox, 1)
     assert any("应用未加载" in r.message for r in caplog.records)
+
+
+async def test_timeout_is_logged_compactly(database, alive_app, caplog):
+    """处理超时走单行 WARNING，不刷完整堆栈"""
+    import asyncio
+    import logging
+
+    from services import inbox as inbox_mod
+
+    async def slow_handler(update):
+        await asyncio.sleep(0.3)
+
+    monkeypatched = 0.1
+    orig = inbox_mod.WEBHOOK_UPDATE_TIMEOUT
+    inbox_mod.WEBHOOK_UPDATE_TIMEOUT = monkeypatched
+    try:
+        inbox = Inbox(lambda key: SimpleNamespace(bot=None, process_update=slow_handler))
+        await inbox.accept("master", {"update_id": 777})
+        inbox.start()
+        with caplog.at_level(logging.WARNING, logger="services.inbox"):
+            async with asyncio.timeout(3):
+                while True:
+                    async with get_session() as session:
+                        row = await session.get(UpdateInbox, ("master", 777))
+                        if row.state == "pending" and row.attempts == 1:
+                            break
+                    await asyncio.sleep(0.02)
+    finally:
+        await inbox.stop()
+        inbox_mod.WEBHOOK_UPDATE_TIMEOUT = orig
+    timeouts = [r for r in caplog.records if "处理超时" in r.message]
+    assert len(timeouts) == 1
+    assert not any("Inbox processing failed" in r.message for r in caplog.records)

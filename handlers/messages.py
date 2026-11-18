@@ -16,7 +16,7 @@ from db import (
 )
 from db.files import is_bot_over_file_quota
 from utils import get_code_prefix, escape_markdown, generate_raw_code, parse_file_code, parse_collection_code
-from senders import send_file_group, _retry_send
+from senders import send_file_group, _retry_send, send_later
 from send_queue import get_queue_from_context, split_files_to_batches
 from services.backup import kick_propagate
 
@@ -346,7 +346,7 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     # 用户级限流（排队等待）
     if not await _rate_limit_wait(user_id, bot_username):
-        await _retry_send(message.reply_text, "⚠️ 操作太频繁，请稍后再试。")
+        send_later(message.reply_text, "⚠️ 操作太频繁，请稍后再试。")
         logger.warning("⏱ handle_attachment 限流拒绝 user=%s bot=%s 耗时%.1fs", user_id, bot_username, _time.monotonic() - t0)
         return
     logger.debug("⏱ handle_attachment rate_limit user=%s 耗时%.3fs", user_id, _time.monotonic() - t0)
@@ -357,7 +357,7 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         file_id, file_type, file_size, file_unique_id = _extract_file_info(message)
         if not file_id:
-            await _retry_send(message.reply_text, "❌ 不支持的文件类型。支持: 图片、视频、音频、文档。")
+            send_later(message.reply_text, "❌ 不支持的文件类型。支持: 图片、视频、音频、文档。")
             return
 
         t1 = _time.monotonic()
@@ -367,7 +367,7 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                                source_chat_id=str(message.chat_id), source_message_id=message.message_id)
         logger.debug("⏱ handle_attachment save_file user=%s 耗时%.3fs", user_id, _time.monotonic() - t1)
         if not code:
-            await _retry_send(message.reply_text, "❌ 保存失败，请重试。")
+            send_later(message.reply_text, "❌ 保存失败，请重试。")
             return
 
         logger.info("文件已保存: code=%s file_type=%s user_id=%s chat_id=%s message_id=%s file_unique_id=%s",
@@ -386,13 +386,13 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # 如果正在创建集合，追加文件（立即回复，不缓冲）
         if creating_col:
             if over_quota:
-                await _retry_send(message.reply_text,
+                send_later(message.reply_text,
                     text=await _file_quota_hint_text(),
                     reply_to_message_id=message.message_id)
                 return
             current_count = context.user_data.get('collection_count', 0)
             if current_count >= MAX_COLLECTION_FILES:
-                await _retry_send(message.reply_text, f"⚠️ 集合已满 {MAX_COLLECTION_FILES} 个文件，请发送 `/done` 完成。")
+                send_later(message.reply_text, f"⚠️ 集合已满 {MAX_COLLECTION_FILES} 个文件，请发送 `/done` 完成。")
                 return
             sort_order = current_count + 1
             t2 = _time.monotonic()
@@ -400,7 +400,7 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             logger.debug("⏱ handle_attachment add_file_to_collection 耗时%.3fs", _time.monotonic() - t2)
             context.user_data['collection_count'] = sort_order
             uid_info = f" file_unique_id: `{file_unique_id}`" if file_unique_id else ""
-            await _retry_send(message.reply_text,
+            send_later(message.reply_text,
                 text=f"✅ {type_name}已保存！{uid_info}\n\n代码: `{code}`\n\n📦 已添加到集合 ({sort_order}/{MAX_COLLECTION_FILES})",
                 parse_mode='Markdown', reply_to_message_id=message.message_id)
             return
@@ -412,7 +412,7 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     except Exception as e:
         logger.error("处理附件失败: %s", e)
-        await _retry_send(message.reply_text, f"❌ 处理文件时出错: {e}")
+        send_later(message.reply_text, f"❌ 处理文件时出错: {e}")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -434,7 +434,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # 用户级限流（排队等待）
     if not await _rate_limit_wait(user_id, bot_username):
-        await _retry_send(message.reply_text, "⚠️ 操作太频繁，请稍后再试。")
+        send_later(message.reply_text, "⚠️ 操作太频繁，请稍后再试。")
         logger.warning("⏱ handle_text 限流拒绝 user=%s bot=%s 耗时%.1fs", user_id, bot_username, _time.monotonic() - t0)
         return
     logger.debug("⏱ handle_text rate_limit user=%s 耗时%.3fs", user_id, _time.monotonic() - t0)
@@ -449,7 +449,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     collection_codes = parse_collection_code(text, bot_username)
 
     if not file_codes and not collection_codes:
-        await _retry_send(message.reply_text, "❓ 未识别的输入。\n\n• 发送文件获取代码\n• 发送代码获取文件\n• `/help` 查看帮助")
+        send_later(message.reply_text, "❓ 未识别的输入。\n\n• 发送文件获取代码\n• 发送代码获取文件\n• `/help` 查看帮助")
         return
 
     chat_id = message.chat_id
@@ -562,7 +562,7 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
                 accepted_files += len(batch)
             except Exception as e:
                 logger.error("队列提交失败: %s", e)
-                await _retry_send(message.reply_text, f"⚠️ 已排队 {accepted_files}/{total} 个文件。{e}")
+                send_later(message.reply_text, f"⚠️ 已排队 {accepted_files}/{total} 个文件。{e}")
                 break
         logger.debug("⏱ _process_file_codes queue提交(%d 批) 耗时%.3fs", len(batches), _time.monotonic() - t2)
 
@@ -570,14 +570,14 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
         t3 = _time.monotonic()
         if total > GROUP_SEND_SIZE:
             try:
-                await _retry_send(message.reply_text,
+                send_later(message.reply_text,
                     f"📤 已排队 {accepted_files}/{total} 个文件，正在后台发送。使用 /queue 查看进度，/stop 取消。"
                 )
             except Exception:
                 pass
         else:
             try:
-                await _retry_send(message.reply_text,
+                send_later(message.reply_text,
                     f"📤 正在发送 {total} 个文件…"
                 )
             except Exception:
@@ -593,7 +593,7 @@ async def _process_file_codes(context, chat_id, message, file_codes: list) -> No
         not_found_text = "\n".join(f"• `{c}`" for c in shown)
         if len(not_found) > max_show:
             not_found_text += f"\n... 等 {len(not_found)} 个"
-        await _retry_send(message.reply_text, f"⚠️ 以下代码未找到 ({len(not_found)} 个):\n" + not_found_text, parse_mode="Markdown")
+        send_later(message.reply_text, f"⚠️ 以下代码未找到 ({len(not_found)} 个):\n" + not_found_text, parse_mode="Markdown")
         logger.debug("⏱ _process_file_codes _retry_send(not_found) 耗时%.3fs", _time.monotonic() - t4)
 
     logger.info("⏱ _process_file_codes 总耗时%.3fs codes=%d found=%d not_found=%d",
@@ -610,14 +610,14 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
 
         current_bot_db_id_col = context.bot_data.get("bot_record", {}).get("id")
         if not col_info:
-            await _retry_send(message.reply_text, f"❌ 集合不存在: `{col_code}`", parse_mode="Markdown")
+            send_later(message.reply_text, f"❌ 集合不存在: `{col_code}`", parse_mode="Markdown")
             continue
         # 跨 Bot 同码取回：别的 Bot 创建的集合也可在本 Bot 使用，
         # 文件按本 Bot 的备份行（自己的 file_id）解析
 
         safe_name = escape_markdown(col_info['name'])
         if col_info['status'] != 'completed':
-            await _retry_send(message.reply_text, f"⚠️ 集合「{safe_name}」尚未完成。")
+            send_later(message.reply_text, f"⚠️ 集合「{safe_name}」尚未完成。")
             continue
 
         t2 = _time.monotonic()
@@ -626,7 +626,7 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
                      col_code, _time.monotonic() - t2, len(files), missing_count)
 
         if not files:
-            await _retry_send(message.reply_text, f"⚠️ 集合「{safe_name}」为空。")
+            send_later(message.reply_text, f"⚠️ 集合「{safe_name}」为空。")
             continue
 
         total_files = len(files)
@@ -650,7 +650,7 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
             keyboard.append([InlineKeyboardButton("📖 分页浏览", callback_data=f"p|{sk}|1")])
 
         t4 = _time.monotonic()
-        await _retry_send(message.reply_text, col_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        send_later(message.reply_text, col_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         logger.debug("⏱ _process_collection_codes _retry_send(集合) 耗时%.3fs", _time.monotonic() - t4)
 
     logger.info("⏱ _process_collection_codes 总耗时%.3fs codes=%d", _time.monotonic() - t0, len(collection_codes))
@@ -666,7 +666,7 @@ async def handle_forward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif message.text:
         await handle_text(update, context)
     else:
-        await _retry_send(message.reply_text, "请转发包含媒体的消息，我会返回其代码。")
+        send_later(message.reply_text, "请转发包含媒体的消息，我会返回其代码。")
 
 
 async def handle_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -733,7 +733,7 @@ async def handle_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     reply += "\n".join(f"`{c}`" for c in codes) if codes else "（全部超出文件额度）"
                 if over_count:
                     reply += "\n\n" + await _file_quota_hint_text()
-                await _retry_send(msgs[0].reply_text, reply, parse_mode="Markdown")
+                send_later(msgs[0].reply_text, reply, parse_mode="Markdown")
         except Exception as e:
             logger.error("process_media_group 失败: %s", e, exc_info=True)
         finally:
@@ -758,7 +758,7 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
         if message.text:
             await handle_text(update, context)
         else:
-            await _retry_send(message.reply_text, "请转发包含媒体的消息。")
+            send_later(message.reply_text, "请转发包含媒体的消息。")
         return
 
     media_group_id = message.media_group_id
@@ -789,9 +789,9 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
             codes, over_count = await _save_media_messages(msgs, context)
             if not codes:
                 if over_count:
-                    await _retry_send(msgs[0].reply_text, await _file_quota_hint_text())
+                    send_later(msgs[0].reply_text, await _file_quota_hint_text())
                 else:
-                    await _retry_send(msgs[0].reply_text, "❌ 转发的媒体组处理失败。")
+                    send_later(msgs[0].reply_text, "❌ 转发的媒体组处理失败。")
                 return
             if over_count:
                 codes_hint = f"\n\n⚠️ 另有 {over_count} 个文件超出额度未保存进集合。"
@@ -824,7 +824,7 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
                 reply = f"✅ 转发媒体已保存（共 {len(codes)} 个）：\n\n" + "\n".join(f"`{c}`" for c in codes)
                 if over_count:
                     reply += codes_hint + "\n\n" + await _file_quota_hint_text()
-                await _retry_send(msgs[0].reply_text, reply, parse_mode="Markdown")
+                send_later(msgs[0].reply_text, reply, parse_mode="Markdown")
                 return
 
             # 回复
@@ -836,9 +836,9 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
             sk = await _short_key(context, full_col_code)
             keyboard = [[InlineKeyboardButton("📖 分页发送", callback_data=f"s|{sk}"), InlineKeyboardButton("▶️ 自动发送", callback_data=f"a|{sk}")]]
             try:
-                await _retry_send(msgs[0].reply_text, reply, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+                send_later(msgs[0].reply_text, reply, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
             except Exception:
-                await _retry_send(msgs[0].reply_text, reply, parse_mode="Markdown")
+                send_later(msgs[0].reply_text, reply, parse_mode="Markdown")
 
         except Exception as e:
             logger.error("process_forward_group 失败: %s", e, exc_info=True)
@@ -947,13 +947,13 @@ async def _handle_pack_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     # 按行分割，去除空行
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     if not lines:
-        await _retry_send(message.reply_text, "⚠️ 请发送文件代码（一行一个）。")
+        send_later(message.reply_text, "⚠️ 请发送文件代码（一行一个）。")
         return
 
     # 限制单次最多 500 个
     if len(lines) > 500:
         lines = lines[:500]
-        await _retry_send(message.reply_text, "⚠️ 单次最多处理 500 个代码，已截取前 500 个。")
+        send_later(message.reply_text, "⚠️ 单次最多处理 500 个代码，已截取前 500 个。")
 
     # 步骤0: 格式验证 — 只保留符合代码格式的行（防注入 + 减少无效查询）
     import re
@@ -962,7 +962,7 @@ async def _handle_pack_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     format_invalid = len(lines) - len(valid_lines)
 
     if not valid_lines:
-        await _retry_send(message.reply_text,
+        send_later(message.reply_text,
             "⚠️ 没有有效的代码格式。\n\n"
             "正确格式示例：\n"
             f"`{context.bot.username}_p:xxx`\n"
@@ -979,7 +979,7 @@ async def _handle_pack_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     if not new_codes:
         # 全部重复，无需查询数据库
-        await _retry_send(message.reply_text,
+        send_later(message.reply_text,
             f"📋 全部重复，0 个新增。\n\n"
             f"📊 当前集合: {packing_count}/{max_pack_files}\n"
             f"继续发送代码，或 `/done` 完成",
@@ -989,14 +989,14 @@ async def _handle_pack_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     # 步骤3: 检查是否超过容量
     remaining = max_pack_files - packing_count
     if remaining <= 0:
-        await _retry_send(message.reply_text,
+        send_later(message.reply_text,
             f"⚠️ 集合已满 {max_pack_files} 个文件！\n请发送 `/done` 完成打包。"
         )
         return
 
     if len(new_codes) > remaining:
         new_codes = new_codes[:remaining]
-        await _retry_send(message.reply_text,
+        send_later(message.reply_text,
             f"⚠️ 容量不足，仅取前 {remaining} 个代码。"
         )
 
@@ -1028,4 +1028,4 @@ async def _handle_pack_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     reply += f"📊 当前集合: {packing_count}/{max_pack_files}\n"
     reply += f"继续发送代码，或 `/done` 完成"
 
-    await _retry_send(message.reply_text, reply)
+    send_later(message.reply_text, reply)

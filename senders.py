@@ -80,6 +80,23 @@ async def _retry_send(send_func, *args, **kwargs):
             await asyncio.sleep(SEND_RETRY_DELAY*2**attempt)
 
 
+def send_later(send_func, *args, **kwargs):
+    """后台发送：不阻塞调用方。
+
+    handler 内联回复在限速器排队时可能等几十秒，直接 await 会吃满
+    inbox 的 59 秒预算并触发无谓重试——改成后台任务，慢就慢点，
+    宁可晚到也不拖住处理循环。
+    """
+    task = asyncio.create_task(_retry_send(send_func, *args, **kwargs))
+
+    def _log_failure(t):
+        if not t.cancelled() and t.exception():
+            logger.warning("后台发送失败: %s", t.exception())
+
+    task.add_done_callback(_log_failure)
+    return task
+
+
 # ===== 核心：发送一批文件（被队列消费者调用） =====
 
 async def _schedule_auto_delete(bot, chat_id: int, message_ids: list, delay: int):
