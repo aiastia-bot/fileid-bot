@@ -408,6 +408,9 @@ async def post_stop(application):
         apps += list(runtime.manager.get_all_apps().values())
     for app in apps:
         await flush_all_attachment_reply_buffers(app)
+    # 等在途的后台文本回复发完（send_later），给限速排队留一点缓冲
+    from senders import flush_background_sends
+    await flush_background_sends(timeout=15)
     if runtime.scheduler:
         await runtime.scheduler.stop()
     await stop_all_queues()

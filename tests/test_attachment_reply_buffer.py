@@ -166,3 +166,29 @@ async def test_send_later_delivers_without_blocking(monkeypatch):
     assert not context.bot.sent          # 立即返回，尚未执行
     await task
     assert context.bot.sent == [(1, "稍后送达", {})]
+
+
+async def test_flush_background_sends_waits_and_drains(monkeypatch):
+    """优雅退出：flush 等待在途回复发完，登记表随之清空"""
+    import asyncio
+
+    from senders import send_later, flush_background_sends, _background_sends
+
+    released = asyncio.Event()
+
+    async def passthrough(fn, *a, **kw):
+        await asyncio.wait_for(released.wait(), 2)
+        return await fn(*a, **kw)
+
+    monkeypatch.setattr("senders._retry_send", passthrough)
+    context = make_context()
+    task = send_later(context.bot.send_message, 1, "退出前补发")
+    assert len(_background_sends) == 1   # 在途任务已登记
+
+    flusher = asyncio.ensure_future(flush_background_sends(timeout=2))
+    await asyncio.sleep(0.05)
+    assert not flusher.done()            # 未放行前一直等
+    released.set()
+    await asyncio.wait_for(flusher, 2)
+    assert not _background_sends         # 完成后登记表清空
+    assert context.bot.sent == [(1, "退出前补发", {})]

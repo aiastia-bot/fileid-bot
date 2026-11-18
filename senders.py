@@ -80,6 +80,9 @@ async def _retry_send(send_func, *args, **kwargs):
             await asyncio.sleep(SEND_RETRY_DELAY*2**attempt)
 
 
+_background_sends = set()  # 在途后台发送任务（优雅退出时等待补发）
+
+
 def send_later(send_func, *args, **kwargs):
     """后台发送：不阻塞调用方。
 
@@ -88,13 +91,29 @@ def send_later(send_func, *args, **kwargs):
     宁可晚到也不拖住处理循环。
     """
     task = asyncio.create_task(_retry_send(send_func, *args, **kwargs))
+    _background_sends.add(task)
 
-    def _log_failure(t):
+    def _done(t):
+        _background_sends.discard(t)
         if not t.cancelled() and t.exception():
             logger.warning("后台发送失败: %s", t.exception())
 
-    task.add_done_callback(_log_failure)
+    task.add_done_callback(_done)
     return task
+
+
+async def flush_background_sends(timeout: float = 15.0):
+    """优雅退出：等在途的后台发送完成（超时放弃，避免卡住关机流程）"""
+    pending = [t for t in _background_sends if not t.done()]
+    if not pending:
+        return
+    logger.info("退出前等待 %d 条后台发送完成（最多 %ss）", len(pending), timeout)
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True), timeout
+        )
+    except asyncio.TimeoutError:
+        logger.warning("等待后台发送超时，放弃 %d 条", len(_background_sends))
 
 
 # ===== 核心：发送一批文件（被队列消费者调用） =====
