@@ -856,6 +856,9 @@ async def purge_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"• 移除集合项：{result['removed_items']:,} 条"
         f"（校准 {result['fixed_collections']} 个集合）\n"
     )
+    if result.get('repointed_items'):
+        text += (f"• 改挂备份副本：{result['repointed_items']:,} 个集合项"
+                 f"（文件仍可取回）\n")
     if owner_id:
         text += f"• 已移出备份组并触发主人 {owner_id} 的链路补位\n"
     text += ("\n💾 SQLite 用户可执行 <code>VACUUM;</code> 把磁盘空间实际归还系统；"

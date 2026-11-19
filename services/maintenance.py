@@ -63,7 +63,8 @@ async def auto_purge_dead_bots() -> int:
 
     覆盖 revoked（Token 被撤销）/ deleted（主人删除）/ banned（被封禁）；
     admin_stopped / paused 属临时状态不清理。宽限期内主人 /updatetoken
-    或恢复 Bot 会改回 active，自然跳过。返回清理的 Bot 数。
+    或恢复 Bot 会改回 active，自然跳过。清理前按剩余天数提前提醒主人。
+    返回清理的 Bot 数。
     """
     from config import AUTO_PURGE_DEAD_BOT_DAYS, ADMIN_IDS
     if AUTO_PURGE_DEAD_BOT_DAYS <= 0:
@@ -83,6 +84,8 @@ async def auto_purge_dead_bots() -> int:
         logger.info("死亡 Bot 自动清理基线已设定: %s", baseline)
         return 0
 
+    await _warn_dying_bots(AUTO_PURGE_DEAD_BOT_DAYS, baseline)
+
     purged = 0
     for bot in await get_dead_bots_past_grace(AUTO_PURGE_DEAD_BOT_DAYS,
                                               not_before=baseline):
@@ -99,14 +102,56 @@ async def auto_purge_dead_bots() -> int:
         body = (
             f"🧹 Bot @{username} 已失效超过 {AUTO_PURGE_DEAD_BOT_DAYS} 天，"
             f"文件记录已自动清理（{result['deleted_files']} 条），并已移出备份组。\n"
-            "如需继续使用：更新 Token 后重新上传/回填文件。"
         )
+        if result.get('repointed_items'):
+            body += (f"集合中 {result['repointed_items']} 个项已改挂备份副本，"
+                     "文件仍可正常取回。\n")
+        body += ("如需继续使用：把原 Bot 的 Token 更新回来（/updatetoken）后重新上传/回填"
+                 "文件；换一个新 Bot 无法找回已清理的记录。")
         if owner_id:
             await enqueue(f'autopurge:{bot_db_id}:{result["deleted_files"]}',
                           owner_id, body)
         for admin_id in ADMIN_IDS:
-            await enqueue(f'autopurge_admin:{bot_db_id}:{admin_id}',
-                          admin_id, f"🧹 自动清理：@{username} (主人 {owner_id}) "
+            admin_body = (f"🧹 自动清理：@{username} (主人 {owner_id}) "
                           f"文件记录 {result['deleted_files']} 条")
+            if result.get('repointed_items'):
+                admin_body += f"，改挂备份副本 {result['repointed_items']} 项"
+            await enqueue(f'autopurge_admin:{bot_db_id}:{admin_id}',
+                          admin_id, admin_body)
         logger.info("自动清理死亡 Bot @%s (db_id=%s): %s", username, bot_db_id, result)
     return purged
+
+
+async def _warn_dying_bots(days: int, not_before: str) -> None:
+    """清理倒计时提醒：距清理剩 warn 档天数时各提醒主人一次
+
+    notices 按 key 去重（autopurge_warn:{bot_id}:{剩余天数}），每档只发一次；
+    主人恢复 Bot（状态回 active）后自然退出候选。宽限期不大于最大提前量时
+    没有提醒空间（撤销通知已带截止说明），直接跳过。
+    """
+    from config import AUTO_PURGE_WARN_BEFORE_DAYS
+    if not AUTO_PURGE_WARN_BEFORE_DAYS or days <= max(AUTO_PURGE_WARN_BEFORE_DAYS):
+        return
+    from datetime import datetime
+    from db import get_dead_bots_past_grace
+    from services.notices import enqueue
+    # 已死亡超过 (宽限期 - 最大提前量) 天的才可能进入提醒窗口
+    earliest = days - max(AUTO_PURGE_WARN_BEFORE_DAYS)
+    for bot in await get_dead_bots_past_grace(earliest, not_before=not_before):
+        owner_id = bot.get('owner_id')
+        updated_at = bot.get('updated_at')
+        if not owner_id or not updated_at:
+            continue
+        dead_for = (datetime.now() - datetime.strptime(
+            updated_at, "%Y-%m-%d %H:%M:%S")).days
+        remaining = days - dead_for
+        if remaining not in AUTO_PURGE_WARN_BEFORE_DAYS:
+            continue
+        username = bot.get('bot_username') or str(bot['id'])
+        await enqueue(
+            f'autopurge_warn:{bot["id"]}:{remaining}', owner_id,
+            f"⚠️ Bot @{username} 已失效 {dead_for} 天，将在 {remaining} 天后"
+            "自动清理其全部文件记录并移出备份组。\n"
+            "期内更新这个 Bot 的 Token（/updatetoken）或恢复它即可取消清理。\n"
+            "注意：必须是原 Bot 本尊，新建 Bot 替代无效——文件记录按 Bot 签发，"
+            "无法迁移到新 Bot。")

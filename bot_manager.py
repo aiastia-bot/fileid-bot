@@ -66,7 +66,8 @@ async def _auto_stop_revoked_bot(bot_username: str, bot_data: dict):
         for admin_id in ADMIN_IDS:
             await enqueue(f'revoked:{bot_db_id}:{admin_id}', admin_id,
                 f'⚠️ Bot @{bot_username} Token 已失效，所有者 {owner_id}，系统已停止该 Bot。'
-                f'{deadline}；期内 /updatetoken 可恢复。')
+                f'{deadline}；期内 /updatetoken 恢复原 Bot 可取消（换新 Bot 无效，'
+                '文件记录无法迁移）。')
     except Exception:
         logger.exception('Failed recording revoked-bot notice')
 

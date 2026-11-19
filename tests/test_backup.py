@@ -308,6 +308,80 @@ class TestPurgeDeadBot(unittest.IsolatedAsyncioTestCase):
                                  'backupb', 'backupb', bot_db_id=self.b)
         assert await get_files_by_codes([code_b], self.b)
 
+    async def test_purge_repoints_items_with_backup_copies(self):
+        """有跨 Bot 备份副本的集合项改挂副本代码，无副本的照常移除"""
+        from db import purge_bot_files
+        from db.collections import get_collection_files_for_bot
+        code_a0 = await save_file(1, 'document', 'FID_A0', 100, 'uniq-r0',
+                                  'backupa', 'backupa', bot_db_id=self.a)
+        code_a1 = await save_file(1, 'document', 'FID_A1', 100, 'uniq-r1',
+                                  'backupa', 'backupa', bot_db_id=self.a)
+        # B 侧持有前两个文件的同 unique 备份副本（各自的码）
+        code_b0 = await save_file(0, 'document', 'FID_B0', 100, 'uniq-r0',
+                                  'backupb', 'backupb', bot_db_id=self.b)
+        code_b1 = await save_file(0, 'document', 'FID_B1', 100, 'uniq-r1',
+                                  'backupb', 'backupb', bot_db_id=self.b)
+        # 第三个文件只在 A 上，无副本
+        loner = await save_file(1, 'photo', 'FID_LONER', 10, 'uniq-loner',
+                                'backupa', 'backupa', bot_db_id=self.a)
+        await self._make_collection('col_repoint_test',
+                                    [code_a0, code_a1, loner])
+
+        result = await purge_bot_files(self.a)
+        assert result['deleted_files'] == 3
+        # 前两项改挂副本、loner 无副本被移除
+        assert result['repointed_items'] == 2
+        assert result['removed_items'] == 1
+        assert result['fixed_collections'] == 1
+
+        async with get_session() as session:
+            from sqlalchemy import select
+            from db.models import CollectionItem
+            items = (await session.execute(
+                select(CollectionItem.file_code).where(
+                    CollectionItem.collection_code == 'col_repoint_test')
+                .order_by(CollectionItem.sort_order)
+            )).scalars().all()
+            col = (await session.execute(
+                select(self.Collection).where(
+                    self.Collection.code == 'col_repoint_test'))).scalar_one()
+        # 集合项已改挂到 B 的副本码，file_count 只减去无副本的 loner
+        assert items == [code_b0, code_b1]
+        assert col.file_count == 2
+
+        # 改挂后集合在 B 上可完整取回（B 自己的 file_id）
+        files_b, missing_b = await get_collection_files_for_bot(
+            'col_repoint_test', self.b)
+        assert len(files_b) == 2 and missing_b == 0
+        assert all(f['bot_db_id'] == self.b for f in files_b)
+
+    async def test_purge_skips_repoint_when_backup_code_already_in_collection(self):
+        """集合里已挂着同一副本的项：移除冗余项而非改挂出重复"""
+        from db import purge_bot_files
+        code_a = await save_file(1, 'document', 'FID_A', 100, 'uniq-d',
+                                 'backupa', 'backupa', bot_db_id=self.a)
+        code_b = await save_file(0, 'document', 'FID_B', 100, 'uniq-d',
+                                 'backupb', 'backupb', bot_db_id=self.b)
+        await self._make_collection('col_dup_test', [code_a, code_b])
+
+        result = await purge_bot_files(self.a)
+        assert result['deleted_files'] == 1
+        assert result['repointed_items'] == 0
+        assert result['removed_items'] == 1
+
+        async with get_session() as session:
+            from sqlalchemy import select
+            from db.models import CollectionItem
+            items = (await session.execute(
+                select(CollectionItem.file_code).where(
+                    CollectionItem.collection_code == 'col_dup_test')
+            )).scalars().all()
+            col = (await session.execute(
+                select(self.Collection).where(
+                    self.Collection.code == 'col_dup_test'))).scalar_one()
+        assert items == [code_b]
+        assert col.file_count == 1
+
     async def test_purge_removes_backup_membership(self):
         await bdb.set_backup_members(100, [self.a, self.b])
         await bdb.reconcile_owner(100, 2)
@@ -410,6 +484,61 @@ class TestAutoPurgeGrace(unittest.IsolatedAsyncioTestCase):
         # 基线设在死亡之后 → 入选
         assert {b['id'] for b in await get_dead_bots_past_grace(1, not_before=old)} == {revoked_old}
         assert {b['id'] for b in await get_dead_bots_past_grace(1, not_before='2000-01-01 00:00:00')} == {revoked_old}
+
+    async def test_warn_owner_before_auto_purge(self):
+        """清理倒计时提醒：剩 3/2/1 天各提醒主人一次，不满窗口不提醒，满期走清理"""
+        from datetime import datetime, timedelta
+        from sqlalchemy import delete, select, update as sa_update
+        from db import set_platform_setting
+        from db.models import PlatformSetting, UserBot
+        from services.maintenance import auto_purge_dead_bots
+
+        async with get_session() as session:
+            await session.execute(delete(PlatformSetting))
+            await session.commit()
+        # 基线设在 10 天前，之后回填的死亡时间都晚于它（对齐生产部署后的状态）
+        baseline = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S")
+        await set_platform_setting('auto_purge_baseline', baseline)
+
+        owner = 400
+
+        def _dead(days_ago):
+            # 多回退 30 秒：秒级字符串与扫描 cutoff 同秒时严格 < 会漏选（边界抖动）
+            return (datetime.now() - timedelta(days=days_ago, seconds=30)
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+
+        dying = {ago: await _add_bot(owner, 401 + i, f'dying{ago}')
+                 for i, ago in enumerate((4, 5, 6))}
+        fresh = await _add_bot(owner, 410, 'dying2')   # 还没进提醒窗口
+        ripe = await _add_bot(owner, 411, 'ripen8')    # 已满 7 天宽限期
+        for bot_id, ago in [(dying[4], 4), (dying[5], 5), (dying[6], 6),
+                            (fresh, 2), (ripe, 8)]:
+            await _set_status(bot_id, 'revoked')
+            async with get_session() as session:
+                await session.execute(sa_update(UserBot).where(
+                    UserBot.id == bot_id).values(updated_at=_dead(ago)))
+                await session.commit()
+
+        assert await auto_purge_dead_bots() == 1, '只有满 7 天的进入清理'
+
+        async with get_session() as session:
+            notices = (await session.execute(
+                select(UserNotice).where(UserNotice.user_id == owner))).scalars().all()
+        by_key = {n.key: n.body for n in notices}
+        warn_keys = {k for k in by_key if k.startswith('autopurge_warn:')}
+        assert warn_keys == {f'autopurge_warn:{dying[ago]}:{7 - ago}' for ago in (4, 5, 6)}
+        assert '3 天后' in by_key[f'autopurge_warn:{dying[4]}:3']
+        assert '即可取消清理' in by_key[f'autopurge_warn:{dying[6]}:1']
+        # 不满提醒窗口的：无任何通知；满期的：清理完成通知
+        assert all(str(fresh) not in k for k in by_key)
+        assert f'autopurge:{ripe}:0' in by_key
+
+        # 第二轮：提醒与清理通知都按 key 去重，不重复发送
+        await auto_purge_dead_bots()
+        async with get_session() as session:
+            notices2 = (await session.execute(
+                select(UserNotice).where(UserNotice.user_id == owner))).scalars().all()
+        assert len(notices2) == len(notices)
 
 
 if __name__ == '__main__':

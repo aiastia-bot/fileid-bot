@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from typing import Optional, List, Dict
 
-from sqlalchemy import select, update, delete, func, or_, text
+from sqlalchemy import select, update, delete, func, or_, text, tuple_
 
 from db.core import get_session, _model_to_dict
 from db.models import FileMapping, Collection
@@ -417,19 +417,23 @@ async def bot_purge_preview(bot_db_id: int) -> Dict:
 
 
 async def purge_bot_files(bot_db_id: int, batch_size: int = 5000) -> Dict:
-    """永久删除某个 Bot 的全部文件记录（含引用它们的集合项）
+    """永久删除某个 Bot 的全部文件记录
 
     分批删除避免长事务/锁表；bot_file_counts 由数据库触发器自动归零。
-    返回 {deleted_files, removed_items, fixed_collections}。
+    集合项按「有无跨 Bot 备份副本」分流：引用的代码在其他 Bot 上仍有同
+    file_unique_id 的有效副本时，把集合项改挂到副本的代码（文件跨 Bot
+    仍可取回，集合不丢入口）；彻底无副本的才移除集合项并校准 file_count。
+    返回 {deleted_files, removed_items, repointed_items, fixed_collections}。
     """
     from db.models import CollectionItem
-    total_files, total_items = 0, 0
-    affected_collections = set()
+    total_files, total_items, total_repointed = 0, 0, 0
+    affected_collections = set()   # 丢了集合项，需校准 file_count
+    touched_collections = set()    # 集合项有变动（含改挂），需清缓存
     cursor = 0
     while True:
         async with get_session() as session:
             rows = (await session.execute(
-                select(FileMapping.id, FileMapping.code)
+                select(FileMapping.id, FileMapping.code, FileMapping.file_unique_id)
                 .where(FileMapping.bot_db_id == bot_db_id,
                        FileMapping.id > cursor)
                 .order_by(FileMapping.id)
@@ -442,21 +446,56 @@ async def purge_bot_files(bot_db_id: int, batch_size: int = 5000) -> Dict:
             ids = [r.id for r in rows]
 
             item_rows = (await session.execute(
-                select(CollectionItem.collection_code)
+                select(CollectionItem.collection_code, CollectionItem.file_code)
                 .where(CollectionItem.file_code.in_(codes))
-            )).scalars().all()
+            )).all()
             if item_rows:
-                affected_collections.update(item_rows)
-                await session.execute(
-                    delete(CollectionItem).where(CollectionItem.file_code.in_(codes)))
-                total_items += len(item_rows)
+                unique_by_code = {r.code: r.file_unique_id for r in rows
+                                  if r.file_unique_id}
+                backup_by_unique = await _backup_codes_by_unique(
+                    session, set(unique_by_code.values()), bot_db_id)
+                # 批量取「集合里已挂着副本码」的现有项：命中则移除冗余项而非改挂
+                backup_codes = set(backup_by_unique.values())
+                existing_pairs = set()
+                if backup_codes:
+                    col_codes = {cc for cc, _ in item_rows}
+                    existing_pairs = {
+                        (cc, fc) for cc, fc in (await session.execute(
+                            select(CollectionItem.collection_code,
+                                   CollectionItem.file_code)
+                            .where(CollectionItem.collection_code.in_(col_codes),
+                                   CollectionItem.file_code.in_(backup_codes))
+                        )).all()}
+                repoint, doomed = [], []
+                for col_code, old_code in item_rows:
+                    backup_code = backup_by_unique.get(unique_by_code.get(old_code))
+                    if not backup_code:
+                        doomed.append((col_code, old_code))
+                    elif (col_code, backup_code) in existing_pairs:
+                        doomed.append((col_code, old_code))
+                    else:
+                        repoint.append((col_code, old_code, backup_code))
+                if doomed:
+                    affected_collections.update({cc for cc, _ in doomed})
+                    await session.execute(delete(CollectionItem).where(
+                        tuple_(CollectionItem.collection_code,
+                               CollectionItem.file_code).in_(doomed)))
+                    total_items += len(doomed)
+                for col_code, old_code, backup_code in repoint:
+                    await session.execute(
+                        update(CollectionItem)
+                        .where(CollectionItem.collection_code == col_code,
+                               CollectionItem.file_code == old_code)
+                        .values(file_code=backup_code))
+                    total_repointed += 1
+                    touched_collections.add(col_code)
 
             await session.execute(
                 delete(FileMapping).where(FileMapping.id.in_(ids)))
             total_files += len(rows)
             await session.commit()
 
-    # 校准受影响集合的 file_count（引用被删文件的项已移除）
+    # 校准丢过集合项的集合的 file_count（改挂的项数不变，无需校准）
     fixed = 0
     for col_code in affected_collections:
         async with get_session() as session:
@@ -471,15 +510,34 @@ async def purge_bot_files(bot_db_id: int, batch_size: int = 5000) -> Dict:
         fixed += 1
 
     # 清掉集合文件缓存（引用已变）
-    try:
-        from redis_manager import get_redis
-        r = await get_redis()
-        for col_code in affected_collections:
+    for col_code in touched_collections | affected_collections:
+        try:
+            from redis_manager import get_redis
+            r = await get_redis()
             await r.cache_delete(f"col_files:{col_code}")
-    except Exception:
-        logger.debug("purge 后清理集合缓存失败（忽略）", exc_info=True)
+        except Exception:
+            logger.debug("purge 后清理集合缓存失败（忽略）", exc_info=True)
 
-    logger.info("清理 Bot %d 的文件记录: files=%d items=%d collections=%d",
-                bot_db_id, total_files, total_items, fixed)
+    logger.info("清理 Bot %d 的文件记录: files=%d items=%d repointed=%d "
+                "collections=%d", bot_db_id, total_files, total_items,
+                total_repointed, fixed)
     return {'deleted_files': total_files, 'removed_items': total_items,
-            'fixed_collections': fixed}
+            'repointed_items': total_repointed, 'fixed_collections': fixed}
+
+
+async def _backup_codes_by_unique(session, uniques: set,
+                                  exclude_bot_db_id: int) -> Dict:
+    """file_unique_id → 其他 Bot 上有效副本的代码（多副本取 id 最小的，稳定）"""
+    if not uniques:
+        return {}
+    rows = (await session.execute(
+        select(FileMapping.file_unique_id, FileMapping.code)
+        .where(FileMapping.file_unique_id.in_(uniques),
+               FileMapping.bot_db_id != exclude_bot_db_id,
+               or_(FileMapping.is_valid.is_(None), FileMapping.is_valid == 1))
+        .order_by(FileMapping.id)
+    )).all()
+    by_unique: Dict = {}
+    for r in rows:
+        by_unique.setdefault(r.file_unique_id, r.code)
+    return by_unique

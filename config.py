@@ -237,7 +237,9 @@ BACKUP_RECONCILE_INTERVAL = int(os.environ.get('BACKUP_RECONCILE_INTERVAL', '60'
 # Token 被撤销(revoked)/被删除(deleted)/被封禁(banned) 超过 N 天后，
 # 自动清理其全部文件记录并移出备份组（期间主人 /updatetoken 恢复即可取消清理）
 # 0 = 禁用自动清理，只靠管理员 /purge 手动清理
-AUTO_PURGE_DEAD_BOT_DAYS = int(os.environ.get('AUTO_PURGE_DEAD_BOT_DAYS', '1'))
+AUTO_PURGE_DEAD_BOT_DAYS = int(os.environ.get('AUTO_PURGE_DEAD_BOT_DAYS', '7'))
+# 清理前按「剩余天数」提醒主人的时点（每档只提醒一次，notices 按 key 去重）
+AUTO_PURGE_WARN_BEFORE_DAYS = (3, 2, 1)
 
 
 def validate_config():
