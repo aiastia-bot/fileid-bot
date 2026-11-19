@@ -9,11 +9,19 @@ from db.models import UpdateInbox, SendJob
 
 logger = logging.getLogger(__name__)
 
+CLEANUP_BATCH = 5000  # 单批删除上限：控制单次写锁时长
 
-async def cleanup_records():
+
+async def cleanup_records() -> int:
+    """删除超过保留期（DATA_RETENTION_DAYS 天）的终态行，返回删除总数。
+
+    循环分批清到无剩余、每批单独提交以限制写锁时长。旧实现单日上限
+    1000 行，追不上日增量，update_inbox 曾因此积到 9.6 万行
+    （2026-11-19 CPU 100% 事故的燃料）。failed 行保留供排查，不在此清理。
+    """
     cutoff = int(time.time()) - DATA_RETENTION_DAYS * 86400
+    removed = 0
     async with get_session() as session:
-        # Batches limit write locks on large installations.
         for model, key, age, terminal in (
             (
                 UpdateInbox,
@@ -30,16 +38,24 @@ async def cleanup_records():
         ):
             from sqlalchemy import select, tuple_
 
-            rows = (
-                await session.execute(
-                    select(*key)
-                    .where(age < cutoff, model.state.in_(terminal))
-                    .limit(1000)
-                )
-            ).all()
-            if rows:
+            while True:
+                rows = (
+                    await session.execute(
+                        select(*key)
+                        .where(age < cutoff, model.state.in_(terminal))
+                        .limit(CLEANUP_BATCH)
+                    )
+                ).all()
+                if not rows:
+                    break
                 await session.execute(delete(model).where(tuple_(*key).in_(rows)))
-        await session.commit()
+                await session.commit()
+                removed += len(rows)
+    if removed:
+        logger.info(
+            "历史清理: 删除 %s 条超期终态行 (保留 %s 天)", removed, DATA_RETENTION_DAYS
+        )
+    return removed
 
 
 async def auto_purge_dead_bots() -> int:
