@@ -64,6 +64,15 @@ async def upgrade(conn):
                 version=3, applied_at=datetime.now().isoformat(timespec="seconds")
             )
         )
+    if 4 not in applied:
+        # update_inbox 复合索引：已有库走 create_all 不会补建模型新索引，
+        # 这里幂等补齐（_indexes 全部 checkfirst）
+        await conn.run_sync(_indexes)
+        await conn.execute(
+            SchemaVersion.__table__.insert().values(
+                version=4, applied_at=datetime.now().isoformat(timespec="seconds")
+            )
+        )
 
 
 def _columns(conn):

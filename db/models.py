@@ -214,6 +214,12 @@ class MembershipAudit(Base):
 
 class UpdateInbox(Base):
     __tablename__ = 'update_inbox'
+    # 公平轮转查询按 node_id+state+available_at 筛选 eligible 行。
+    # 单机部署下 node_id 全表同值，单独的 node_id 索引会误导计划器全表扫描
+    # （2026-11-19 CPU 100% 事故根因），复合索引让窗口函数只在 eligible 行上运行
+    __table_args__ = (
+        Index('ix_update_inbox_node_state_avail', 'node_id', 'state', 'available_at'),
+    )
     bot_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     update_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     node_id: Mapped[str] = mapped_column(String(255), index=True)

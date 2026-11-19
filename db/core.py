@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine, AsyncSession, AsyncEngine, async_sessionmaker
 )
 
-from config import DB_TYPE, DATABASE_URL, DB_PATH
+from config import DB_TYPE, DATABASE_URL, DB_PATH, INBOX_WORKERS
 from db.models import Base
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,11 @@ def _create_engine() -> AsyncEngine:
         # 注意：pre_ping 对 SQLite 无意义（本地文件无连接断开概念），
         # 且每次取连接多一次 SELECT 1 往返，这里显式关闭
         engine_kwargs['pool_pre_ping'] = False
+        # 池必须覆盖 INBOX_WORKERS：异步引擎默认池仅 5+10，worker 每次轮询取
+        # 连接都超池，overflow 连接被反复建拆（aiosqlite 每连接一线程），
+        # 2026-11-19 CPU 100% 事故的连接churn即源于此
+        engine_kwargs['pool_size'] = max(INBOX_WORKERS, 10)
+        engine_kwargs['max_overflow'] = 20
     else:
         engine_kwargs['pool_pre_ping'] = True
         engine_kwargs.update({

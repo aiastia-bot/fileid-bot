@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from types import SimpleNamespace
-from sqlalchemy import select, update, or_, and_, func
+from sqlalchemy import select, update, or_, and_, func, bindparam
 from sqlalchemy.exc import IntegrityError
 from telegram import Update
 from telegram.error import Forbidden
@@ -42,6 +42,31 @@ class Inbox:
         self._dead_bot_warned = {}  # bot_key -> 上次告警时间（防刷屏）
         # 启动竞态：bot 应用异步加载完成前 resolve_app 全部落空，属正常现象
         self.suppress_dead_bot_warnings = False
+        # 公平轮转查询语句只构建一次：32 个 worker 每秒轮询，每次重建 ORM 代理
+        # 曾是 CPU 热点（2026-11-19 事故）；语句对象复用可命中 SQLAlchemy 编译缓存
+        now_b = bindparam("now")
+        rn = func.row_number().over(
+            partition_by=UpdateInbox.bot_key,
+            order_by=[UpdateInbox.created_at, UpdateInbox.update_id],
+        ).label("rn")
+        sub = (
+            select(UpdateInbox)
+            .where(
+                UpdateInbox.node_id == bindparam("node_id"),
+                or_(
+                    and_(UpdateInbox.state == "pending", UpdateInbox.available_at <= now_b),
+                    and_(UpdateInbox.state == "processing", UpdateInbox.available_at <= now_b),
+                ),
+            )
+            .add_columns(rn)
+            .subquery()
+        )
+        self._next_stmt = (
+            select(sub)
+            .where(sub.c.rn == 1)
+            .order_by(sub.c.created_at, sub.c.update_id)
+            .limit(300)
+        )
 
     async def accept(self, bot_key, body):
         if not isinstance(body, dict) or type(body.get("update_id")) is not int:
@@ -77,13 +102,6 @@ class Inbox:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         self.tasks.clear()
-
-    @staticmethod
-    def _eligible(now):
-        return or_(
-            and_(UpdateInbox.state == "pending", UpdateInbox.available_at <= now),
-            and_(UpdateInbox.state == "processing", UpdateInbox.available_at <= now),
-        )
 
     def _note_dead_bot(self, bot_key):
         """Bot 应用未加载时其积压会被无限跳过——必须让运维看得见（每小时最多一次）"""
@@ -158,22 +176,9 @@ class Inbox:
             # 候选 = 每个 bot 的最老一条待处理 update（窗口函数按 bot 分组取头）：
             # 单一 bot 的洪峰或死 Bot 积压都无法推迟其他 bot 的响应
             # （row_number 需 SQLite 3.25+ / MySQL 8+）
-            rn = func.row_number().over(
-                partition_by=UpdateInbox.bot_key,
-                order_by=[UpdateInbox.created_at, UpdateInbox.update_id],
-            ).label("rn")
-            sub = (
-                select(UpdateInbox)
-                .where(UpdateInbox.node_id == self.node_id, self._eligible(now))
-                .add_columns(rn)
-                .subquery()
-            )
             rows = (
                 await session.execute(
-                    select(sub)
-                    .where(sub.c.rn == 1)
-                    .order_by(sub.c.created_at, sub.c.update_id)
-                    .limit(300)
+                    self._next_stmt, {"node_id": self.node_id, "now": now}
                 )
             ).all()
             if not rows:
