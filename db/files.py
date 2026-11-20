@@ -237,14 +237,9 @@ async def get_files_by_codes(codes: list, bot_db_id: int = None) -> list:
         if bot_db_id:
             missing = [c for c in codes if c not in found_codes]
             if missing:
-                sources = (await session.execute(
-                    select(FileMapping).where(
-                        FileMapping.code.in_(missing),
-                        FileMapping.file_unique_id.isnot(None),
-                        or_(FileMapping.is_valid.is_(None), FileMapping.is_valid == 1)
-                    )
-                )).scalars().all()
-                unique_by_code = {s.code: s.file_unique_id for s in sources}
+                # 第一轮已取到源文件，无须再查询同一批代码。
+                unique_by_code = {s.code: s.file_unique_id for s in rows
+                                  if s.code not in found_codes and s.file_unique_id}
                 wanted_uniques = set(unique_by_code.values())
                 if wanted_uniques:
                     mine = (await session.execute(
@@ -255,12 +250,10 @@ async def get_files_by_codes(codes: list, bot_db_id: int = None) -> list:
                         )
                     )).scalars().all()
                     mine_by_unique = {m.file_unique_id: _model_to_dict(m) for m in mine}
-                    seen = set()
-                    for code in missing:  # 保持调用方传入的顺序
+                    for code in dict.fromkeys(missing):  # 每个输入代码都保留映射
                         uid = unique_by_code.get(code)
                         row = mine_by_unique.get(uid) if uid else None
-                        if row and row["id"] not in seen:
-                            seen.add(row["id"])
+                        if row:
                             row = dict(row, requested_code=code)
                             results.append(row)
         return results

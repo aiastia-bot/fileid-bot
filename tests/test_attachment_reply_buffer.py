@@ -104,6 +104,7 @@ async def test_batch_uses_placeholder_then_final_edit(monkeypatch, fast_send, no
     assert len(context.bot.sent) == 1
     final = next(e for e in context.bot.edits if "已保存" in e[0])
     assert final[2] == 101  # 占位消息 id，原位编辑
+    assert final[3]['parse_mode'] == 'HTML'
 
 
 async def test_max_wait_flushes_during_stream(monkeypatch, fast_send, no_hint):
@@ -192,3 +193,77 @@ async def test_flush_background_sends_waits_and_drains(monkeypatch):
     await asyncio.wait_for(flusher, 2)
     assert not _background_sends         # 完成后登记表清空
     assert context.bot.sent == [(1, "退出前补发", {})]
+
+
+@pytest.mark.parametrize('timer', ['silence', 'max_wait'])
+async def test_timer_flush_survives_real_io(monkeypatch, timer):
+    """真实 API 会让出事件循环，flush 不能把当前定时任务自身取消。"""
+    monkeypatch.setattr(messages, 'ATTACH_REPLY_DEBOUNCE', 0.02 if timer == 'silence' else 10)
+    monkeypatch.setattr(messages, 'ATTACH_REPLY_MAX_WAIT', 0.02 if timer == 'max_wait' else 10)
+
+    async def delayed(fn, *args, **kwargs):
+        await asyncio.sleep(0.01)
+        return await fn(*args, **kwargs)
+
+    monkeypatch.setattr(messages, '_retry_send', delayed)
+    context = make_context()
+    await add(context, 1, 2, 1)
+    assert await wait_until(lambda: len(context.bot.sent) == 1)
+    assert 'ABC1231' in context.bot.sent[0][1]
+
+
+async def test_single_attachment_uses_short_wait(monkeypatch, fast_send):
+    monkeypatch.setattr(messages, 'ATTACH_REPLY_SINGLE_WAIT', 0.02)
+    monkeypatch.setattr(messages, 'ATTACH_REPLY_DEBOUNCE', 10)
+    context = make_context()
+    await add(context, 1, 2, 1)
+    assert await wait_until(lambda: bool(context.bot.sent), timeout=0.5)
+
+
+async def test_pending_placeholder_is_reused_at_flush(monkeypatch, fast_send):
+    context = make_context()
+    original_send = context.bot.send_message
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_send(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return await original_send(*args, **kwargs)
+
+    context.bot.send_message = slow_send
+    await add(context, 1, 2, 1)
+    await add(context, 1, 2, 2)
+    await started.wait()
+    flusher = asyncio.create_task(messages._flush_attachment_buffer(context, '1_2'))
+    await asyncio.sleep(0)
+    release.set()
+    await flusher
+    assert len(context.bot.sent) == 1
+    assert not context.bot.deleted
+    assert '已保存 2' in context.bot.edits[-1][0]
+
+
+async def test_deleted_placeholder_falls_back_to_new_summary(fast_send):
+    context = make_context()
+    await add(context, 1, 2, 1)
+    await add(context, 1, 2, 2)
+    assert await wait_until(lambda: bool(context.bot.sent))
+    context.bot.edit_message_text = AsyncMock(side_effect=RuntimeError('message deleted'))
+    await messages._flush_attachment_buffer(context, '1_2')
+    assert '已保存 2' in context.bot.sent[-1][1]
+    assert context.bot.sent[-1][2]['parse_mode'] == 'HTML'
+
+
+async def test_large_upload_keeps_every_code_within_message_limit(fast_send):
+    context = make_context()
+    items = [('照片<&>', f'bot_p:{i:03d}' + 'x' * 200, i, False) for i in range(80)]
+    for item in items:
+        await messages._buffer_attachment_reply(context, 1, 2, item)
+    await messages._flush_attachment_buffer(context, '1_2')
+    summaries = [text for _, text, _ in context.bot.sent if '已保存' in text]
+    summaries += [text for text, _, _, _ in context.bot.edits if '已保存' in text]
+    assert len(summaries) > 1
+    assert all(len(text.encode('utf-16-le')) // 2 <= 4096 for text in summaries)
+    combined = '\n'.join(summaries)
+    assert '照片&lt;&amp;&gt;' in combined
+    assert all(combined.count(f'<code>{item[1]}</code>') == 1 for item in items)

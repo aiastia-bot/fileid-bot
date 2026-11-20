@@ -3,6 +3,7 @@ import asyncio
 import logging
 import time as _time
 from datetime import datetime
+from html import escape
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -11,7 +12,7 @@ from config import MAX_COLLECTION_FILES, GROUP_SEND_SIZE, FILE_TYPE_MAP
 from config import RATE_LIMIT_WINDOW, RATE_LIMIT_MAX, RATE_LIMIT_MAX_WAIT
 from db import (
     save_file, get_file, get_files_by_codes, get_collection, get_collection_files,
-    get_collection_files_for_bot,
+    get_collection_files_for_bot, get_collection_summary_for_bot,
     create_collection, add_file_to_collection, get_user_forward_protect,
 )
 from db.files import is_bot_over_file_quota
@@ -22,6 +23,7 @@ from services.backup import kick_propagate
 
 # ===== 附件回复缓冲参数（占位消息 + 进度编辑 + 静默合并） =====
 ATTACH_REPLY_DEBOUNCE = 3.0    # 静默 N 秒后合并发送汇总（每条新附件重置）
+ATTACH_REPLY_SINGLE_WAIT = 0.8  # 单附件尽快返回代码，批量仍用静默合并
 ATTACH_REPLY_MAX_WAIT = 15.0   # 连续上传时的强制汇总上限，避免全程静默
 ATTACH_SUMMARY_COLLAPSE = 15   # 汇总超过该文件数时用可折叠引用（blockquote）
 
@@ -157,9 +159,9 @@ async def _build_attachment_summary_text(items, total: int, ok_count: int) -> st
     lines = []
     for tn, c, mid, over in items:
         if over:
-            lines.append(f"• {tn}: ⚠️ 已超出文件额度，未返回代码")
+            lines.append(f"• {escape(tn)}: ⚠️ 已超出文件额度，未返回代码")
         else:
-            lines.append(f"• {tn}: <code>{c}</code>")
+            lines.append(f"• {escape(tn)}: <code>{escape(c)}</code>")
     body = "\n".join(lines)
     if total > ATTACH_SUMMARY_COLLAPSE:
         body = f"<blockquote expandable>{body}</blockquote>"
@@ -167,6 +169,32 @@ async def _build_attachment_summary_text(items, total: int, ok_count: int) -> st
         return f"✅ 已保存 {total} 个文件：\n\n{body}"
     hint = await _file_quota_hint_text()
     return f"✅ 已保存 {total} 个文件（{ok_count} 个返回代码）：\n\n{body}\n\n{hint}"
+
+
+async def _build_attachment_summary_pages(items) -> list[str]:
+    """按完整代码分段，为标题、额度提示和 HTML 标签留出消息长度余量。"""
+    chunks, chunk, size = [], [], 0
+    for item in items:
+        tn, code, _, over = item
+        line = f"• {escape(tn)}: " + (
+            "⚠️ 已超出文件额度，未返回代码" if over else f"<code>{escape(code)}</code>"
+        )
+        line_size = len(line.encode('utf-16-le')) // 2 + 1
+        if chunk and size + line_size > 2800:
+            chunks.append(chunk)
+            chunk, size = [], 0
+        chunk.append(item)
+        size += line_size
+    if chunk:
+        chunks.append(chunk)
+    pages = []
+    for index, part in enumerate(chunks, 1):
+        text = await _build_attachment_summary_text(
+            part, len(part), sum(not item[3] for item in part))
+        if len(chunks) > 1:
+            text = f"📋 第 {index}/{len(chunks)} 部分，共 {len(items)} 个文件\n\n{text}"
+        pages.append(text)
+    return pages
 
 
 def _schedule_progress_edit(context, buf) -> None:
@@ -218,7 +246,7 @@ async def _send_placeholder(context, buf) -> None:
                 pass
             return
         buf['placeholder_id'] = msg.message_id
-        if len(buf['items']) > 2:
+        if len(buf['items']) > 2 and not buf.get('flushing'):
             buf['edit_dirty'] = True
             _schedule_progress_edit(context, buf)
     except Exception:
@@ -231,9 +259,10 @@ async def _flush_attachment_buffer(context, buffer_key) -> None:
     buf = bufs.pop(buffer_key, None)
     if not buf or not buf['items']:
         return
-    buf['flushed'] = True
+    buf['flushing'] = True
+    current = asyncio.current_task()
     for t in (buf.get('timer'), buf.get('max_timer')):
-        if t:
+        if t and t is not current:
             t.cancel()
     # 停掉在途进度编辑，避免覆盖最终汇总
     buf['edit_dirty'] = False
@@ -247,16 +276,12 @@ async def _flush_attachment_buffer(context, buffer_key) -> None:
             await asyncio.wait_for(asyncio.shield(pt), 5)
         except Exception:
             pass
+    buf['flushed'] = True
 
     items = buf['items']
     total = len(items)
-    ok_count = sum(1 for it in items if not it[3])
     try:
-        if buf.get('placeholder_id'):
-            reply = await _build_attachment_summary_text(items, total, ok_count)
-            await _retry_send(context.bot.edit_message_text, reply,
-                chat_id=buf['chat_id'], message_id=buf['placeholder_id'])
-        elif total == 1 and not items[0][3]:
+        if total == 1 and not items[0][3] and not buf.get('placeholder_id'):
             # 单个附件走原直接回复路径（最快，保持不变）
             tn, c, mid, _ = items[0]
             await _retry_send(context.bot.send_message,
@@ -265,10 +290,19 @@ async def _flush_attachment_buffer(context, buffer_key) -> None:
                 parse_mode='Markdown',
                 reply_to_message_id=mid)
         else:
-            reply = await _build_attachment_summary_text(items, total, ok_count)
-            await _retry_send(context.bot.send_message, reply,
-                chat_id=buf['chat_id'], parse_mode='HTML',
-                reply_to_message_id=items[0][2])
+            pages = await _build_attachment_summary_pages(items)
+            for index, reply in enumerate(pages):
+                if index == 0 and buf.get('placeholder_id'):
+                    try:
+                        await _retry_send(context.bot.edit_message_text, reply,
+                            chat_id=buf['chat_id'], message_id=buf['placeholder_id'],
+                            parse_mode='HTML')
+                        continue
+                    except Exception:
+                        logger.debug("占位编辑失败，改发附件汇总", exc_info=True)
+                await _retry_send(context.bot.send_message,
+                    text=reply, chat_id=buf['chat_id'], parse_mode='HTML',
+                    reply_to_message_id=items[0][2])
         logger.info("附件回复缓冲: 发送 %d 个附件汇总到 chat_id=%s (占位编辑=%s)",
                     total, buf['chat_id'], bool(buf.get('placeholder_id')))
     except Exception as e:
@@ -281,7 +315,7 @@ async def _buffer_attachment_reply(context, chat_id: int, user_id: int, item: tu
     - 首个附件：只建缓冲不发消息（保住单附件「直接回复」的最快体验）
     - 第 2 个附件：判定批量上传，发一次占位消息提供过程反馈
     - 后续附件：编辑占位报最新计数（至多一个编辑在途）
-    - 静默 3 秒或累计 15 秒（先到者）：原位编辑成最终汇总
+    - 单附件等待 0.8 秒返回代码；批量静默 3 秒或累计 15 秒时原位汇总
     """
     if '_attachment_reply_buffer' not in context.bot_data:
         context.bot_data['_attachment_reply_buffer'] = {}
@@ -313,7 +347,8 @@ async def _buffer_attachment_reply(context, chat_id: int, user_id: int, item: tu
         buf['timer'].cancel()
 
     async def flush_on_silence():
-        await asyncio.sleep(ATTACH_REPLY_DEBOUNCE)
+        delay = min(ATTACH_REPLY_SINGLE_WAIT, ATTACH_REPLY_DEBOUNCE) if len(buf['items']) == 1 else ATTACH_REPLY_DEBOUNCE
+        await asyncio.sleep(delay)
         await _flush_attachment_buffer(context, buffer_key)
     buf['timer'] = asyncio.create_task(flush_on_silence())
 
@@ -624,18 +659,16 @@ async def _process_collection_codes(context, chat_id, message, collection_codes:
             continue
 
         t2 = _time.monotonic()
-        files, missing_count = await get_collection_files_for_bot(col_code, current_bot_db_id_col)
-        logger.debug("⏱ _process_collection_codes get_collection_files_for_bot(%s) 耗时%.3fs files=%d missing=%d",
-                     col_code, _time.monotonic() - t2, len(files), missing_count)
+        summary = await get_collection_summary_for_bot(col_code, current_bot_db_id_col)
+        total_files, missing_count = summary['total'], summary['missing']
+        logger.debug("⏱ _process_collection_codes summary(%s) 耗时%.3fs files=%d missing=%d",
+                     col_code, _time.monotonic() - t2, total_files, missing_count)
 
-        if not files:
+        if not total_files:
             send_later(message.reply_text, f"⚠️ 集合「{safe_name}」为空。")
             continue
 
-        total_files = len(files)
-        type_counts = {}
-        for f in files:
-            type_counts[f['file_type']] = type_counts.get(f['file_type'], 0) + 1
+        type_counts = summary['type_counts']
         type_stats_text = " ".join(f"{FILE_TYPE_MAP.get(k, k)}x{v}" for k, v in type_counts.items())
 
         t3 = _time.monotonic()

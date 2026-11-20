@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import AUTO_SEND_INTERVAL, GROUP_SEND_SIZE, FILE_TYPE_MAP
-from db import get_collection, get_collection_files_for_bot
+from db import get_collection, get_collection_files_for_bot, get_collection_files_page_for_bot
 from utils import escape_markdown
 from senders import send_file_group, _retry_send
 from send_queue import get_queue_from_context
@@ -90,7 +90,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     # === Telegram 回调去重（防止同一回调被投递2次导致重复发送） ===
     # 用时间戳窗口替代 spawn 一个 sleep task 的写法，避免高频回调时的 task 风暴。
-    if data and data != "noop":
+    if data and data != "noop" and not data.startswith('p|'):
         rcb = context.bot_data.get('_rcb_seen')
         if rcb is None:
             rcb = {}
@@ -108,13 +108,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             stale = [k for k, ts in rcb.items() if ts < cutoff]
             for k in stale:
                 del rcb[k]
-
-    # === 防止重复点击：立即移除原消息按钮 ===
-    if data != "noop":
-        try:
-            await _retry_send(query.edit_message_reply_markup, reply_markup=None)
-        except Exception:
-            pass  # 消息无法编辑（可能是太旧），忽略
 
     # === 数据为空检查 ===
     if not data:
@@ -175,7 +168,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
                 # 清除旧的发送记录，允许重新发送
-                sent_key = f"sent_pages_{sk}"
+                sent_key = f"sent_pages_{chat_id}_{sk}"
                 context.user_data.pop(sent_key, None)
                 logger.info("启动后台分页发送: col_code=%s, chat_id=%s", col_code, chat_id)
                 await _safe_edit_query(query, context, chat_id, "📤 正在发送第 1 页…")
@@ -241,16 +234,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await _retry_send(context.bot.send_message, chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
                 logger.info("启动后台发送本页文件: col_code=%s, page=%d", col_code, page)
-                await _safe_edit_query(query, context, chat_id, f"📤 正在发送第 {page} 页文件…")
+                # 保留浏览菜单，发送结果另行反馈，用户可以继续翻页。
                 asyncio.create_task(_send_page_files(context, chat_id, col_code, page))
 
         elif data == "stop_auto":
             logger.info("处理停止自动发送: user_id=%s", user_id)
             context.user_data['stop_auto_send'] = True
             # 同时标记队列取消
-            from send_queue import get_queue
             try:
-                queue = get_queue(context.bot.username)
+                queue = get_queue_from_context(context)
                 queue.cancel_chat(chat_id)
             except Exception:
                 pass
@@ -316,77 +308,82 @@ def _get_auto_delete(context) -> int:
 
 
 async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
+    """同一页在途期间只允许一个发送任务，避免连点重复入队。"""
+    tasks = _get_sending_tasks(context)
+    key = f"page:{chat_id}:{col_code}:{page}"
+    if key in tasks:
+        return
+    tasks[key] = True
+    try:
+        await _send_paginated_impl(context, chat_id, col_code, sk, page, query)
+    finally:
+        tasks.pop(key, None)
+
+
+async def _send_paginated_impl(context, chat_id, col_code, sk, page=1, query=None):
     """分页发送集合文件：每次发送 PER_PAGE 个，带页码按钮，已发送页显示✅"""
     logger.info("_send_paginated: col_code=%s, sk=%s, page=%d", col_code, sk, page)
 
     _bot_db_id = (context.bot_data.get('bot_record') or {}).get('id')
-    files, _col_missing = await get_collection_files_for_bot(col_code, _bot_db_id)
+    result = await get_collection_files_page_for_bot(
+        col_code, _bot_db_id, page=page, per_page=PER_PAGE)
     col_info = await get_collection(col_code)
 
-    if not files or not col_info:
+    if not result['files'] or not col_info:
         msg = "⚠️ 集合为空或不存在。"
         await _safe_edit_query(query, context, chat_id, msg)
         return
 
-    total = len(files)
-    total_pages = (total + PER_PAGE - 1) // PER_PAGE
-    page = max(1, min(page, total_pages))
-    start = (page - 1) * PER_PAGE
-    page_files = files[start:start + PER_PAGE]
+    total_pages = result['total_pages']
+    page = result['page']
+    page_files = result['files']
 
     # 记录已发送的页面
-    sent_key = f"sent_pages_{sk}"
-    sent_pages = context.user_data.get(sent_key, set())
+    sent_key = f"sent_pages_{chat_id}_{sk}"
+    sent_pages = context.user_data.setdefault(sent_key, set())
 
-    # 如果该页已发送，不重复发送，只更新状态
     if page in sent_pages:
-        safe_name = escape_markdown(col_info['name'])
-        text = f"📦 *{safe_name}*\n"
-        text += f"⚠️ 第 {page}/{total_pages} 页已发送过，请勿重复操作。\n"
-        text += f"📊 进度: {len(sent_pages)}/{total_pages} 页"
-        if len(sent_pages) >= total_pages:
-            text += "\n\n🎉 所有文件已发送完毕！"
-            context.user_data.pop(sent_key, None)  # 发完即清理，防 user_data 积累
-            await _safe_edit_query(query, context, chat_id, text, parse_mode="Markdown")
-        else:
-            # 只显示未发送页的按钮
-            await _safe_edit_query(query, context, chat_id, text, parse_mode="Markdown")
-        return
+        # 重访已发送页仍保留导航，但不再提交文件。
+        sent = len(page_files)
+    else:
+        protect = await _get_protect(context, chat_id)
+        auto_delete = _get_auto_delete(context)
+        try:
+            queue = get_queue_from_context(context)
+            queue.clear_chat_cancel(chat_id)
+            sent = await queue.submit_batch(chat_id, page_files, protect_content=protect,
+                                            auto_delete=auto_delete)
+            logger.info("_send_paginated: 第 %d 页发送完成, sent=%d", page, sent)
+        except Exception as e:
+            logger.error("_send_paginated: 第 %d 页发送失败: %s", page, e, exc_info=True)
+            sent = 0
 
-    sent_pages.add(page)
+    if sent == len(page_files):
+        sent_pages.add(page)
     context.user_data[sent_key] = sent_pages
-
-    # 检查转发保护（从内存 bot_record 读取，0 次 DB 查询）
-    protect = await _get_protect(context, chat_id)
-    auto_delete = _get_auto_delete(context)
-
-    # 通过 SendQueue 发送本页文件（享受 Bot 级别限流保护 + Redis 持久化）
-    logger.info("_send_paginated: 发送第 %d 页, %d 个文件, protect=%s", page, len(page_files), protect)
-    try:
-        queue = get_queue_from_context(context)
-        queue.clear_chat_cancel(chat_id)
-        sent = await queue.submit_batch(chat_id, page_files, protect_content=protect,
-                                        auto_delete=auto_delete)
-        logger.info("_send_paginated: 第 %d 页发送完成, sent=%d", page, sent)
-    except Exception as e:
-        logger.error("_send_paginated: 第 %d 页发送失败: %s", page, e, exc_info=True)
-        sent = 0
+    # 保留最近 32 个集合的完成记录，旧按钮不重复发送且内存有界。
+    page_keys = [key for key in context.user_data if key.startswith('sent_pages_')]
+    for old_key in page_keys[:-32]:
+        context.user_data.pop(old_key, None)
 
     # 构建状态消息
     safe_name = escape_markdown(col_info['name'])
     text = f"📦 *{safe_name}*\n"
-    text += f"✅ 第 {page}/{total_pages} 页已发送 ({sent}/{len(page_files)})\n"
+    complete = sent == len(page_files)
+    text += f"{'✅' if complete else '⚠️'} 第 {page}/{total_pages} 页{'已发送' if complete else '未发完'} ({sent}/{len(page_files)})\n"
     text += f"📊 进度: {len(sent_pages)}/{total_pages} 页"
 
     # 全部发送完毕：不显示任何按钮，防止重复操作
     if len(sent_pages) >= total_pages:
         text += "\n\n🎉 所有文件已发送完毕！"
-        context.user_data.pop(sent_key, None)  # 发完即清理，防 user_data 积累
         await _safe_edit_query(query, context, chat_id, text, parse_mode="Markdown")
         return
 
     # 未发送完：显示导航按钮
     buttons = []
+    if not complete:
+        text += "\n可重试本页；已收到的文件可能重复。\n"
+        buttons.append([InlineKeyboardButton("🔄 重试本页", callback_data=f"sn|{sk}|{page}")])
     nav = []
     if page > 1:
         nav.append(InlineKeyboardButton("⬅️", callback_data=f"sn|{sk}|{page - 1}"))
@@ -509,19 +506,19 @@ async def _send_page(context, chat_id, col_code, page, query=None):
     """分页浏览集合（只看列表，不发送文件）"""
     logger.info("_send_page: col_code=%s, page=%d, chat_id=%s", col_code, page, chat_id)
     _bot_db_id = (context.bot_data.get('bot_record') or {}).get('id')
-    files, _col_missing = await get_collection_files_for_bot(col_code, _bot_db_id)
+    result = await get_collection_files_page_for_bot(
+        col_code, _bot_db_id, page=page, per_page=PER_PAGE)
     col_info = await get_collection(col_code)
-    logger.info("_send_page: files=%d, col_info=%s", len(files) if files else 0, bool(col_info))
-    if not files or not col_info:
+    if not result['files'] or not col_info:
         msg = "⚠️ 集合为空或不存在。"
         await _safe_edit_query(query, context, chat_id, msg)
         return
 
-    total = len(files)
-    total_pages = (total + PER_PAGE - 1) // PER_PAGE
-    page = max(1, min(page, total_pages))
+    total = result['total']
+    total_pages = result['total_pages']
+    page = result['page']
     start = (page - 1) * PER_PAGE
-    page_files = files[start:start + PER_PAGE]
+    page_files = result['files']
 
     safe_name = escape_markdown(col_info['name'])
     text = f"📦 *{safe_name}* (第{page}/{total_pages}页，共{total}个文件)\n\n"
@@ -556,23 +553,34 @@ async def _send_page(context, chat_id, col_code, page, query=None):
 
 
 async def _send_page_files(context, chat_id, col_code, page, query=None):
+    tasks = _get_sending_tasks(context)
+    key = f"page:{chat_id}:{col_code}:{page}"
+    if key in tasks:
+        return
+    tasks[key] = True
+    try:
+        await _send_page_files_impl(context, chat_id, col_code, page, query)
+    except Exception:
+        logger.exception("发送本页文件失败: collection=%s page=%s", col_code, page)
+        await _safe_edit_query(query, context, chat_id, "⚠️ 本页发送失败，请稍后点击“发送本页文件”重试。")
+    finally:
+        tasks.pop(key, None)
+
+
+async def _send_page_files_impl(context, chat_id, col_code, page, query=None):
     """发送指定页的文件"""
     logger.info("_send_page_files: col_code=%s, page=%d, chat_id=%s", col_code, page, chat_id)
     _bot_db_id = (context.bot_data.get('bot_record') or {}).get('id')
-    files, _col_missing = await get_collection_files_for_bot(col_code, _bot_db_id)
+    result = await get_collection_files_page_for_bot(
+        col_code, _bot_db_id, page=page, per_page=PER_PAGE)
     col_info = await get_collection(col_code)
-    logger.info("_send_page_files: files=%d", len(files) if files else 0)
-    if not files or not col_info:
+    if not result['files'] or not col_info:
         msg = "⚠️ 集合为空或不存在。"
         await _safe_edit_query(query, context, chat_id, msg)
         return
 
-    start = (page - 1) * PER_PAGE
-    page_files = files[start:start + PER_PAGE]
-    if not page_files:
-        msg = "⚠️ 该页没有文件。"
-        await _safe_edit_query(query, context, chat_id, msg)
-        return
+    page = result['page']
+    page_files = result['files']
 
     # 检查转发保护（从内存 bot_record 读取，0 次 DB 查询）
     protect = await _get_protect(context, chat_id)
@@ -583,7 +591,7 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
     queue.clear_chat_cancel(chat_id)
     sent = await queue.submit_batch(chat_id, page_files, protect_content=protect,
                                     auto_delete=auto_delete)
-    result_text = f"✅ 已发送第{page}页文件 ({sent}/{len(page_files)})"
+    result_text = f"{'✅' if sent == len(page_files) else '⚠️'} 第{page}页文件发送结果 ({sent}/{len(page_files)})"
     logger.info("_send_page_files 完成: %s", result_text)
     await _safe_edit_query(query, context, chat_id, result_text)
 

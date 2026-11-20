@@ -3,7 +3,8 @@ import logging
 from datetime import datetime
 from typing import Optional, List, Dict
 
-from sqlalchemy import select, update, or_
+from sqlalchemy import select, update, delete, or_, and_, case, func
+from sqlalchemy.orm import aliased
 
 from db.core import get_session, _model_to_dict
 from db.models import Collection, CollectionItem, FileMapping
@@ -21,7 +22,7 @@ async def get_collection(code: str) -> Optional[Dict]:
     """获取集合信息，带缓存"""
     r = await _get_redis()
     cached = await r.cache_get_json(f"col:{code}")
-    if cached:
+    if cached is not None:
         return cached
 
     async with get_session() as session:
@@ -49,7 +50,7 @@ async def get_collection_files(code: str) -> List[Dict]:
     """获取集合中的所有文件（过滤已失效的文件），带缓存"""
     r = await _get_redis()
     cached = await r.cache_get_json(f"col_files:{code}")
-    if cached:
+    if cached is not None:
         return cached
 
     async with get_session() as session:
@@ -60,7 +61,7 @@ async def get_collection_files(code: str) -> List[Dict]:
                 CollectionItem.collection_code == code,
                 or_(FileMapping.is_valid.is_(None), FileMapping.is_valid == 1)
             )
-            .order_by(CollectionItem.sort_order)
+            .order_by(CollectionItem.sort_order, CollectionItem.id)
         )
         files = result.scalars().all()
         data = [_model_to_dict(f) for f in files]
@@ -137,19 +138,10 @@ async def delete_collection(col_code: str) -> bool:
     """删除集合及其文件项"""
     async with get_session() as session:
         try:
-            # 删除集合项
-            result = await session.execute(
-                select(CollectionItem).where(CollectionItem.collection_code == col_code)
-            )
-            for item in result.scalars().all():
-                await session.delete(item)
-            # 删除集合
-            result = await session.execute(
-                select(Collection).where(Collection.code == col_code)
-            )
-            col = result.scalar_one_or_none()
-            if col:
-                await session.delete(col)
+            # 批量删除，避免为每个集合项创建 ORM 对象和逐条删除。
+            await session.execute(delete(CollectionItem).where(
+                CollectionItem.collection_code == col_code))
+            await session.execute(delete(Collection).where(Collection.code == col_code))
             await session.commit()
             # 清除集合缓存
             r = await _get_redis()
@@ -206,7 +198,8 @@ async def batch_add_codes_to_collection(
             existing_codes = set(r[0] for r in existing_result.fetchall())
 
             # 只插入新增的有效代码
-            new_codes = valid_codes - existing_codes
+            new_codes = [code for code in dict.fromkeys(codes)
+                         if code in valid_codes and code not in existing_codes]
 
             if new_codes:
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -267,7 +260,7 @@ async def get_collection_items_codes(col_code: str) -> List[str]:
         rows = (await session.execute(
             select(CollectionItem.file_code)
             .where(CollectionItem.collection_code == col_code)
-            .order_by(CollectionItem.sort_order)
+            .order_by(CollectionItem.sort_order, CollectionItem.id)
         )).scalars().all()
     return list(rows)
 
@@ -293,3 +286,66 @@ async def get_collection_files_for_bot(col_code: str, bot_db_id: int = None) -> 
         else:
             missing += 1
     return files, missing
+
+
+def _collection_files_query(col_code: str, bot_db_id: int = None):
+    """按接收 Bot 解析可用文件，保留重复项和无 bot_db_id 的旧文件。"""
+    source = aliased(FileMapping)
+    query = (
+        select(FileMapping)
+        .select_from(CollectionItem)
+        .join(source, source.code == CollectionItem.file_code)
+        .where(CollectionItem.collection_code == col_code,
+               or_(source.is_valid.is_(None), source.is_valid == 1))
+    )
+    if bot_db_id is not None:
+        replica = aliased(FileMapping)
+        direct = or_(source.bot_db_id == bot_db_id, source.bot_db_id.is_(None))
+        query = query.outerjoin(replica, and_(
+            source.bot_db_id != bot_db_id,
+            source.file_unique_id != '',
+            replica.bot_db_id == bot_db_id,
+            replica.file_unique_id == source.file_unique_id,
+            or_(replica.is_valid.is_(None), replica.is_valid == 1),
+        ))
+        target_id = case((direct, source.id), else_=replica.id)
+    else:
+        target_id = source.id
+    return query.join(FileMapping, FileMapping.id == target_id)
+
+
+async def get_collection_summary_for_bot(col_code: str, bot_db_id: int = None) -> Dict:
+    """集合卡片只查询分类计数，不加载所有文件及 Telegram file_id。"""
+    query = _collection_files_query(col_code, bot_db_id)
+    async with get_session() as session:
+        counts = (await session.execute(
+            query.with_only_columns(FileMapping.file_type, func.count())
+            .group_by(FileMapping.file_type)
+        )).all()
+        item_count = await session.scalar(
+            select(func.count()).select_from(CollectionItem)
+            .where(CollectionItem.collection_code == col_code)) or 0
+    type_counts = dict(counts)
+    total = sum(type_counts.values())
+    return {'total': total, 'missing': item_count - total, 'type_counts': type_counts}
+
+
+async def get_collection_files_page_for_bot(
+    col_code: str, bot_db_id: int = None, *, page: int = 1, per_page: int = 5
+) -> Dict:
+    """先过滤不可取回的项再分页，只加载当前页的文件元数据。"""
+    if per_page < 1:
+        raise ValueError('per_page must be positive')
+    query = _collection_files_query(col_code, bot_db_id)
+    async with get_session() as session:
+        total = await session.scalar(query.with_only_columns(func.count())) or 0
+        total_pages = (total + per_page - 1) // per_page
+        page = max(1, min(page, total_pages or 1))
+        files = []
+        if total:
+            rows = (await session.execute(
+                query.order_by(CollectionItem.sort_order, CollectionItem.id)
+                .offset((page - 1) * per_page).limit(per_page)
+            )).scalars().all()
+            files = [_model_to_dict(row) for row in rows]
+    return {'files': files, 'total': total, 'page': page, 'total_pages': total_pages}

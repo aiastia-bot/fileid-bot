@@ -3,11 +3,13 @@ import io
 import json
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime
 from senders import _retry_send
 
-from telegram import Update
+from telegram import InaccessibleMessage, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from db import (
@@ -16,7 +18,7 @@ from db import (
     update_user_bot_status,
     get_all_owner_ids,
     get_platform_stats,
-    get_platform_bot_details,
+    get_platform_bot_page,
     stream_files_by_bot_db_id,
     stream_active_bot_files,
     stream_export_bots, stream_export_files, stream_export_collections,
@@ -56,27 +58,115 @@ async def _get_user_display_name(bot, user_id: int) -> str:
     return display
 
 
-async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/platform 管理员查看平台统计和 Bot 详情"""
+PLATFORM_BOTS_PAGE_SIZE = 8
+PLATFORM_BOTS_CALLBACK = r'^platform_bots[|](active|revoked|banned|all)[|]([1-9][0-9]{0,9})$'
+_PLATFORM_BOT_FILTERS = {
+    'active': '活跃', 'revoked': 'Token 失效', 'banned': '封禁', 'all': '全部',
+}
+
+
+async def _platform_bots_page(status: str, page: int = 1) -> tuple[str, InlineKeyboardMarkup]:
+    bots, total, page = await get_platform_bot_page(
+        status, page=page, page_size=PLATFORM_BOTS_PAGE_SIZE
+    )
+    last_page = max(1, (total + PLATFORM_BOTS_PAGE_SIZE - 1) // PLATFORM_BOTS_PAGE_SIZE)
+    title = _PLATFORM_BOT_FILTERS[status]
+    parts = [f"🤖 <b>Bot 列表 · {title}</b>\n第 {page}/{last_page} 页 · 共 {total:,} 个"]
+    if not bots:
+        empty = "暂无有文件记录的活跃 Bot。" if status == 'active' else "暂无符合条件的 Bot。"
+        parts.append(empty)
+
+    manager = get_bot_manager()
+    running_apps = manager.get_all_apps() if manager else {}
+    first = (page - 1) * PLATFORM_BOTS_PAGE_SIZE + 1
+    for index, bot in enumerate(bots, first):
+        record_status = bot['status']
+        if record_status == 'active':
+            state = "🟢 运行中" if bot['id'] in running_apps else "🔴 未在本节点运行"
+        else:
+            label = {
+                'revoked': 'Token 失效',
+                'banned': '封禁',
+                'paused': '暂停',
+                'admin_stopped': '管理员已停止',
+            }.get(record_status, record_status[:32])
+            state = f"⚠️ {escape(label)}"
+        # Telegram 限制单条文本长度，长显示名截断，保留用户名供管理命令使用。
+        name = bot['bot_firstname']
+        if len(name) > 64:
+            name = name[:63] + '…'
+        name = escape(name.replace('\n', ' ').replace('\r', ' '))
+        username = f"@{escape(bot['bot_username'][:64])}" if bot['bot_username'] else "—"
+        owner_id = bot['owner_id']
+        parts.append(
+            f"{index}. <b>{name or username}</b> · {state}\n"
+            f"{username} · Bot ID <code>{bot['bot_id'] or '—'}</code>"
+            f" · DB ID <code>{bot['id']}</code>\n"
+            f"所有者 <a href=\"tg://user?id={owner_id}\">{owner_id}</a>"
+            f" · 创建 {escape(bot['created_at'][:19]) or '—'}\n"
+            f"文件 {bot['file_count']:,} · 今日 +{bot['today_file_count']:,}"
+            f" · 集合 {bot['col_count']:,} · 用户 {bot['user_count']:,}"
+        )
+    parts.append("使用 /export 导出完整数据。")
+
+    navigation = []
+    if page > 1:
+        navigation.append(InlineKeyboardButton("‹ 上一页", callback_data=f"platform_bots|{status}|{page - 1}"))
+    if page < last_page:
+        navigation.append(InlineKeyboardButton("下一页 ›", callback_data=f"platform_bots|{status}|{page + 1}"))
+    filters = [
+        InlineKeyboardButton(
+            f"✓ {label}" if key == status else label,
+            callback_data=f"platform_bots|{key}|{page if key == status else 1}",
+        )
+        for key, label in _PLATFORM_BOT_FILTERS.items()
+    ]
+    keyboard = [navigation, filters] if navigation else [filters]
+    return "\n\n".join(parts), InlineKeyboardMarkup(keyboard)
+
+
+async def platform_bots_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from config import ADMIN_IDS
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
+
+    query = update.callback_query
+    if query.from_user.id not in ADMIN_IDS:
+        await query.answer("此操作仅限管理员使用。", show_alert=True)
+        return
+
+    match = re.fullmatch(PLATFORM_BOTS_CALLBACK, query.data or '')
+    if not match or query.message is None or isinstance(query.message, InaccessibleMessage):
+        await query.answer("请重新发送 /platform bots。", show_alert=True)
+        return
+
+    await query.answer()
+    status, page = match.groups()
+    text, markup = await _platform_bots_page(status, int(page))
+    try:
+        await _retry_send(query.edit_message_text, text, parse_mode='HTML', reply_markup=markup)
+    except BadRequest as error:
+        if "message is not modified" not in str(error).lower():
+            raise
+
+
+async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """管理员查看平台统计和 Bot 详情。"""
+    from config import ADMIN_IDS
+
+    if update.effective_user.id not in ADMIN_IDS:
         await _retry_send(update.message.reply_text, "⛔ 此命令仅限管理员使用。")
         return
 
-    # 检查是否有参数: /platform bots [revoked|all]
     args = context.args or []
-    show_bots = args and args[0] in ('bots', 'bot', 'detail', 'details')
-    bot_status = 'active'
-    if show_bots and len(args) > 1:
-        bot_status = args[1] if args[1] in ('revoked', 'banned', 'all') else 'active'
+    if args and args[0] in ('bots', 'bot', 'detail', 'details'):
+        status = args[1] if len(args) > 1 and args[1] in _PLATFORM_BOT_FILTERS else 'active'
+        text, markup = await _platform_bots_page(status)
+        await _retry_send(update.message.reply_text, text, parse_mode='HTML', reply_markup=markup)
+        return
 
     stats = await get_platform_stats()
-    mgr = get_bot_manager()
-    running = mgr.active_count if mgr else 0
+    manager = get_bot_manager()
+    running = manager.active_count if manager else 0
     bl_count = await get_blacklist_count()
-
-    # 总览信息
     text = (
         f"📊 <b>平台统计</b>\n\n"
         f"🤖 活跃 Bot 数: {stats['bot_count']} (运行中: {running})\n"
@@ -85,67 +175,10 @@ async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"📦 总集合数: {stats['col_count']}\n"
         f"🚫 黑名单用户: {bl_count}\n"
     )
-
-    # 如果指定了 bots 参数，显示每个 Bot 的详细信息
-    if show_bots:
-        bot_details = await get_platform_bot_details(status=bot_status)
-        # active 状态下隐藏文件数为 0 的 Bot，其他状态全部显示
-        if bot_status == 'active' and bot_details:
-            bot_details = [b for b in bot_details if b['file_count'] > 0]
-        if not bot_details:
-            text += "\n📭 暂无 Bot。"
-        else:
-            text += f"\n{'='*20}\n"
-            text += f"🤖 <b>Bot 详细列表</b> (共 {len(bot_details)} 个)\n\n"
-            for i, bot in enumerate(bot_details, 1):
-                is_running = mgr and bot['id'] in mgr.get_all_apps()
-                status = "🟢" if is_running else ("🔴" if bot['status'] == 'active' else "⚠️")
-                text += (
-                    f"{i}. {status} <b>{escape(bot['bot_firstname'])}</b>\n"
-                    f"   📌 @{escape(bot['bot_username'])}\n"
-                    f"   🆔 Bot ID: <code>{bot['bot_id']}</code> | DB ID: <code>{bot['id']}</code>\n"
-                    f"   👤 所有者: <a href=\"tg://user?id={bot['owner_id']}\">{bot['owner_id']}</a>\n"
-                    f"   📁 文件: {bot['file_count']} | 🆕 今日新文件: {bot.get('today_file_count', 0)} | 📦 集合: {bot['col_count']} | 👥 用户: {bot['user_count']}\n"
-                    f"   📅 创建: {bot['created_at']}\n\n"
-                )
-
-            # 分页提示
-            text += (
-                f"\n💡 提示: 使用 /export 导出完整数据\n"
-                f"使用 /blacklist 管理黑名单"
-            )
-    else:
-        # 默认只显示摘要，提示可以查看详情
-        text += (
-            f"\n💡 使用 <code>/platform bots</code> 查看 Active Bot\n"
-            f"使用 <code>/platform bots revoked</code> 查看 Revoked Bot\n"
-            f"使用 <code>/platform bots all</code> 查看全部"
-        )
-
-    # Telegram 消息长度限制为 4096 字符，需要分段发送
-    if len(text) > 4000:
-        parts = []
-        current = ""
-        for line in text.split('\n'):
-            if len(current) + len(line) + 1 > 3900:
-                parts.append(current)
-                current = line + '\n'
-            else:
-                current += line + '\n'
-        if current:
-            parts.append(current)
-
-        for i, part in enumerate(parts):
-            if i == 0:
-                await _retry_send(update.message.reply_text, part, parse_mode="HTML")
-            else:
-                await _retry_send(context.bot.send_message, 
-                    chat_id=update.message.chat_id,
-                    text=part,
-                    parse_mode="HTML"
-                )
-    else:
-        await _retry_send(update.message.reply_text, text, parse_mode="HTML")
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("查看 Bot 列表", callback_data="platform_bots|active|1")
+    ]])
+    await _retry_send(update.message.reply_text, text, parse_mode='HTML', reply_markup=markup)
 
 
 # ==================== 导出功能 ====================

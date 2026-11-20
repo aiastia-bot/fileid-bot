@@ -66,6 +66,7 @@ class Collection(Base):
 class CollectionItem(Base):
     """集合项"""
     __tablename__ = 'collection_items'
+    __table_args__ = (Index('idx_ci_col_order', 'collection_code', 'sort_order', 'id'),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     collection_code: Mapped[str] = mapped_column(String(255), nullable=False)

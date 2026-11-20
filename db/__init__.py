@@ -12,6 +12,7 @@ from db.collections import (  # noqa: F401
     add_file_to_collection, complete_collection, delete_collection,
     get_user_collections, batch_add_codes_to_collection,
     get_collection_items_codes, get_collection_files_for_bot,
+    get_collection_files_page_for_bot, get_collection_summary_for_bot,
 )
 from db.bots import (  # noqa: F401
     add_user_bot, get_user_bots_by_owner, get_user_bot_by_id,
@@ -32,7 +33,7 @@ from db.workers import (  # noqa: F401
     remove_worker_node,
 )
 from db.stats import (  # noqa: F401
-    get_stats, get_platform_stats, get_platform_bot_details,
+    get_stats, get_platform_stats, get_platform_bot_page,
     get_platform_export_data,
     stream_active_bot_files, stream_export_bots, stream_export_files,
     stream_export_collections, stream_export_blacklist,

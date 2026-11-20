@@ -319,6 +319,7 @@ def _register_master_handlers(application: Application):
         blacklist_check_handler,
         INPUT_BOT_USERNAME, INPUT_BOT_NAME, INPUT_BOT_TOKEN
     )
+    from handlers.master.admin import PLATFORM_BOTS_CALLBACK, platform_bots_callback
 
     # /newbot 交互式对话
     newbot_conv = ConversationHandler(
@@ -353,6 +354,7 @@ def _register_master_handlers(application: Application):
     application.add_handler(CommandHandler("delbot", delete_bot_cmd))
     application.add_handler(CommandHandler("botstatus", bot_status_cmd))
     application.add_handler(CommandHandler("platform", platform_stats_cmd))
+    application.add_handler(CallbackQueryHandler(platform_bots_callback, pattern=PLATFORM_BOTS_CALLBACK))
     application.add_handler(CommandHandler("blacklist", blacklist_cmd))
     application.add_handler(CommandHandler("export", export_data_cmd))
     application.add_handler(CommandHandler("broadcast", broadcast_cmd))

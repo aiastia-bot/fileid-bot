@@ -73,6 +73,14 @@ async def upgrade(conn):
                 version=4, applied_at=datetime.now().isoformat(timespec="seconds")
             )
         )
+    if 5 not in applied:
+        # 已有部署补建集合分页索引，新库由 create_all 创建。
+        await conn.run_sync(_indexes)
+        await conn.execute(
+            SchemaVersion.__table__.insert().values(
+                version=5, applied_at=datetime.now().isoformat(timespec="seconds")
+            )
+        )
 
 
 def _columns(conn):

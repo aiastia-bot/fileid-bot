@@ -5,7 +5,7 @@ from typing import Dict, List
 from sqlalchemy import select, func, text, or_
 
 from db.core import get_session
-from db.models import FileMapping, Collection, UserBot
+from db.models import BotFileCount, FileMapping, Collection, UserBot
 
 logger = logging.getLogger(__name__)
 
@@ -113,15 +113,8 @@ async def get_platform_stats() -> Dict:
         }
 
 
-async def get_platform_bot_details(status: str = 'active') -> List[Dict]:
-    """获取平台级 Bot 详情列表（含文件数统计）
-
-    优化：原实现对每个 Bot 发 4 条 COUNT（N 个 Bot = 4N+1 次查询），
-    现改为 1 次查 Bot 列表 + 4 次聚合查询（GROUP BY bot_db_id）。
-
-    Args:
-        status: 筛选状态，默认 'active'。传 'all' 显示所有非删除的。
-    """
+async def get_platform_bot_page(status: str, *, page: int, page_size: int) -> tuple[List[Dict], int, int]:
+    """返回当前页、匹配总数及校正后的页码，仅聚合本页 Bot 的数据。"""
     from datetime import datetime
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -130,38 +123,45 @@ async def get_platform_bot_details(status: str = 'active') -> List[Dict]:
             UserBot.id, UserBot.bot_username, UserBot.bot_firstname,
             UserBot.bot_id, UserBot.owner_id, UserBot.status, UserBot.created_at,
         )
-        if status == 'all':
-            query = select(*cols).where(UserBot.status != 'deleted')
-        else:
-            query = select(*cols).where(UserBot.status == status)
-        result = await session.execute(query.order_by(UserBot.bot_username))
-        bots = result.fetchall()
-
-        # 4 条聚合查询，替代每 Bot 4 条 COUNT
-        result = await session.execute(
-            select(FileMapping.bot_db_id, func.count())
-            .where(FileMapping.bot_db_id.isnot(None))
-            .group_by(FileMapping.bot_db_id)
+        query = (
+            select(*cols, func.coalesce(BotFileCount.count, 0))
+            .outerjoin(BotFileCount, BotFileCount.bot_db_id == UserBot.id)
+            .where(UserBot.status != 'deleted' if status == 'all' else UserBot.status == status)
         )
-        file_counts = dict(result.fetchall())
+        if status == 'active':
+            query = query.where(BotFileCount.count > 0)
+
+        total = await session.scalar(query.with_only_columns(func.count())) or 0
+        last_page = max(1, (total + page_size - 1) // page_size)
+        page = max(1, min(page, last_page))
+        if not total:
+            return [], total, page
+
+        bots = (await session.execute(
+            query.order_by(UserBot.bot_username, UserBot.id)
+            .offset((page - 1) * page_size).limit(page_size)
+        )).all()
+        bot_ids = [bot.id for bot in bots]
+        if not bot_ids:
+            return [], total, page
 
         result = await session.execute(
             select(FileMapping.bot_db_id, func.count())
-            .where(FileMapping.bot_db_id.isnot(None), FileMapping.created_at >= today)
+            .where(FileMapping.bot_db_id.in_(bot_ids), FileMapping.created_at >= today)
             .group_by(FileMapping.bot_db_id)
         )
         today_counts = dict(result.fetchall())
 
         result = await session.execute(
             select(Collection.bot_db_id, func.count())
-            .where(Collection.bot_db_id.isnot(None), Collection.status == 'completed')
+            .where(Collection.bot_db_id.in_(bot_ids), Collection.status == 'completed')
             .group_by(Collection.bot_db_id)
         )
         col_counts = dict(result.fetchall())
 
         result = await session.execute(
             select(FileMapping.bot_db_id, func.count(func.distinct(FileMapping.user_id)))
-            .where(FileMapping.bot_db_id.isnot(None))
+            .where(FileMapping.bot_db_id.in_(bot_ids))
             .group_by(FileMapping.bot_db_id)
         )
         user_counts = dict(result.fetchall())
@@ -175,13 +175,13 @@ async def get_platform_bot_details(status: str = 'active') -> List[Dict]:
                 'owner_id': b[4],
                 'status': b[5],
                 'created_at': b[6] or '',
-                'file_count': file_counts.get(b[0], 0),
+                'file_count': b[7],
                 'today_file_count': today_counts.get(b[0], 0),
                 'col_count': col_counts.get(b[0], 0),
                 'user_count': user_counts.get(b[0], 0),
             }
             for b in bots
-        ]
+        ], total, page
 
 
 async def get_platform_export_data() -> Dict:
