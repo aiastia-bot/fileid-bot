@@ -121,10 +121,10 @@ async def get_platform_bot_page(status: str, *, page: int, page_size: int) -> tu
     async with get_session() as session:
         cols = (
             UserBot.id, UserBot.bot_username, UserBot.bot_firstname,
-            UserBot.bot_id, UserBot.owner_id, UserBot.status, UserBot.created_at,
+            UserBot.bot_id, UserBot.owner_id, UserBot.status, UserBot.created_at, UserBot.node_id,
         )
         query = (
-            select(*cols, func.coalesce(BotFileCount.count, 0))
+            select(*cols, func.coalesce(BotFileCount.count, 0).label('file_count'))
             .outerjoin(BotFileCount, BotFileCount.bot_db_id == UserBot.id)
             .where(UserBot.status != 'deleted' if status == 'all' else UserBot.status == status)
         )
@@ -175,7 +175,8 @@ async def get_platform_bot_page(status: str, *, page: int, page_size: int) -> tu
                 'owner_id': b[4],
                 'status': b[5],
                 'created_at': b[6] or '',
-                'file_count': b[7],
+                'node_id': b.node_id,
+                'file_count': b.file_count,
                 'today_file_count': today_counts.get(b[0], 0),
                 'col_count': col_counts.get(b[0], 0),
                 'user_count': user_counts.get(b[0], 0),

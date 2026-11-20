@@ -11,16 +11,19 @@ from handlers.master import admin
 
 async def test_platform_bots_pages_edit_one_message_and_preserve_filters(database, monkeypatch):
     monkeypatch.setattr('config.ADMIN_IDS', [99])
-    monkeypatch.setattr(admin, 'get_bot_manager', lambda: None)
+    monkeypatch.setattr('config.ROLE', 'standalone')
+    monkeypatch.setattr(admin, 'get_bot_manager', lambda: SimpleNamespace(get_all_apps=lambda: {1: object()}))
     overview_query = AsyncMock()
     monkeypatch.setattr(admin, 'get_platform_stats', overview_query)
 
     page_size = admin.PLATFORM_BOTS_PAGE_SIZE
+    total = page_size * 2 + 1
     async with get_session() as session:
         session.add_all([
             UserBot(id=i, bot_username=f'pagebot{i:02d}', bot_firstname='<文件 Bot>',
-                    owner_id=99, bot_id=1000 + i, bot_token=f'test-{i}')
-            for i in range(1, page_size + 2)
+                    owner_id=99, bot_id=1000 + i, bot_token=f'test-{i}',
+                    node_id='worker-2' if i == 2 else 'local')
+            for i in range(1, total + 1)
         ])
         session.add_all([
             UserBot(id=100, bot_username='emptybot', owner_id=99, bot_token='empty'),
@@ -31,7 +34,7 @@ async def test_platform_bots_pages_edit_one_message_and_preserve_filters(databas
         session.add_all([
             FileMapping(bot_db_id=i, code=f'file{i}', file_type='photo',
                         telegram_file_id=f'id{i}', user_id=1, created_at='2000-01-01')
-            for i in range(1, page_size + 2)
+            for i in range(1, total + 1)
         ])
         session.add(FileMapping(bot_db_id=1, code='today', file_type='photo',
                                 telegram_file_id='today', user_id=1, created_at=date.today().isoformat()))
@@ -48,20 +51,29 @@ async def test_platform_bots_pages_edit_one_message_and_preserve_filters(databas
 
     reply.assert_awaited_once()
     first_page = reply.call_args.args[0]
-    assert f'第 1/2 页 · 共 {page_size + 1} 个' in first_page
+    assert f'第 1/3 页 · 共 {total} 个' in first_page
     assert '@pagebot01' in first_page and '&lt;文件 Bot&gt;' in first_page
+    assert '🟢 运行中' in first_page and '🔴 未加载' in first_page
     assert '文件 2 · 今日 +1 · 集合 1 · 用户 1' in first_page
     assert '@emptybot' not in first_page
-    next_page = reply.call_args.kwargs['reply_markup'].inline_keyboard[0][-1]
+    page_buttons = reply.call_args.kwargs['reply_markup'].inline_keyboard[1]
+    assert [button.text for button in page_buttons] == ['· 1 ·', '2', '3']
 
-    query = SimpleNamespace(data=next_page.callback_data, message=message, from_user=admin_user,
+    query = SimpleNamespace(data=page_buttons[2].callback_data, message=message, from_user=admin_user,
                             answer=AsyncMock(), edit_message_text=AsyncMock())
     callback_update = SimpleNamespace(callback_query=query)
     await admin.platform_bots_callback(callback_update, context)
     query.edit_message_text.assert_awaited_once()
-    second_page = query.edit_message_text.call_args.args[0]
-    assert '第 2/2 页' in second_page
-    assert f'@pagebot{page_size + 1:02d}' in second_page and '@pagebot01' not in second_page
+    last_page = query.edit_message_text.call_args.args[0]
+    assert '第 3/3 页' in last_page
+    assert f'@pagebot{total:02d}' in last_page and '@pagebot01' not in last_page
+
+    monkeypatch.setattr('config.ROLE', 'master')
+    query.data = 'platform_bots|active|1'
+    await admin.platform_bots_callback(callback_update, context)
+    worker_page = query.edit_message_text.call_args.args[0]
+    assert '已分配至 worker-2 · 运行待确认' in worker_page
+    assert '未分配 Worker' in worker_page
 
     for status, username in [('revoked', 'revokedbot'), ('banned', 'bannedbot'), ('all', 'emptybot')]:
         query.data = f'platform_bots|{status}|1'

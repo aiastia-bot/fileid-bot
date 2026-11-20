@@ -261,14 +261,18 @@ class BotManager:
         from services import runtime
         from db.vip import get_max_bots_for_user
         from db.bots import get_user_bots_by_owner
+        bid = bot_record['id']
         maximum = await get_max_bots_for_user(bot_record['owner_id'])
         others = [b for b in await get_user_bots_by_owner(bot_record['owner_id'])
                   if b['status'] == 'active' and b['id'] != bot_record['id']]
         if len(others) >= maximum:
+            logger.warning(
+                "Bot @%s (db_id=%s) 跳过启动：所有者活跃 Bot 配额已满（其他活跃 %d / 上限 %d）",
+                bot_record.get('bot_username', ''), bid, len(others), maximum,
+            )
             return False
         if ROLE == 'master' and runtime.scheduler:
             return bool(await runtime.scheduler.assign_bot_to_worker(bot_record))
-        bid = bot_record['id']
         lock = self._start_locks.setdefault(bid, asyncio.Lock())
         async with lock:
             if bid in self._apps:
@@ -310,10 +314,9 @@ class BotManager:
             return True
 
         name = bot_record.get('bot_username', 'unknown')
-        last_error = None
-
         for attempt in range(max_retries + 1):
             app = None
+            stage = "初始化 Telegram Bot"
             try:
                 app = self._create_user_bot_app(bot_record['bot_token'])
                 app.bot_data['bot_record'] = bot_record
@@ -341,6 +344,7 @@ class BotManager:
 
                 if BOT_MODE == 'webhook':
                     # Webhook 模式：注册 webhook URL，不启动 polling
+                    stage = "设置 webhook"
                     webhook_url = self._get_webhook_url(bot_db_id)
                     await app.bot.set_webhook(
                         url=webhook_url,
@@ -350,11 +354,13 @@ class BotManager:
                     logger.info("用户Bot @%s webhook 已设置: %s", name, webhook_url)
                 else:
                     # Polling 模式
+                    stage = "启动 polling"
                     await app.updater.start_polling(
                         drop_pending_updates=False,
                         allowed_updates=Update.ALL_TYPES
                     )
 
+                stage = "恢复发送队列"
                 from send_queue import get_queue
                 queue = get_queue(str(app.bot.id))
                 queue.bot_name = app.bot.username
@@ -362,6 +368,7 @@ class BotManager:
                 queue.owner_id = bot_record['owner_id']
                 # Restore durable jobs even if the user never sends a new message.
                 await asyncio.wait_for(queue._ready.wait(), timeout=30)
+                stage = "迁移待处理消息"
                 from services.inbox import rehome
                 await rehome(bot_db_id, NODE_ID if ROLE == 'worker' else ROLE)
                 self._apps[bot_db_id] = app
@@ -385,7 +392,6 @@ class BotManager:
                         logger.exception('Failed startup cleanup')
                 if isinstance(e, asyncio.CancelledError):
                     raise
-                last_error = e
                 error_str = str(e)
 
                 # Token 无效，不重试，直接标记 revoked
@@ -394,14 +400,15 @@ class BotManager:
                     await update_user_bot_status(bot_db_id, 'revoked')
                     return False
 
-                # 网络错误，可重试
+                error_detail = f"{type(e).__name__}: {error_str}" if error_str else type(e).__name__
                 if attempt < max_retries:
                     delay = 3 * (2 ** attempt)  # 3s, 6s
-                    logger.warning("用户Bot @%s 启动失败 (第%d次)，%.1f秒后重试: %s",
-                                   name, attempt + 1, delay, error_str[:100])
+                    logger.warning("用户Bot @%s (db_id=%s) 启动失败 [%s，第%d次]，%.1f秒后重试: %s",
+                                   name, bot_db_id, stage, attempt + 1, delay, error_detail[:150])
                     await asyncio.sleep(delay)
                 else:
-                    logger.error("用户Bot @%s 启动失败（已重试%d次）: %s", name, max_retries, error_str)
+                    logger.error("用户Bot @%s (db_id=%s) 启动失败 [%s，已重试%d次]: %s",
+                                 name, bot_db_id, stage, max_retries, error_detail)
 
         return False
 

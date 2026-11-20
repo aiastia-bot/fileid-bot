@@ -30,6 +30,14 @@ def note_error(error):
         box.append(error)
 
 
+def is_permanent_user_error(exc: Exception) -> bool:
+    """用户拉黑 Bot 或账号已注销时，重试无法送达。"""
+    text = str(exc).lower()
+    return isinstance(exc, Forbidden) and (
+        "blocked by the user" in text or "user is deactivated" in text
+    )
+
+
 class Inbox:
     def __init__(self, resolve_app):
         self.resolve_app = resolve_app
@@ -193,17 +201,6 @@ class Inbox:
                     return job
         return None
 
-    @staticmethod
-    def _is_permanent_user_error(exc: Exception) -> bool:
-        """用户侧永久错误：重试永远不会成功，直接终结该 update
-
-        拉黑（bot was blocked by the user）/ 销号（user is deactivated）。
-        """
-        text = str(exc).lower()
-        return isinstance(exc, Forbidden) and (
-            "blocked by the user" in text or "user is deactivated" in text
-        )
-
     async def _loop(self):
         while self.running:
             job = None
@@ -236,7 +233,7 @@ class Inbox:
                     )
                 raise
             except Exception as exc:
-                if job and self._is_permanent_user_error(exc):
+                if job and is_permanent_user_error(exc):
                     # 拉黑/销号：重试永远失败，直接终结，不刷重试日志
                     logger.info("用户侧永久错误，跳过重试: %s", exc)
                     await self._finish(job[0], job[1], "completed", str(exc))

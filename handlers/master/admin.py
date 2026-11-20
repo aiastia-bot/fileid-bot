@@ -66,6 +66,8 @@ _PLATFORM_BOT_FILTERS = {
 
 
 async def _platform_bots_page(status: str, page: int = 1) -> tuple[str, InlineKeyboardMarkup]:
+    from config import ROLE
+
     bots, total, page = await get_platform_bot_page(
         status, page=page, page_size=PLATFORM_BOTS_PAGE_SIZE
     )
@@ -82,13 +84,23 @@ async def _platform_bots_page(status: str, page: int = 1) -> tuple[str, InlineKe
     for index, bot in enumerate(bots, first):
         record_status = bot['status']
         if record_status == 'active':
-            state = "🟢 运行中" if bot['id'] in running_apps else "🔴 未在本节点运行"
+            if bot['id'] in running_apps:
+                state = "🟢 运行中"
+            elif ROLE == 'master':
+                node = bot['node_id']
+                if node and node != 'local':
+                    state = f"🖥 已分配至 {escape(node[:64])} · 运行待确认"
+                else:
+                    state = "🟡 未分配 Worker"
+            else:
+                state = "🔴 未加载"
         else:
             label = {
                 'revoked': 'Token 失效',
                 'banned': '封禁',
                 'paused': '暂停',
                 'admin_stopped': '管理员已停止',
+                'frozen': '已冻结',
             }.get(record_status, record_status[:32])
             state = f"⚠️ {escape(label)}"
         # Telegram 限制单条文本长度，长显示名截断，保留用户名供管理命令使用。
@@ -121,7 +133,20 @@ async def _platform_bots_page(status: str, page: int = 1) -> tuple[str, InlineKe
         )
         for key, label in _PLATFORM_BOT_FILTERS.items()
     ]
-    keyboard = [navigation, filters] if navigation else [filters]
+    keyboard = []
+    if navigation:
+        keyboard.append(navigation)
+        # 少量页显示所有页码。长列表保留首尾和当前页附近的入口。
+        start = max(1, min(page - 1, last_page - 2))
+        pages = sorted({1, last_page, *range(start, min(start + 3, last_page + 1))})
+        keyboard.append([
+            InlineKeyboardButton(
+                f"· {number} ·" if number == page else str(number),
+                callback_data=f"platform_bots|{status}|{number}",
+            )
+            for number in pages
+        ])
+    keyboard.append(filters)
     return "\n\n".join(parts), InlineKeyboardMarkup(keyboard)
 
 
@@ -467,47 +492,64 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    mgr = get_bot_manager()
-    action_text = "重启" if mgr_running_check(bot_record['id']) else "启动"
-    status_msg = await _retry_send(update.message.reply_text, 
-        f"⏳ 正在{action_text} @{escape(bot_record['bot_username'])}..."
-    )
+    bot_db_id = bot_record['id']
+    pending = context.bot_data.setdefault('admin_bot_operations', set())
+    if bot_db_id in pending:
+        await _retry_send(update.message.reply_text, "⏳ 此 Bot 正在启停，请等待操作完成。")
+        return
 
-    # 更新数据库状态为 active（包括从 compromised 恢复）
-    await update_user_bot_status(bot_record['id'], 'active')
+    pending.add(bot_db_id)
+    try:
+        mgr = get_bot_manager()
+        action_text = "重启" if mgr and bot_db_id in mgr.get_all_apps() else "启动"
+        status_msg = await _retry_send(
+            update.message.reply_text,
+            f"⏳ 正在{action_text} @{escape(bot_record['bot_username'])}...",
+        )
+        # 启动重试由应用跟踪，命令处理器立即释放主 Bot 的更新队列。
+        task = context.application.create_task(
+            _finish_admin_bot_start(mgr, bot_record, action_text, user_id, status_msg),
+            name=f'admin-startbot-{bot_db_id}',
+        )
+    except BaseException:
+        pending.discard(bot_db_id)
+        raise
+    task.add_done_callback(lambda _: pending.discard(bot_db_id))
 
-    # 先停止旧实例（无论是否在运行都尝试停止）
-    if mgr:
-        await mgr.stop_bot(bot_record['id'])
 
-    # 重新获取记录并启动
-    bot_record = await get_user_bot_by_id(bot_record['id'])
-    success = await mgr.start_bot(bot_record) if mgr else False
+async def _finish_admin_bot_start(mgr, bot_record, action_text, user_id, status_msg):
+    bot_db_id = bot_record['id']
+    success = False
+    try:
+        if mgr and await update_user_bot_status(bot_db_id, 'active'):
+            await mgr.stop_bot(bot_db_id)
+            current_record = await get_user_bot_by_id(bot_db_id)
+            if current_record and current_record['status'] == 'active':
+                bot_record = current_record
+                success = await mgr.start_bot(bot_record)
+    except Exception:
+        logger.exception("管理员 %s 启动 Bot 失败 (db_id=%s)", user_id, bot_db_id)
 
     if success:
-        await status_msg.edit_text(
+        result = (
             f"✅ <b>Bot {action_text}成功！</b>\n\n"
             f"🤖 @{escape(bot_record['bot_username'])}\n"
             f"🆔 Bot ID：<code>{bot_record['bot_id']}</code>\n"
-                f"👤 所有者：<a href=\"tg://user?id={bot_record['owner_id']}\">{bot_record['owner_id']}</a>",
-                parse_mode="HTML"
-            )
+            f"👤 所有者：<a href=\"tg://user?id={bot_record['owner_id']}\">{bot_record['owner_id']}</a>"
+        )
         logger.info("管理员 %s %s了 Bot @%s", user_id, action_text, bot_record['bot_username'])
     else:
-        await status_msg.edit_text(
+        result = (
             f"❌ <b>{action_text}失败</b>\n\n"
             f"Bot @{escape(bot_record['bot_username'])} 启动失败。\n"
-            f"可能原因：Token 已失效。\n\n"
-            f"💡 让用户使用 /updatetoken 更新 Token，\n"
-            f"或使用 /delbot 删除后重建。",
-            parse_mode="HTML"
+            f"请在服务日志中查找 DB ID <code>{bot_db_id}</code> 的启动记录。\n"
+            "如果状态显示 Token 失效，请让所有者通过 /updatetoken 更新原 Bot 的 Token。"
         )
 
-
-def mgr_running_check(bot_db_id: int) -> bool:
-    """检查 Bot 是否在 BotManager 中运行"""
-    mgr = get_bot_manager()
-    return mgr is not None and bot_db_id in mgr.get_all_apps()
+    try:
+        await _retry_send(status_msg.edit_text, result, parse_mode="HTML")
+    except Exception:
+        logger.exception("无法发送管理员 Bot 启动结果 (db_id=%s)", bot_db_id)
 
 
 # ==================== 管理员停止Bot ====================
@@ -537,6 +579,20 @@ async def stop_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _retry_send(update.message.reply_text, f"❌ 未找到 Bot：{escape(arg)}")
         return
 
+    bot_db_id = bot_record['id']
+    pending = context.bot_data.setdefault('admin_bot_operations', set())
+    if bot_db_id in pending:
+        await _retry_send(update.message.reply_text, "⏳ 此 Bot 正在启停，请等待操作完成。")
+        return
+
+    pending.add(bot_db_id)
+    try:
+        await _stop_bot_for_admin(update, bot_record, user_id)
+    finally:
+        pending.discard(bot_db_id)
+
+
+async def _stop_bot_for_admin(update, bot_record, user_id):
     mgr = get_bot_manager()
     was_running = mgr and bot_record['id'] in mgr.get_all_apps()
 
