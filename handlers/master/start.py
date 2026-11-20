@@ -1,5 +1,6 @@
 """主Bot入口处理 - start命令、managed_bot处理、黑名单检查中间件"""
 import logging
+from functools import partial
 from senders import _retry_send, send_later
 
 import httpx
@@ -10,10 +11,11 @@ from telegram.ext import ApplicationHandlerStop, ContextTypes
 from db import (
     add_user_bot, get_user_bots_by_owner,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
-    get_user_bot_by_id, is_bot_admin_stopped,
+    is_bot_admin_stopped,
     is_user_blacklisted,
 )
-from handlers.master._utils import get_bot_manager, escape
+from handlers.master._utils import get_bot_manager, escape, run_background_operation, start_registered_bot
+from services.runtime import operation_lock
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,21 @@ async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error("managed_bot 更新缺少 bot id: %s", managed_info)
         return
 
+    await run_background_operation(
+        update, context, ('managed-bot', bot_id),
+        partial(_register_managed_bot, context.bot, owner_id, bot_id, bot_username, bot_name),
+    )
+
+
+async def _register_managed_bot(master_bot, owner_id, bot_id, bot_username, bot_name):
+    async with operation_lock(('register-bot', owner_id)):
+        await _add_managed_bot(master_bot, owner_id, bot_id, bot_username, bot_name)
+
+
+async def _add_managed_bot(master_bot, owner_id, bot_id, bot_username, bot_name):
+    if await is_user_blacklisted(owner_id):
+        return
+
     # 检查用户 Bot 数量（使用 VIP 限制）
     from db.vip import get_max_bots_for_user, check_vip0_capacity
     # 检查 VIP 0 用户数量限制
@@ -122,10 +139,9 @@ async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     # 通过 Telegram 官方 Bot API getManagedBotToken 获取 Token
-    from config import BOT_TOKEN
     token = None
     try:
-        token = await context.bot.get_managed_bot_token(user_id=bot_id)
+        token = await master_bot.get_managed_bot_token(user_id=bot_id)
     except Exception as error:
         logger.warning('getManagedBotToken failed: %s', type(error).__name__)
         return
@@ -156,13 +172,12 @@ async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # 启动 Bot
     mgr = get_bot_manager()
     if mgr:
-        bot_record = await get_user_bot_by_id(record_id)
-        success = await mgr.start_bot(bot_record)
+        success = await start_registered_bot(mgr, record_id, owner_id)
         if success:
             logger.info("✅ Managed Bot @%s 自动启动成功 (owner=%s)", bot_username, owner_id)
             # 尝试通知用户
             try:
-                await _retry_send(context.bot.send_message, 
+                await _retry_send(master_bot.send_message,
                     chat_id=owner_id,
                     text=(
                         f"✅ <b>Bot 创建成功并已启动！</b>\n\n"

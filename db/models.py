@@ -225,6 +225,7 @@ class UpdateInbox(Base):
     update_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     node_id: Mapped[str] = mapped_column(String(255), index=True)
     body: Mapped[str] = mapped_column(Text)
+    conversation_key: Mapped[str | None] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String(16), default='pending', index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     available_at: Mapped[int] = mapped_column(BigInteger, default=0)

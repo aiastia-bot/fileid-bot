@@ -17,6 +17,7 @@ from telegram.ext import (
 
 from db import (
     get_all_active_user_bots,
+    get_user_bot_by_id,
     update_user_bot_status
 )
 from senders import _retry_send
@@ -491,7 +492,7 @@ class BotManager:
 
             async def _start_one(bot):
                 async with semaphore:
-                    success = await self.start_bot(bot)
+                    success = await self._start_active_bot(bot['id'])
                 name = bot.get('bot_username', 'unknown')
                 if success:
                     logger.info("  ✅ @%s 已加载", name)
@@ -525,7 +526,7 @@ class BotManager:
 
         async def _start_one(bot):
             async with semaphore:
-                return bot, await self.start_bot(bot)
+                return bot, await self._start_active_bot(bot['id'])
 
         results = await asyncio.gather(*[_start_one(b) for b in missing])
         recovered = sum(1 for _, ok in results if ok)
@@ -536,6 +537,16 @@ class BotManager:
             else:
                 logger.warning("  ⏳ @%s 仍未加载成功，下个周期再试", name)
         return recovered
+
+    async def _start_active_bot(self, bot_db_id):
+        from services.runtime import operation_lock
+
+        lock = operation_lock(('bot', bot_db_id))
+        if lock.locked():
+            return False
+        async with lock:
+            record = await get_user_bot_by_id(bot_db_id)
+            return bool(record and record['status'] == 'active' and await self.start_bot(record))
 
     async def stop_all(self):
         """停止所有用户Bot"""

@@ -2,6 +2,7 @@
 import logging
 import re
 import urllib.parse
+from functools import partial
 from senders import _retry_send
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -10,10 +11,14 @@ from telegram.ext import ContextTypes, ConversationHandler
 from db import (
     add_user_bot, get_user_bots_by_owner,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
-    get_user_bot_by_id, is_bot_admin_stopped,
+    is_bot_admin_stopped, is_user_blacklisted,
 )
 from db.vip import get_max_bots_for_user, check_vip0_capacity
-from handlers.master._utils import get_bot_manager, escape, build_free_block_reply, build_basic_expired_reply
+from handlers.master._utils import (
+    build_basic_expired_reply, build_free_block_reply, escape, get_bot_manager,
+    run_background_operation, start_registered_bot,
+)
+from services.runtime import operation_lock
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +138,25 @@ async def new_bot_input_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """接收 Token 并自动注册启动 Bot（备用，如果自动获取失败）"""
+    lock = operation_lock(('register-bot', update.effective_user.id))
+    if lock.locked():
+        await new_bot_waiting(update, context)
+        return INPUT_BOT_TOKEN
+    async with lock:
+        try:
+            return await _register_new_bot(update, context)
+        except Exception:
+            logger.exception("用户 %s 创建 Bot 失败", update.effective_user.id)
+            from senders import send_later
+            send_later(update.message.reply_text, "❌ 创建 Bot 时遇到错误，请查看 /mybots 后再试。")
+            return INPUT_BOT_TOKEN
+
+
+async def new_bot_waiting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _retry_send(update.message.reply_text, "⏳ 正在校验或启动 Bot，请等待处理结果。")
+
+
+async def _register_new_bot(update, context):
     token = update.message.text.strip()
     user_id = update.effective_user.id
 
@@ -216,6 +240,10 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.pop('new_bot_name', None)
         return ConversationHandler.END
 
+    if await is_user_blacklisted(user_id):
+        await status_msg.edit_text("⛔ 你已被管理员禁止使用本平台。")
+        return ConversationHandler.END
+
     record_id = await add_user_bot(
         owner_id=user_id,
         bot_token=token,
@@ -230,8 +258,7 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     mgr = get_bot_manager()
     if mgr:
-        bot_record = await get_user_bot_by_id(record_id)
-        success = await mgr.start_bot(bot_record)
+        success = await start_registered_bot(mgr, record_id, user_id)
         if success:
             await status_msg.edit_text(
                 f"✅ <b>Bot 创建成功并已启动！</b>\n\n"
@@ -267,6 +294,15 @@ async def new_bot_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/addbot 添加用户Bot"""
     user_id = update.effective_user.id
+    if context.args:
+        await run_background_operation(update, context, ('register-bot', user_id),
+                                       partial(_add_bot, update, context.args))
+    else:
+        await _add_bot(update, [])
+
+
+async def _add_bot(update, args):
+    user_id = update.effective_user.id
 
     # 检查 VIP 0 用户数量限制
     if not await check_vip0_capacity(user_id):
@@ -288,7 +324,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    if not context.args:
+    if not args:
         await _retry_send(update.message.reply_text, 
             "🔑 <b>添加 Bot</b>\n\n"
             "请使用以下命令格式：\n"
@@ -299,7 +335,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    token = context.args[0].strip()
+    token = args[0].strip()
 
     if not _validate_token(token):
         await _retry_send(update.message.reply_text,
@@ -367,6 +403,10 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    if await is_user_blacklisted(user_id):
+        await status_msg.edit_text("⛔ 你已被管理员禁止使用本平台。")
+        return
+
     record_id = await add_user_bot(
         owner_id=user_id,
         bot_token=token,
@@ -381,8 +421,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     mgr = get_bot_manager()
     if mgr:
-        bot_record = await get_user_bot_by_id(record_id)
-        success = await mgr.start_bot(bot_record)
+        success = await start_registered_bot(mgr, record_id, user_id)
         if success:
             await status_msg.edit_text(
                 f"✅ <b>Bot 添加成功！</b>\n\n"

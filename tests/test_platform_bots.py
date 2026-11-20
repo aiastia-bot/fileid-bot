@@ -22,6 +22,7 @@ async def test_platform_bots_pages_edit_one_message_and_preserve_filters(databas
         session.add_all([
             UserBot(id=i, bot_username=f'pagebot{i:02d}', bot_firstname='<文件 Bot>',
                     owner_id=99, bot_id=1000 + i, bot_token=f'test-{i}',
+                    created_at=f'2025-01-{i:02d} 00:00:00',
                     node_id='worker-2' if i == 2 else 'local')
             for i in range(1, total + 1)
         ])
@@ -38,6 +39,16 @@ async def test_platform_bots_pages_edit_one_message_and_preserve_filters(databas
         ])
         session.add(FileMapping(bot_db_id=1, code='today', file_type='photo',
                                 telegram_file_id='today', user_id=1, created_at=date.today().isoformat()))
+        session.add_all([
+            FileMapping(bot_db_id=total, code=f'new{i}', file_type='photo',
+                        telegram_file_id=f'new{i}', user_id=1, created_at=date.today().isoformat())
+            for i in range(2)
+        ])
+        session.add_all([
+            FileMapping(bot_db_id=total - 1, code=f'old{i}', file_type='photo',
+                        telegram_file_id=f'old{i}', user_id=1, created_at='2000-01-01')
+            for i in range(3)
+        ])
         session.add(Collection(bot_db_id=1, code='collection', status='completed'))
         await session.commit()
 
@@ -67,6 +78,29 @@ async def test_platform_bots_pages_edit_one_message_and_preserve_filters(databas
     last_page = query.edit_message_text.call_args.args[0]
     assert '第 3/3 页' in last_page
     assert f'@pagebot{total:02d}' in last_page and '@pagebot01' not in last_page
+
+    sort_buttons = query.edit_message_text.call_args.kwargs['reply_markup'].inline_keyboard[-1]
+    query.data = next(button.callback_data for button in sort_buttons if button.text == '今日新增')
+    await admin.platform_bots_callback(callback_update, context)
+    by_today = query.edit_message_text.call_args.args[0]
+    assert '第 1/3 页' in by_today and '按今日新增 ↓' in by_today
+    assert by_today.index(f'@pagebot{total:02d}') < by_today.index('@pagebot01')
+    assert '文件 3 · 今日 +2' in by_today
+
+    markup = query.edit_message_text.call_args.kwargs['reply_markup'].inline_keyboard
+    assert markup[0][-1].callback_data == 'platform_bots|active|2|today'
+    assert markup[1][-1].callback_data == 'platform_bots|active|3|today'
+    assert markup[-2][-1].callback_data == 'platform_bots|all|1|today'
+    query.data = markup[0][-1].callback_data
+    await admin.platform_bots_callback(callback_update, context)
+    assert '第 2/3 页' in query.edit_message_text.call_args.args[0]
+    assert '按今日新增 ↓' in query.edit_message_text.call_args.args[0]
+
+    for sort, first_id, second_id in [('created', total, total - 1), ('files', total - 1, total)]:
+        query.data = f'platform_bots|active|1|{sort}'
+        await admin.platform_bots_callback(callback_update, context)
+        sorted_page = query.edit_message_text.call_args.args[0]
+        assert sorted_page.index(f'@pagebot{first_id:02d}') < sorted_page.index(f'@pagebot{second_id:02d}')
 
     monkeypatch.setattr('config.ROLE', 'master')
     query.data = 'platform_bots|active|1'

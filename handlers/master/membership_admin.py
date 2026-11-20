@@ -1,12 +1,14 @@
 """Admin commands for catalogue, membership, audit trail and order inspection."""
 
 import json
+from functools import partial
 from sqlalchemy import select, update as sa_update
 from config import ADMIN_IDS
 from db.core import get_session
 from db.models import MembershipAudit, PaymentOrder, UpdateInbox, SendJob
 from db.vip import get_user_vip_info, get_all_vip_users
-from senders import _retry_send
+from handlers.master._utils import run_background_operation
+from senders import _retry_send, send_later
 from services.membership import get_plans, set_plan, adjust_member
 from services.entitlements import reconcile_user, reconcile_all
 from services.payments import list_orders, get_order, now_text
@@ -55,14 +57,22 @@ async def setplan_command(update, context):
                     else int(value)
                 )
             )
-        result = await set_plan(update.effective_user.id, int(args[0]), changes)
-        await reconcile_all()
-        await reply(
-            update,
-            "✅ 套餐已更新并记录审计。\n" + json.dumps(result, ensure_ascii=False),
-        )
+        await run_background_operation(update, context, ('set-plan',),
+                                       partial(_set_plan_and_sync, update, int(args[0]), changes))
     except (ValueError, KeyError) as exc:
         await reply(update, "❌ " + str(exc))
+
+
+async def _set_plan_and_sync(update, level, changes):
+    try:
+        result = await set_plan(update.effective_user.id, level, changes)
+    except (ValueError, KeyError) as exc:
+        await reply(update, "❌ " + str(exc))
+        return
+
+    send_later(update.effective_message.reply_text, "⏳ 套餐已更新，正在同步 Bot 额度…")
+    await reconcile_all()
+    await reply(update, "✅ 套餐已更新并记录审计。\n" + json.dumps(result, ensure_ascii=False))
 
 
 async def setvip_command(update, context):
@@ -105,13 +115,10 @@ async def setvip_command(update, context):
         uid, level = int(args[0]), int(args[1])
         months = int(args[2]) if len(args) > 2 else 12
         reason = " ".join(args[3:]) or "管理员设置会员"
-        result = await adjust_member(
-            update.effective_user.id, uid, level=level, months=months, reason=reason
-        )
-        await reconcile_user(uid)
-        await reply(
-            update,
-            "✅ 会员已设置并同步 Bot 额度。\n" + json.dumps(result, ensure_ascii=False),
+        await run_background_operation(
+            update, context, ('adjust-member', uid),
+            partial(_adjust_member_and_sync, update, uid, reason, "会员已设置并同步 Bot 额度。",
+                    level=level, months=months),
         )
     except (ValueError, IndexError) as exc:
         await reply(update, "❌ 参数错误：" + str(exc))
@@ -225,15 +232,24 @@ async def vipadmin_command(update, context):
             if action == "days"
             else {"expires": args[2] + " 23:59:59"}
         )
-        result = await adjust_member(
-            update.effective_user.id, uid, reason=" ".join(args[3:]), **kwargs
-        )
-        await reconcile_user(uid)
-        await reply(
-            update, "✅ 调整已生效。\n" + json.dumps(result, ensure_ascii=False)
+        await run_background_operation(
+            update, context, ('adjust-member', uid),
+            partial(_adjust_member_and_sync, update, uid, " ".join(args[3:]), "调整已生效。", **kwargs),
         )
     except (ValueError, IndexError) as exc:
         await reply(update, "❌ " + str(exc))
+
+
+async def _adjust_member_and_sync(update, uid, reason, completion, **changes):
+    try:
+        result = await adjust_member(update.effective_user.id, uid, reason=reason, **changes)
+    except (ValueError, IndexError) as exc:
+        await reply(update, "❌ 参数错误：" + str(exc))
+        return
+
+    send_later(update.effective_message.reply_text, "⏳ 会员已更新，正在同步 Bot 额度…")
+    await reconcile_user(uid)
+    await reply(update, "✅ " + completion + "\n" + json.dumps(result, ensure_ascii=False))
 
 
 async def tasks_command(update, context):

@@ -5,10 +5,11 @@ Historical payment rows are never deleted or rewritten; payment_orders is the ne
 unique transaction ledger.
 """
 
+import json
 from datetime import datetime
 from sqlalchemy import inspect, select, text
 from sqlalchemy.schema import CreateColumn
-from db.models import Base, SchemaVersion
+from db.models import Base, SchemaVersion, UpdateInbox
 
 
 async def upgrade(conn):
@@ -81,6 +82,46 @@ async def upgrade(conn):
                 version=5, applied_at=datetime.now().isoformat(timespec="seconds")
             )
         )
+    if 6 not in applied:
+        await conn.run_sync(_add_inbox_conversation_key)
+        await _backfill_pending_inbox(conn)
+        await conn.execute(
+            SchemaVersion.__table__.insert().values(
+                version=6, applied_at=datetime.now().isoformat(timespec="seconds")
+            )
+        )
+
+
+def _add_inbox_conversation_key(conn):
+    column = UpdateInbox.__table__.c.conversation_key
+    if column.name not in {c['name'] for c in inspect(conn).get_columns('update_inbox')}:
+        ddl = CreateColumn(column).compile(dialect=conn.dialect)
+        conn.execute(text(f'ALTER TABLE update_inbox ADD COLUMN {ddl}'))
+
+
+async def _backfill_pending_inbox(conn):
+    from services.inbox import _conversation_key
+
+    while True:
+        rows = (await conn.execute(
+            select(UpdateInbox.bot_key, UpdateInbox.update_id, UpdateInbox.body)
+            .where(UpdateInbox.state.in_(['pending', 'processing']), UpdateInbox.conversation_key.is_(None))
+            .limit(500)
+        )).all()
+        if not rows:
+            return
+
+        keys = []
+        for bot_key, update_id, body in rows:
+            try:
+                key = _conversation_key(json.loads(body))
+            except (ValueError, TypeError, AttributeError):
+                key = 'conversation:system'
+            keys.append(dict(bot_key=bot_key, update_id=update_id, key=key))
+        await conn.execute(text(
+            'UPDATE update_inbox SET conversation_key=:key '
+            'WHERE bot_key=:bot_key AND update_id=:update_id AND conversation_key IS NULL'
+        ), keys)
 
 
 def _columns(conn):

@@ -1,18 +1,20 @@
 """黑名单管理命令 - /blacklist"""
 import logging
+from functools import partial
 from senders import _retry_send
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from db import (
-    get_user_bots_by_owner,
+    get_user_bot_by_id, get_user_bots_by_owner,
     update_user_bot_status,
     add_to_blacklist, remove_from_blacklist, is_user_blacklisted,
     get_blacklist,
     unban_user_bots,
 )
-from handlers.master._utils import get_bot_manager, escape
+from handlers.master._utils import get_bot_manager, escape, run_background_operation
+from services.runtime import operation_lock
 
 logger = logging.getLogger(__name__)
 
@@ -70,29 +72,8 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             return
 
         reason = ' '.join(context.args[2:]) if len(context.args) > 2 else ''
-        if await add_to_blacklist(target_id, reason):
-            # 如果该用户有正在运行的 Bot，停止它们
-            target_bots = await get_user_bots_by_owner(target_id)
-            mgr = get_bot_manager()
-            stopped = 0
-            for bot in target_bots:
-                if mgr and bot['id'] in mgr.get_all_apps():
-                    await mgr.stop_bot(bot['id'])
-                    stopped += 1
-                await update_user_bot_status(bot['id'], 'banned')
-
-            text = f"✅ 用户 <a href=\"tg://user?id={target_id}\">{target_id}</a> 已加入黑名单。"
-            if reason:
-                text += f"\n原因: {escape(reason)}"
-            if stopped > 0:
-                text += f"\n🛑 已停止 {stopped} 个 Bot。"
-            if target_bots:
-                text += f"\n⚠️ 该用户有 {len(target_bots)} 个 Bot 已被标记为 banned。"
-
-            await _retry_send(update.message.reply_text, text, parse_mode="HTML")
-            logger.info("管理员 %s 将用户 %s 加入黑名单 (原因: %s)", user_id, target_id, reason)
-        else:
-            await _retry_send(update.message.reply_text, "❌ 添加黑名单失败。")
+        await run_background_operation(update, context, ('blacklist', target_id),
+                                       partial(_blacklist_user, update, target_id, reason))
 
     elif action in ('del', 'remove', 'rm', 'delete'):
         if len(context.args) < 2:
@@ -107,18 +88,8 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await _retry_send(update.message.reply_text, "❌ 用户ID必须是数字。")
             return
 
-        if await remove_from_blacklist(target_id):
-            # 恢复该用户的 Bot
-            await unban_user_bots(target_id)
-
-            await _retry_send(update.message.reply_text, 
-                f"✅ 用户 <a href=\"tg://user?id={target_id}\">{target_id}</a> 已从黑名单移除。\n"
-                f"💡 如需重新启动其 Bot，请使用 /platform bots 查看，或让用户使用 /botstatus。",
-                parse_mode="HTML"
-            )
-            logger.info("管理员 %s 将用户 %s 从黑名单移除", user_id, target_id)
-        else:
-            await _retry_send(update.message.reply_text, "⚠️ 该用户不在黑名单中。")
+        await run_background_operation(update, context, ('blacklist', target_id),
+                                       partial(_unblacklist_user, update, target_id))
 
     elif action == 'list':
         bl = await get_blacklist()
@@ -196,3 +167,49 @@ async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "❓ 未知操作。可用操作: <code>add</code>, <code>del</code>, <code>list</code>, <code>check</code>",
             parse_mode="HTML"
         )
+
+
+async def _blacklist_user(update, target_id, reason):
+    if not await add_to_blacklist(target_id, reason):
+        await _retry_send(update.message.reply_text, "❌ 添加黑名单失败。")
+        return
+
+    stopped = banned = 0
+    mgr = get_bot_manager()
+    async with operation_lock(('register-bot', target_id)):
+        for bot in await get_user_bots_by_owner(target_id):
+            bot_id = bot['id']
+            async with operation_lock(('bot', bot_id)):
+                current = await get_user_bot_by_id(bot_id)
+                if not current or current['owner_id'] != target_id or current['status'] == 'deleted':
+                    continue
+                if mgr and bot_id in mgr.get_all_apps() and await mgr.stop_bot(bot_id):
+                    stopped += 1
+                if await update_user_bot_status(bot_id, 'banned'):
+                    banned += 1
+
+    text = f'✅ 用户 <a href="tg://user?id={target_id}">{target_id}</a> 已加入黑名单。'
+    if reason:
+        text += f"\n原因: {escape(reason)}"
+    if stopped:
+        text += f"\n🛑 已停止 {stopped} 个 Bot。"
+    if banned:
+        text += f"\n⚠️ 该用户有 {banned} 个 Bot 已被标记为 banned。"
+    await _retry_send(update.message.reply_text, text, parse_mode="HTML")
+    logger.info("管理员 %s 将用户 %s 加入黑名单 (原因: %s)", update.effective_user.id, target_id, reason)
+
+
+async def _unblacklist_user(update, target_id):
+    user_id = update.effective_user.id
+    if await remove_from_blacklist(target_id):
+        # 恢复该用户的 Bot
+        await unban_user_bots(target_id)
+
+        await _retry_send(update.message.reply_text,
+            f"✅ 用户 <a href=\"tg://user?id={target_id}\">{target_id}</a> 已从黑名单移除。\n"
+            f"💡 如需重新启动其 Bot，请使用 /platform bots 查看，或让用户使用 /botstatus。",
+            parse_mode="HTML"
+        )
+        logger.info("管理员 %s 将用户 %s 从黑名单移除", user_id, target_id)
+    else:
+        await _retry_send(update.message.reply_text, "⚠️ 该用户不在黑名单中。")

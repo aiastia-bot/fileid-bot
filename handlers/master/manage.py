@@ -1,5 +1,6 @@
 """Bot 管理命令 - /mybots, /delbot, /botstatus, 重启, 更新Token"""
 import logging
+from functools import partial
 from senders import _retry_send
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -15,7 +16,7 @@ from db import (
     get_user_vip_level,
 )
 from config import VIP_FEATURES, FORWARD_MODE_ALLOW, FORWARD_MODE_DENY, FORWARD_MODE_USER_CHOICE
-from handlers.master._utils import get_bot_manager, escape
+from handlers.master._utils import get_bot_manager, escape, run_background_operation
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,16 @@ async def delete_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    await run_background_operation(update, context, ('bot', target_bot['id']),
+                                   partial(_delete_bot_for_owner, update, target_bot['id'], user_id))
+
+
+async def _delete_bot_for_owner(update, bot_db_id, user_id):
+    target_bot = await get_user_bot_by_id(bot_db_id)
+    if not target_bot or target_bot['owner_id'] != user_id or target_bot['status'] == 'deleted':
+        await _retry_send(update.message.reply_text, "❌ Bot 不存在或无权删除。")
+        return
+
     # 禁止删除被系统停止的 Bot
     if target_bot['status'] == 'admin_stopped':
         await _retry_send(update.message.reply_text, 
@@ -139,15 +150,17 @@ async def delete_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    status_msg = await _retry_send(update.message.reply_text,
+                                  f"⏳ 正在删除 @{escape(target_bot['bot_username'])}...")
     mgr = get_bot_manager()
     if mgr:
-        await mgr.stop_bot(target_bot['id'])
+        await mgr.stop_bot(bot_db_id)
 
-    await db_delete_user_bot(target_bot["id"])
+    if not await db_delete_user_bot(bot_db_id):
+        await status_msg.edit_text("❌ 删除 Bot 失败，请重试。")
+        return
 
-    await _retry_send(update.message.reply_text, 
-        f"✅ Bot @{escape(target_bot['bot_username'])} 已删除。"
-    )
+    await status_msg.edit_text(f"✅ Bot @{escape(target_bot['bot_username'])} 已删除。")
     logger.info("用户 %s 删除了 Bot @%s", user_id, target_bot['bot_username'])
 
 
@@ -223,9 +236,14 @@ async def restart_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.answer("❌ 数据错误", show_alert=True)
         return
 
+    await run_background_operation(update, context, ('bot', bot_db_id),
+                                   partial(_restart_bot_for_owner, query, bot_db_id, user_id))
+
+
+async def _restart_bot_for_owner(query, bot_db_id, user_id):
     # 验证这个Bot属于该用户
     bot_record = await get_user_bot_by_id(bot_db_id)
-    if not bot_record or bot_record['owner_id'] != user_id:
+    if not bot_record or bot_record['owner_id'] != user_id or bot_record['status'] == 'deleted':
         await query.answer("❌ 无权操作此 Bot", show_alert=True)
         return
 
@@ -305,7 +323,7 @@ async def update_token_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     # 验证这个Bot属于该用户
     bot_record = await get_user_bot_by_id(bot_db_id)
-    if not bot_record or bot_record['owner_id'] != user_id:
+    if not bot_record or bot_record['owner_id'] != user_id or bot_record['status'] == 'deleted':
         await query.answer("❌ 无权操作此 Bot", show_alert=True)
         return
 
@@ -366,9 +384,6 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
-    # 清除等待状态
-    context.user_data.pop('update_token_bot_id', None)
-
     # 验证 Token 格式
     if ":" not in token or len(token) < 10:
         await _retry_send(update.message.reply_text, 
@@ -378,15 +393,23 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
+    scheduled = await run_background_operation(
+        update, context, ('bot', bot_db_id),
+        partial(_update_bot_token_for_owner, update, context.bot, bot_db_id, token, user_id),
+    )
+    if scheduled:
+        context.user_data.pop('update_token_bot_id', None)
+
+
+async def _update_bot_token_for_owner(update, master_bot, bot_db_id, token, user_id):
     # 验证 Bot 归属
     bot_record = await get_user_bot_by_id(bot_db_id)
-    if not bot_record or bot_record['owner_id'] != user_id:
+    if not bot_record or bot_record['owner_id'] != user_id or bot_record['status'] == 'deleted':
         await _retry_send(update.message.reply_text, "❌ 无权操作此 Bot。")
         return
 
     # 检查是否被封禁
     if bot_record['status'] == 'banned':
-        context.user_data.pop('update_token_bot_id', None)
         await _retry_send(update.message.reply_text,
             "🚫 此 Bot 已被封禁，无法操作。",
         )
@@ -460,7 +483,7 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
             for admin_id in ADMIN_IDS:
                 try:
-                    await context.bot.send_message(
+                    await master_bot.send_message(
                         chat_id=admin_id, text=admin_text, parse_mode="HTML"
                     )
                 except Exception:
@@ -823,19 +846,30 @@ async def purge_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def purge_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """确认按钮：执行清理"""
     from config import ADMIN_IDS
+
+    query = update.callback_query
+    if update.effective_user.id not in ADMIN_IDS:
+        await query.answer("仅限管理员", show_alert=True)
+        return
+
+    if query.data == 'purge_cancel':
+        await query.answer()
+        await query.edit_message_text("已取消。")
+        return
+
+    _, _, bot_db_id = query.data.partition('|')
+    if not bot_db_id.isdecimal():
+        await query.answer("无效的 Bot ID。", show_alert=True)
+        return
+    bot_db_id = int(bot_db_id)
+    await run_background_operation(update, context, ('bot', bot_db_id),
+                                   partial(_purge_bot, update, bot_db_id))
+
+
+async def _purge_bot(update, bot_db_id):
     from db import bot_purge_preview, purge_bot_files, remove_bot_from_backup
 
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.callback_query.answer("仅限管理员", show_alert=True)
-        return
     await update.callback_query.answer()
-
-    if update.callback_query.data == 'purge_cancel':
-        await update.callback_query.edit_message_text("已取消。")
-        return
-
-    _, _, bot_db_id = update.callback_query.data.partition('|')
-    bot_db_id = int(bot_db_id)
     bot = await get_user_bot_by_id(bot_db_id)
     if not bot:
         await update.callback_query.edit_message_text("❌ Bot 不存在（可能已被处理）")
@@ -847,6 +881,7 @@ async def purge_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"ℹ️ @{bot['bot_username']} 没有可清理的文件记录。")
         return
 
+    await update.callback_query.edit_message_text("⏳ 正在清理 Bot 文件记录...")
     result = await purge_bot_files(bot_db_id)
     owner_id = await remove_bot_from_backup(bot_db_id)
 

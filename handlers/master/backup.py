@@ -9,6 +9,7 @@
   /backup sync                把主 Bot 已有而下游缺的文件批量回填
 """
 import logging
+from functools import partial
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -20,6 +21,7 @@ from db import (
     remove_backup_member, disable_backup, reconcile_owner,
 )
 from db.vip import user_can_use_backup
+from handlers.master._utils import run_background_operation
 from services.backup import request_backup_sync
 
 logger = logging.getLogger(__name__)
@@ -84,7 +86,7 @@ def _render_tree(members: list, edges: list) -> str:
     return "\n".join(lines)
 
 
-async def _show_status(update: Update, context, owner_id: int) -> None:
+async def _show_status(update: Update, owner_id: int) -> None:
     if not BACKUP_ENABLED:
         await update.message.reply_text("备份功能当前已在服务端关闭（BACKUP_ENABLED=0）。")
         return
@@ -124,13 +126,21 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "使用 /vip 了解会员权益与升级方式。")
         return
 
+    if sub in ('on', 'add', 'remove', 'rm', 'off', 'sync'):
+        await run_background_operation(update, context, ('backup', owner_id),
+                                       partial(_manage_backup, update, sub, args, owner_id))
+    else:
+        await _manage_backup(update, sub, args, owner_id)
+
+
+async def _manage_backup(update, sub, args, owner_id):
     try:
         if sub in ('help', '教程'):
             await update.message.reply_text(TUTORIAL, parse_mode='HTML')
             return
 
         if sub in ('', 'status', 'list'):
-            await _show_status(update, context, owner_id)
+            await _show_status(update, owner_id)
             return
 
         if sub == 'on':
@@ -206,9 +216,8 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         if sub == 'sync':
-            await update.message.reply_text("📦 正在发起存量回填…")
-            result = await request_backup_sync(owner_id)
-            await update.message.reply_text(result)
+            status = await update.message.reply_text("📦 正在发起存量回填…")
+            await status.edit_text(await request_backup_sync(owner_id))
             return
 
         await update.message.reply_text(USAGE)

@@ -13,6 +13,7 @@ from db import (
     update_user_bot_node, get_user_bot_by_id,
 )
 from config import WORKER_SECRET, MAX_BOTS_PER_WORKER
+from services.runtime import operation_lock
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,13 @@ class MasterScheduler:
     async def assign_bot_to_worker(self, bot_record: dict) -> Optional[str]:
         async with self._assign_lock:
             return await self._assign_bot(bot_record)
+
+    async def _assign_active_bot(self, bot_db_id: int) -> Optional[str]:
+        async with operation_lock(('bot', bot_db_id)):
+            record = await get_user_bot_by_id(bot_db_id)
+            if record and record['status'] == 'active':
+                return await self.assign_bot_to_worker(record)
+        return None
 
     async def _assign_bot(self, bot_record: dict) -> Optional[str]:
         """将 Bot 分配到最空闲的 Worker 节点，返回 node_id"""
@@ -130,7 +138,7 @@ class MasterScheduler:
 
             # 已有分配且 Worker 在线，重新启动
             if node_id and node_id != 'local':
-                assigned = await self.assign_bot_to_worker(bot)
+                assigned = await self._assign_active_bot(bot['id'])
                 if assigned:
                     loaded += 1
                     logger.info("  ✅ @%s → %s", bot.get('bot_username', ''), assigned)
@@ -138,7 +146,7 @@ class MasterScheduler:
                     logger.error("  ❌ @%s 分配失败", bot.get('bot_username', ''))
             else:
                 # 尚未分配，分配到最空闲的 Worker
-                assigned = await self.assign_bot_to_worker(bot)
+                assigned = await self._assign_active_bot(bot['id'])
                 if assigned:
                     loaded += 1
                     logger.info("  ✅ @%s → %s", bot.get('bot_username', ''), assigned)
@@ -233,7 +241,7 @@ class MasterScheduler:
                     for bot in await get_all_active_user_bots():
                         node = nodes.get(bot.get('node_id'))
                         if not node or node['status'] != 'online':
-                            await self.assign_bot_to_worker(bot)
+                            await self._assign_active_bot(bot['id'])
                 except asyncio.CancelledError:
                     raise
                 except Exception:

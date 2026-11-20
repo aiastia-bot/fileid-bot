@@ -82,6 +82,29 @@ async def test_flood_bot_does_not_delay_other_bot(database, alive_app):
     assert got.count("master") >= 1
 
 
+async def test_locked_conversation_does_not_hold_other_chats_or_control_updates(database, alive_app):
+    inbox = Inbox(lambda key: alive_app)
+
+    async def accept(update_id, chat_id, command):
+        await inbox.accept('master', {
+            'update_id': update_id,
+            'message': {'chat': {'id': chat_id}, 'text': command},
+        })
+
+    await accept(1, 10, '/export json')
+    first = await inbox._next()
+    assert first[1] == 1
+    await accept(2, 10, '/platform')
+    await accept(3, 20, '/platform')
+    await accept(4, 10, '/queue')
+
+    assert (await inbox._next())[1] == 3
+    assert (await inbox._next())[1] == 4
+    assert await inbox._next() is None
+    inbox.locks.pop(first[5])
+    assert (await inbox._next())[1] == 2
+
+
 async def test_dead_bot_warning_emitted_once_per_hour(database, caplog):
     now = int(time.time())
     await insert_update("dead", 1, now - 10)

@@ -69,10 +69,11 @@ async def auto_purge_dead_bots() -> int:
     from config import AUTO_PURGE_DEAD_BOT_DAYS, ADMIN_IDS
     if AUTO_PURGE_DEAD_BOT_DAYS <= 0:
         return 0
-    from db import (get_dead_bots_past_grace, purge_bot_files,
+    from db import (get_dead_bots_past_grace, get_user_bot_by_id, purge_bot_files,
                     remove_bot_from_backup, get_platform_setting,
                     set_platform_setting)
     from services.notices import enqueue
+    from services.runtime import operation_lock
 
     # 部署基线：首次启用时记录当前时间，只清理「上线之后」才死亡的 Bot，
     # 部署前就已死亡的存量 Bot 一律不动（留给管理员 /purge 手动处理）
@@ -93,8 +94,12 @@ async def auto_purge_dead_bots() -> int:
         username = bot.get('bot_username') or str(bot_db_id)
         owner_id = bot.get('owner_id')
         try:
-            result = await purge_bot_files(bot_db_id)
-            await remove_bot_from_backup(bot_db_id)
+            async with operation_lock(('bot', bot_db_id)):
+                current = await get_user_bot_by_id(bot_db_id)
+                if not current or any(current[key] != bot[key] for key in ('status', 'updated_at', 'owner_id')):
+                    continue
+                result = await purge_bot_files(bot_db_id)
+                await remove_bot_from_backup(bot_db_id)
         except Exception:
             logger.exception("自动清理 Bot %d (@%s) 失败", bot_db_id, username)
             continue

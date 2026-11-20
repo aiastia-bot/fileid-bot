@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 from datetime import datetime
+from functools import partial
 from senders import _retry_send
 
 from telegram import InaccessibleMessage, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -24,10 +25,11 @@ from db import (
     stream_export_bots, stream_export_files, stream_export_collections,
     stream_export_blacklist,
     get_blacklist_count,
+    is_user_blacklisted,
     get_platform_setting, set_platform_setting,
     update_user_vip, get_user_vip_info,
 )
-from handlers.master._utils import get_bot_manager, escape
+from handlers.master._utils import get_bot_manager, escape, run_background_operation
 
 logger = logging.getLogger(__name__)
 
@@ -59,21 +61,31 @@ async def _get_user_display_name(bot, user_id: int) -> str:
 
 
 PLATFORM_BOTS_PAGE_SIZE = 8
-PLATFORM_BOTS_CALLBACK = r'^platform_bots[|](active|revoked|banned|all)[|]([1-9][0-9]{0,9})$'
 _PLATFORM_BOT_FILTERS = {
     'active': '活跃', 'revoked': 'Token 失效', 'banned': '封禁', 'all': '全部',
 }
+_PLATFORM_BOT_SORTS = {
+    'name': '用户名', 'today': '今日新增', 'created': '创建日期', 'files': '文件总数',
+}
+PLATFORM_BOTS_CALLBACK = (
+    rf"^platform_bots\|({'|'.join(_PLATFORM_BOT_FILTERS)})\|([1-9][0-9]{{0,9}})"
+    rf"(?:\|({'|'.join(_PLATFORM_BOT_SORTS)}))?$"
+)
 
 
-async def _platform_bots_page(status: str, page: int = 1) -> tuple[str, InlineKeyboardMarkup]:
+async def _platform_bots_page(status: str, page: int = 1, *, sort: str = 'name') -> tuple[str, InlineKeyboardMarkup]:
     from config import ROLE
 
     bots, total, page = await get_platform_bot_page(
-        status, page=page, page_size=PLATFORM_BOTS_PAGE_SIZE
+        status, page=page, page_size=PLATFORM_BOTS_PAGE_SIZE, sort=sort
     )
     last_page = max(1, (total + PLATFORM_BOTS_PAGE_SIZE - 1) // PLATFORM_BOTS_PAGE_SIZE)
     title = _PLATFORM_BOT_FILTERS[status]
-    parts = [f"🤖 <b>Bot 列表 · {title}</b>\n第 {page}/{last_page} 页 · 共 {total:,} 个"]
+    parts = [
+        f"🤖 <b>Bot 列表 · {title}</b>\n"
+        f"第 {page}/{last_page} 页 · 共 {total:,} 个\n"
+        f"按{_PLATFORM_BOT_SORTS[sort]}{' ↑' if sort == 'name' else ' ↓'}"
+    ]
     if not bots:
         empty = "暂无有文件记录的活跃 Bot。" if status == 'active' else "暂无符合条件的 Bot。"
         parts.append(empty)
@@ -123,13 +135,13 @@ async def _platform_bots_page(status: str, page: int = 1) -> tuple[str, InlineKe
 
     navigation = []
     if page > 1:
-        navigation.append(InlineKeyboardButton("‹ 上一页", callback_data=f"platform_bots|{status}|{page - 1}"))
+        navigation.append(InlineKeyboardButton("‹ 上一页", callback_data=f"platform_bots|{status}|{page - 1}|{sort}"))
     if page < last_page:
-        navigation.append(InlineKeyboardButton("下一页 ›", callback_data=f"platform_bots|{status}|{page + 1}"))
+        navigation.append(InlineKeyboardButton("下一页 ›", callback_data=f"platform_bots|{status}|{page + 1}|{sort}"))
     filters = [
         InlineKeyboardButton(
             f"✓ {label}" if key == status else label,
-            callback_data=f"platform_bots|{key}|{page if key == status else 1}",
+            callback_data=f"platform_bots|{key}|{page if key == status else 1}|{sort}",
         )
         for key, label in _PLATFORM_BOT_FILTERS.items()
     ]
@@ -142,11 +154,18 @@ async def _platform_bots_page(status: str, page: int = 1) -> tuple[str, InlineKe
         keyboard.append([
             InlineKeyboardButton(
                 f"· {number} ·" if number == page else str(number),
-                callback_data=f"platform_bots|{status}|{number}",
+                callback_data=f"platform_bots|{status}|{number}|{sort}",
             )
             for number in pages
         ])
     keyboard.append(filters)
+    keyboard.append([
+        InlineKeyboardButton(
+            f"✓ {label}" if key == sort else label,
+            callback_data=f"platform_bots|{status}|{page if key == sort else 1}|{key}",
+        )
+        for key, label in _PLATFORM_BOT_SORTS.items()
+    ])
     return "\n\n".join(parts), InlineKeyboardMarkup(keyboard)
 
 
@@ -164,8 +183,8 @@ async def platform_bots_callback(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     await query.answer()
-    status, page = match.groups()
-    text, markup = await _platform_bots_page(status, int(page))
+    status, page, sort = match.groups()
+    text, markup = await _platform_bots_page(status, int(page), sort=sort or 'name')
     try:
         await _retry_send(query.edit_message_text, text, parse_mode='HTML', reply_markup=markup)
     except BadRequest as error:
@@ -256,6 +275,15 @@ async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     args = context.args or []
+    if args:
+        await run_background_operation(update, context, ('export', user_id),
+                                       partial(_export_data, update, context, args))
+    else:
+        await _export_data(update, context, args)
+
+
+async def _export_data(update, context, args):
+    user_id = update.effective_user.id
 
     # /export txt @bot_username — 纯文本导出指定Bot的code列表
     if args and len(args) >= 2 and args[0] == 'txt':
@@ -492,33 +520,20 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    bot_db_id = bot_record['id']
-    pending = context.bot_data.setdefault('admin_bot_operations', set())
-    if bot_db_id in pending:
-        await _retry_send(update.message.reply_text, "⏳ 此 Bot 正在启停，请等待操作完成。")
+    await run_background_operation(update, context, ('bot', bot_record['id']),
+                                   partial(_finish_admin_bot_start, update, bot_record['id']))
+
+
+async def _finish_admin_bot_start(update, bot_db_id):
+    bot_record = await get_user_bot_by_id(bot_db_id)
+    if not bot_record or bot_record['status'] == 'banned' or await is_user_blacklisted(bot_record['owner_id']):
+        await _retry_send(update.message.reply_text, "❌ Bot 不存在或已被封禁，无法启动。")
         return
-
-    pending.add(bot_db_id)
-    try:
-        mgr = get_bot_manager()
-        action_text = "重启" if mgr and bot_db_id in mgr.get_all_apps() else "启动"
-        status_msg = await _retry_send(
-            update.message.reply_text,
-            f"⏳ 正在{action_text} @{escape(bot_record['bot_username'])}...",
-        )
-        # 启动重试由应用跟踪，命令处理器立即释放主 Bot 的更新队列。
-        task = context.application.create_task(
-            _finish_admin_bot_start(mgr, bot_record, action_text, user_id, status_msg),
-            name=f'admin-startbot-{bot_db_id}',
-        )
-    except BaseException:
-        pending.discard(bot_db_id)
-        raise
-    task.add_done_callback(lambda _: pending.discard(bot_db_id))
-
-
-async def _finish_admin_bot_start(mgr, bot_record, action_text, user_id, status_msg):
-    bot_db_id = bot_record['id']
+    user_id = update.effective_user.id
+    mgr = get_bot_manager()
+    action_text = "重启" if mgr and bot_db_id in mgr.get_all_apps() else "启动"
+    status_msg = await _retry_send(update.message.reply_text,
+                                  f"⏳ 正在{action_text} @{escape(bot_record['bot_username'])}...")
     success = False
     try:
         if mgr and await update_user_bot_status(bot_db_id, 'active'):
@@ -579,20 +594,17 @@ async def stop_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _retry_send(update.message.reply_text, f"❌ 未找到 Bot：{escape(arg)}")
         return
 
-    bot_db_id = bot_record['id']
-    pending = context.bot_data.setdefault('admin_bot_operations', set())
-    if bot_db_id in pending:
-        await _retry_send(update.message.reply_text, "⏳ 此 Bot 正在启停，请等待操作完成。")
+    await run_background_operation(update, context, ('bot', bot_record['id']),
+                                   partial(_stop_bot_for_admin, update, bot_record['id'], user_id))
+
+
+async def _stop_bot_for_admin(update, bot_db_id, user_id):
+    bot_record = await get_user_bot_by_id(bot_db_id)
+    if not bot_record or bot_record['status'] == 'deleted':
+        await _retry_send(update.message.reply_text, "❌ Bot 已删除。")
         return
-
-    pending.add(bot_db_id)
-    try:
-        await _stop_bot_for_admin(update, bot_record, user_id)
-    finally:
-        pending.discard(bot_db_id)
-
-
-async def _stop_bot_for_admin(update, bot_record, user_id):
+    status_msg = await _retry_send(update.message.reply_text,
+                                  f"⏳ 正在停止 @{escape(bot_record['bot_username'])}...")
     mgr = get_bot_manager()
     was_running = mgr and bot_record['id'] in mgr.get_all_apps()
 
@@ -613,7 +625,7 @@ async def _stop_bot_for_admin(update, bot_record, user_id):
         except Exception as e:
             logger.warning("删除 Bot @%s webhook 失败: %s", bot_record['bot_username'], e)
 
-        await _retry_send(update.message.reply_text, 
+        await _retry_send(status_msg.edit_text,
             f"ℹ️ Bot @{escape(bot_record['bot_username'])} 当前未在运行。数据库状态已更新，webhook 已删除。"
         )
         return
@@ -624,10 +636,11 @@ async def _stop_bot_for_admin(update, bot_record, user_id):
         success = await mgr.stop_bot(bot_record['id'])
 
     # 更新数据库状态为 admin_stopped（区别于 VIP 暂停的 paused）
-    await update_user_bot_status(bot_record['id'], 'admin_stopped')
+    if bot_record['status'] != 'banned':
+        await update_user_bot_status(bot_record['id'], 'admin_stopped')
 
     if success:
-        await _retry_send(update.message.reply_text, 
+        await _retry_send(status_msg.edit_text,
             f"✅ <b>Bot 已停止</b>\n\n"
             f"🤖 @{escape(bot_record['bot_username'])}\n"
             f"🆔 Bot ID：<code>{bot_record['bot_id']}</code>\n"
@@ -637,7 +650,7 @@ async def _stop_bot_for_admin(update, bot_record, user_id):
         )
         logger.info("管理员 %s 停止了 Bot @%s", user_id, bot_record['bot_username'])
     else:
-        await _retry_send(update.message.reply_text, 
+        await _retry_send(status_msg.edit_text,
             f"⚠️ 停止 Bot @{escape(bot_record['bot_username'])} 时出现问题，但数据库状态已更新。"
         )
 
@@ -668,11 +681,11 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    # /broadcast user <message> — 所有活跃用户Bot给各自用户群发
-    if context.args[0].lower() == 'user':
-        await _broadcast_via_user_bots(update, context)
-        return
+    operation = _broadcast_via_user_bots if context.args[0].lower() == 'user' else _broadcast_via_master
+    await run_background_operation(update, context, ('broadcast',), partial(operation, update, context))
 
+
+async def _broadcast_via_master(update, context):
     # 默认：主Bot广播给所有Bot所有者
     text = " ".join(context.args)
     # 只发给 active 状态 Bot 的所有者
@@ -695,12 +708,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/broadcast user 子命令 — 通过每个运行中的用户Bot给该Bot的主人发消息
-    
-    使用 asyncio.create_task 异步执行，避免 webhook 超时导致 Telegram 重复投递。
-    """
-    import asyncio
-
+    """/broadcast user 子命令 — 通过每个运行中的用户 Bot 通知所有者。"""
     args = context.args[1:]  # 去掉 'user'
 
     if not args:
@@ -719,7 +727,7 @@ async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT
         await _retry_send(update.message.reply_text, "❌ 当前没有运行中的用户 Bot。")
         return
 
-    apps = mgr.get_all_apps()
+    apps = dict(mgr.get_all_apps())
     admin_chat_id = update.message.chat_id
     bot = context.bot  # 捕获 bot 引用
 
@@ -727,73 +735,69 @@ async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT
     await _retry_send(update.message.reply_text,
         f"⏳ 正在通过 {len(apps)} 个用户Bot给各自的主人发送消息...\n完成后会通知你。")
 
-    async def _do_broadcast():
-        total_success = 0
-        total_fail = 0
-        bot_results = []
-        sent_owners = set()  # 去重：每个主人只发一次
+    total_success = 0
+    total_fail = 0
+    bot_results = []
+    sent_owners = set()  # 去重：每个主人只发一次
 
-        for bot_db_id, app in apps.items():
-            bot_username = app.bot.username if app.bot else f"Bot#{bot_db_id}"
+    for bot_db_id, app in apps.items():
+        bot_username = app.bot.username if app.bot else f"Bot#{bot_db_id}"
 
-            # 优先用内存中的 bot_record（启动时已加载），避免每个 Bot 查一次 DB
-            bot_record = app.bot_data.get('bot_record') or {}
-            if not bot_record.get('owner_id'):
-                bot_record = await get_user_bot_by_id(bot_db_id)
-                if not bot_record:
-                    bot_results.append(f"❓ @{escape(bot_username)}: 未找到记录")
-                    continue
-
-            owner_id = bot_record['owner_id']
-
-            # 去重：同一个主人只尝试一次（无论成功失败）
-            if owner_id in sent_owners:
+        # 优先用内存中的 bot_record（启动时已加载），避免每个 Bot 查一次 DB
+        bot_record = app.bot_data.get('bot_record') or {}
+        if not bot_record.get('owner_id'):
+            bot_record = await get_user_bot_by_id(bot_db_id)
+            if not bot_record:
+                bot_results.append(f"❓ @{escape(bot_username)}: 未找到记录")
                 continue
 
-            sent_owners.add(owner_id)
-            try:
-                await _retry_send(
-                    app.bot.send_message,
-                    chat_id=owner_id,
-                    text=message_text,
-                    parse_mode="HTML"
-                )
-                total_success += 1
-                bot_results.append(f"✅ @{escape(bot_username)} → 主人 <a href=\"tg://user?id={owner_id}\">{owner_id}</a>")
-            except Exception as e:
-                total_fail += 1
-                bot_results.append(f"❌ @{escape(bot_username)} → 主人 <a href=\"tg://user?id={owner_id}\">{owner_id}</a>: {escape(str(e)[:60])}")
+        owner_id = bot_record['owner_id']
 
-        # 汇总结果发送给管理员
-        result_lines = "\n".join(bot_results)
-        summary = f"✅ <b>用户Bot主人通知完成</b>\n\n📊 总计：成功 {total_success}，失败 {total_fail}\n\n"
-        full_text = summary + result_lines
+        # 去重：同一个主人只尝试一次（无论成功失败）
+        if owner_id in sent_owners:
+            continue
 
+        sent_owners.add(owner_id)
         try:
-            if len(full_text) > 4000:
-                await _retry_send(bot.send_message,
-                    chat_id=admin_chat_id, text=summary, parse_mode="HTML")
-                parts = []
-                current = ""
-                for line in result_lines.split('\n'):
-                    if len(current) + len(line) + 1 > 3800:
-                        parts.append(current)
-                        current = line + '\n'
-                    else:
-                        current += line + '\n'
-                if current:
-                    parts.append(current)
-                for part in parts:
-                    await _retry_send(bot.send_message,
-                        chat_id=admin_chat_id, text=part, parse_mode="HTML")
-            else:
-                await _retry_send(bot.send_message,
-                    chat_id=admin_chat_id, text=full_text, parse_mode="HTML")
+            await _retry_send(
+                app.bot.send_message,
+                chat_id=owner_id,
+                text=message_text,
+                parse_mode="HTML"
+            )
+            total_success += 1
+            bot_results.append(f"✅ @{escape(bot_username)} → 主人 <a href=\"tg://user?id={owner_id}\">{owner_id}</a>")
         except Exception as e:
-            logger.error("发送广播结果给管理员失败: %s", e)
+            total_fail += 1
+            bot_results.append(f"❌ @{escape(bot_username)} → 主人 <a href=\"tg://user?id={owner_id}\">{owner_id}</a>: {escape(str(e)[:60])}")
 
-    # 异步执行，不阻塞 webhook 响应
-    asyncio.create_task(_do_broadcast())
+    # 汇总结果发送给管理员
+    result_lines = "\n".join(bot_results)
+    summary = f"✅ <b>用户Bot主人通知完成</b>\n\n📊 总计：成功 {total_success}，失败 {total_fail}\n\n"
+    full_text = summary + result_lines
+
+    try:
+        if len(full_text) > 4000:
+            await _retry_send(bot.send_message,
+                chat_id=admin_chat_id, text=summary, parse_mode="HTML")
+            parts = []
+            current = ""
+            for line in result_lines.split('\n'):
+                if len(current) + len(line) + 1 > 3800:
+                    parts.append(current)
+                    current = line + '\n'
+                else:
+                    current += line + '\n'
+            if current:
+                parts.append(current)
+            for part in parts:
+                await _retry_send(bot.send_message,
+                    chat_id=admin_chat_id, text=part, parse_mode="HTML")
+        else:
+            await _retry_send(bot.send_message,
+                chat_id=admin_chat_id, text=full_text, parse_mode="HTML")
+    except Exception as e:
+        logger.error("发送广播结果给管理员失败: %s", e)
 
 
 # ==================== 群组链接管理 ====================

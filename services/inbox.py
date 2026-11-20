@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from types import SimpleNamespace
-from sqlalchemy import select, update, or_, and_, func, bindparam
+from sqlalchemy import select, update, or_, and_, func, bindparam, tuple_
 from sqlalchemy.exc import IntegrityError
 from telegram import Update
 from telegram.error import Forbidden
@@ -38,6 +38,17 @@ def is_permanent_user_error(exc: Exception) -> bool:
     )
 
 
+def _conversation_key(body):
+    message = body.get('message', body.get('edited_message')) or {}
+    callback = body.get('callback_query') or {}
+    chat = message.get('chat') or (callback.get('message') or {}).get('chat') or {}
+    actor = callback.get('from') or (body.get('pre_checkout_query') or {}).get('from') or {}
+    chat_id = chat.get('id', actor.get('id', 'system'))
+    command = (message.get('text') or '').split(' ', 1)[0].split('@')[0]
+    control = command in ('/stop', '/queue') or callback.get('data') == 'stop_auto'
+    return f"{'control' if control else 'conversation'}:{chat_id}"
+
+
 class Inbox:
     def __init__(self, resolve_app):
         self.resolve_app = resolve_app
@@ -52,6 +63,17 @@ class Inbox:
         self.suppress_dead_bot_warnings = False
         # 公平轮转查询语句只构建一次：32 个 worker 每秒轮询，每次重建 ORM 代理
         # 曾是 CPU 热点（2026-11-19 事故）；语句对象复用可命中 SQLAlchemy 编译缓存
+        self._next_stmt = self._eligible_heads()
+        # 排除本地正在处理的会话后再取每个 Bot 的队首，让其他会话继续轮转。
+        self._next_unlocked_stmt = self._eligible_heads(or_(
+            UpdateInbox.conversation_key.is_(None),
+            tuple_(UpdateInbox.bot_key, UpdateInbox.conversation_key).not_in(
+                bindparam('locked', expanding=True)
+            ),
+        ))
+
+    @staticmethod
+    def _eligible_heads(*conditions):
         now_b = bindparam("now")
         rn = func.row_number().over(
             partition_by=UpdateInbox.bot_key,
@@ -65,11 +87,12 @@ class Inbox:
                     and_(UpdateInbox.state == "pending", UpdateInbox.available_at <= now_b),
                     and_(UpdateInbox.state == "processing", UpdateInbox.available_at <= now_b),
                 ),
+                *conditions,
             )
             .add_columns(rn)
             .subquery()
         )
-        self._next_stmt = (
+        return (
             select(sub)
             .where(sub.c.rn == 1)
             .order_by(sub.c.created_at, sub.c.update_id)
@@ -86,6 +109,7 @@ class Inbox:
                     update_id=body["update_id"],
                     node_id=self.node_id,
                     body=json.dumps(body),
+                    conversation_key=_conversation_key(body),
                     state="pending",
                     attempts=0,
                     available_at=0,
@@ -128,47 +152,39 @@ class Inbox:
         if app is None:
             self._note_dead_bot(row.bot_key)
             return None
-        body = json.loads(row.body)
-        message = body.get("message", body.get("edited_message", {}))
-        callback = body.get("callback_query", {})
-        chat = message.get("chat", callback.get("message", {}).get("chat", {}))
-        # Serialize one conversation, while other users and /stop can run.
-        user = chat.get(
-            "id",
-            callback.get(
-                "from", body.get("pre_checkout_query", {}).get("from", {})
-            ).get("id", "system"),
-        )
-        is_control = (
-            message.get("text", "").split(" ", 1)[0].split("@")[0]
-            in ("/stop", "/queue")
-            or callback.get("data") == "stop_auto"
-        )
-        lock_key = (
-            row.bot_key,
-            str(user),
-            "control" if is_control else "conversation",
-        )
-        if self.locks.get(lock_key, False):
-            return None
-        changed = await session.execute(
-            update(UpdateInbox)
-            .where(
+        conversation_key = row.conversation_key or _conversation_key(json.loads(row.body))
+        lock_key = (row.bot_key, conversation_key)
+        condition = (
+            update(UpdateInbox).where(
                 UpdateInbox.bot_key == row.bot_key,
                 UpdateInbox.update_id == row.update_id,
                 UpdateInbox.state == row.state,
                 UpdateInbox.available_at == row.available_at,
             )
-            .values(
+        )
+        if lock_key in self.locks:
+            if row.conversation_key is None:
+                # 旧版本保存的积压没有会话键。先补齐，下次查询可跳过被占用的会话。
+                await session.execute(condition.values(conversation_key=conversation_key))
+                await session.commit()
+                self.wake.set()
+            return None
+
+        self.locks[lock_key] = True
+        try:
+            changed = await session.execute(condition.values(
                 state="processing",
                 available_at=now + int(WEBHOOK_UPDATE_TIMEOUT) + 30,
                 attempts=UpdateInbox.attempts + 1,
-            )
-        )
-        if not changed.rowcount:
-            return None
-        self.locks[lock_key] = True
-        await session.commit()
+                conversation_key=conversation_key,
+            ))
+            await session.commit()
+            if not changed.rowcount:
+                self.locks.pop(lock_key, None)
+                return None
+        except BaseException:
+            self.locks.pop(lock_key, None)
+            raise
         return (
             row.bot_key,
             row.update_id,
@@ -184,11 +200,12 @@ class Inbox:
             # 候选 = 每个 bot 的最老一条待处理 update（窗口函数按 bot 分组取头）：
             # 单一 bot 的洪峰或死 Bot 积压都无法推迟其他 bot 的响应
             # （row_number 需 SQLite 3.25+ / MySQL 8+）
-            rows = (
-                await session.execute(
-                    self._next_stmt, {"node_id": self.node_id, "now": now}
-                )
-            ).all()
+            stmt = self._next_stmt
+            params = {'node_id': self.node_id, 'now': now}
+            if self.locks:
+                stmt = self._next_unlocked_stmt
+                params['locked'] = list(self.locks)
+            rows = (await session.execute(stmt, params)).all()
             if not rows:
                 return None
             # 轮转起点：候选仍按全局年龄排序，但每次调用从不同 bot 起步，
@@ -264,6 +281,7 @@ class Inbox:
             finally:
                 if job:
                     self.locks.pop(job[5], None)
+                    self.wake.set()
 
     async def _finish(self, key, uid, state, error="", delay=0):
         async with get_session() as session:

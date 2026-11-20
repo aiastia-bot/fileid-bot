@@ -29,7 +29,8 @@ async def test_composite_index_created(database):
     assert "ix_update_inbox_node_state_avail" in names
 
 
-async def test_next_query_plan_uses_composite_index(database, inbox):
+@pytest.mark.parametrize('locked', [False, True])
+async def test_next_query_plan_uses_composite_index(database, inbox, locked):
     """EXPLAIN 必须走复合索引；命中旧 node_id 单列索引或全表扫描即事故复现"""
     now = int(time.time())
     async with get_engine().connect() as conn:
@@ -47,12 +48,15 @@ async def test_next_query_plan_uses_composite_index(database, inbox):
             )
         await conn.commit()
 
-        compiled = inbox._next_stmt.compile()
-        binds = {k: getattr(v, "value", None) for k, v in compiled.params.items()}
-        binds.update({"node_id": "standalone", "now": now})
+        stmt = inbox._next_stmt.params(node_id='standalone', now=now)
+        if locked:
+            stmt = inbox._next_unlocked_stmt.params(
+                node_id='standalone', now=now, locked=[('bot2', 'conversation:7')],
+            )
+        compiled = stmt.compile(compile_kwargs={'render_postcompile': True})
         plan = (
             await conn.execute(
-                text("EXPLAIN QUERY PLAN " + str(compiled)), binds
+                text("EXPLAIN QUERY PLAN " + str(compiled)), compiled.params
             )
         ).fetchall()
     detail = " | ".join(str(row[-1]) for row in plan)
@@ -93,3 +97,24 @@ async def test_next_stmt_is_reusable(database, inbox):
             ).scalars()
         )
     assert set(states.values()) == {"processing"}
+
+
+async def test_migration_backfills_only_unfinished_updates(database):
+    from db.core import init_db
+
+    async with get_engine().begin() as conn:
+        await conn.execute(text('DELETE FROM schema_versions WHERE version=6'))
+        await conn.execute(text('ALTER TABLE update_inbox DROP COLUMN conversation_key'))
+        await conn.execute(text(
+            'INSERT INTO update_inbox (bot_key, update_id, node_id, body, state, attempts, available_at, error, created_at) '
+            "VALUES ('master', :id, 'standalone', :body, :state, 0, 0, '', 0)"
+        ), [
+            {'id': 1, 'state': 'pending', 'body': '{"message":{"chat":{"id":42}}}'},
+            {'id': 2, 'state': 'completed', 'body': '{}'},
+        ])
+
+    await init_db()
+    await init_db()
+    async with get_engine().connect() as conn:
+        rows = await conn.execute(text('SELECT update_id, conversation_key FROM update_inbox ORDER BY update_id'))
+        assert rows.all() == [(1, 'conversation:42'), (2, None)]

@@ -113,8 +113,10 @@ async def get_platform_stats() -> Dict:
         }
 
 
-async def get_platform_bot_page(status: str, *, page: int, page_size: int) -> tuple[List[Dict], int, int]:
-    """返回当前页、匹配总数及校正后的页码，仅聚合本页 Bot 的数据。"""
+async def get_platform_bot_page(
+    status: str, *, page: int, page_size: int, sort: str = 'name'
+) -> tuple[List[Dict], int, int]:
+    """先给匹配的 Bot 排序，再取一页并计算详情。"""
     from datetime import datetime
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -123,8 +125,9 @@ async def get_platform_bot_page(status: str, *, page: int, page_size: int) -> tu
             UserBot.id, UserBot.bot_username, UserBot.bot_firstname,
             UserBot.bot_id, UserBot.owner_id, UserBot.status, UserBot.created_at, UserBot.node_id,
         )
+        file_count = func.coalesce(BotFileCount.count, 0).label('file_count')
         query = (
-            select(*cols, func.coalesce(BotFileCount.count, 0).label('file_count'))
+            select(*cols, file_count)
             .outerjoin(BotFileCount, BotFileCount.bot_db_id == UserBot.id)
             .where(UserBot.status != 'deleted' if status == 'all' else UserBot.status == status)
         )
@@ -137,20 +140,38 @@ async def get_platform_bot_page(status: str, *, page: int, page_size: int) -> tu
         if not total:
             return [], total, page
 
+        order = [UserBot.bot_username, UserBot.id]
+        if sort == 'today':
+            # 每个 Bot 用 (bot_db_id, created_at) 索引只统计当天的记录。
+            today_file_count = (
+                select(func.count()).select_from(FileMapping)
+                .where(FileMapping.bot_db_id == UserBot.id, FileMapping.created_at >= today)
+                .scalar_subquery().label('today_file_count')
+            )
+            query = query.add_columns(today_file_count)
+            order.insert(0, today_file_count.desc())
+        elif sort == 'created':
+            order.insert(0, UserBot.created_at.desc())
+        elif sort == 'files':
+            order.insert(0, file_count.desc())
+
         bots = (await session.execute(
-            query.order_by(UserBot.bot_username, UserBot.id)
+            query.order_by(*order)
             .offset((page - 1) * page_size).limit(page_size)
         )).all()
         bot_ids = [bot.id for bot in bots]
         if not bot_ids:
             return [], total, page
 
-        result = await session.execute(
-            select(FileMapping.bot_db_id, func.count())
-            .where(FileMapping.bot_db_id.in_(bot_ids), FileMapping.created_at >= today)
-            .group_by(FileMapping.bot_db_id)
-        )
-        today_counts = dict(result.fetchall())
+        if sort == 'today':
+            today_counts = {bot.id: bot.today_file_count for bot in bots}
+        else:
+            result = await session.execute(
+                select(FileMapping.bot_db_id, func.count())
+                .where(FileMapping.bot_db_id.in_(bot_ids), FileMapping.created_at >= today)
+                .group_by(FileMapping.bot_db_id)
+            )
+            today_counts = dict(result.fetchall())
 
         result = await session.execute(
             select(Collection.bot_db_id, func.count())

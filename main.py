@@ -319,6 +319,7 @@ def _register_master_handlers(application: Application):
         INPUT_BOT_USERNAME, INPUT_BOT_NAME, INPUT_BOT_TOKEN
     )
     from handlers.master.admin import PLATFORM_BOTS_CALLBACK, platform_bots_callback
+    from handlers.master.newbot import new_bot_waiting
 
     # /newbot 交互式对话
     newbot_conv = ConversationHandler(
@@ -334,7 +335,11 @@ def _register_master_handlers(application: Application):
             ],
             INPUT_BOT_TOKEN: [
                 CommandHandler("newbot", new_bot_start),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, new_bot_input_token),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, new_bot_input_token, block=False),
+            ],
+            ConversationHandler.WAITING: [
+                CommandHandler(["newbot", "cancel"], new_bot_waiting),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, new_bot_waiting),
             ],
         },
         fallbacks=[CommandHandler("cancel", new_bot_cancel)],
