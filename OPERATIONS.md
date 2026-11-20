@@ -15,6 +15,21 @@ MySQL 跨机器部署必须共享同一个数据库。迁移账号需要建表�
 
 回滚程序前应停止所有新进程并恢复升级前的完整数据库备份，不能只把程序切回旧版；旧版不了解新版任务和订单状态。
 
+## 接入自建 Telegram Bot API
+
+先部署 [Telegram Bot API Server](https://github.com/tdlib/telegram-bot-api)，确认 FileID Bot 容器能访问它。用 Docker 部署时可以将两个服务接入同一个私有网络。跨主机部署时给 API 服务配置受控的 HTTPS 入口。
+
+在 `.env` 里配置服务地址与要试用的 Telegram Bot ID：
+
+```dotenv
+TELEGRAM_BOT_API_URL=http://telegram-bot-api:8081
+TELEGRAM_BOT_API_BOT_IDS=123456789
+```
+
+Bot ID 是 Token 冒号前的数字，也可在 `/platform bots` 中看到。填逗号分隔的 ID 可选择多个 Bot，显式填 `all` 会将主 Bot 和所有子 Bot 都指向自建服务。清空两项时使用官方 API。分布式部署时，Master 和可能接管这些 Bot 的 Worker 使用相同的路由配置。Webhook 仍使用对应节点的现有 Webhook 地址，自建服务必须能访问该地址。
+
+已有 Bot 切换前，停止其旧客户端，然后在官方 Bot API 为该 Bot 调用 [`logOut`](https://core.telegram.org/bots/api#logout)。成功后应用新配置并启动。如果之前用 `/stopbot` 停了测试 Bot，应用配置后用 `/startbot` 启动它。测试 `/start`、上传与代码取回。应用只按配置选路，不会自动迁移或临时切回官方 API。调用 `logOut` 后有 10 分钟无法重新登录官方 API，回切时先停用本地客户端并登出自建服务，再恢复官方配置。
+
 ## 会员配置
 
 仅管理员可调用：

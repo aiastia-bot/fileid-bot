@@ -407,10 +407,10 @@ async def update_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     status_msg = await _retry_send(update.message.reply_text, "⏳ 正在校验新 Token...")
 
     # 校验新 Token
-    from telegram import Bot
+    from services.telegram_api import create_bot
     test_bot = None
     try:
-        test_bot = Bot(token=token)
+        test_bot = create_bot(token)
         bot_info = await _retry_send(test_bot.get_me)
     except Exception as e:
         await status_msg.edit_text(

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # 加载 .env 文件
 env_path = Path('.env')
@@ -12,6 +13,11 @@ if env_path.exists():
                 os.environ.setdefault(key.strip(), value.strip().strip("\"\'"))
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
+TELEGRAM_BOT_API_URL = os.environ.get('TELEGRAM_BOT_API_URL', '').strip().rstrip('/')
+TELEGRAM_BOT_API_BOT_IDS = frozenset(
+    bot_id.strip() for bot_id in os.environ.get('TELEGRAM_BOT_API_BOT_IDS', '').split(',')
+    if bot_id.strip()
+)
 ADMIN_IDS = [int(x) for x in os.environ.get('ADMIN_IDS', '').split(',') if x.strip().isdigit()]
 CODE_PREFIX = os.environ.get('CODE_PREFIX', '')  # 自定义代码前缀，默认使用 bot 用户名（不带@）
 
@@ -243,6 +249,27 @@ AUTO_PURGE_WARN_BEFORE_DAYS = (3, 2, 1)
 
 
 def validate_config():
+    if bool(TELEGRAM_BOT_API_URL) != bool(TELEGRAM_BOT_API_BOT_IDS):
+        raise ValueError('Set both TELEGRAM_BOT_API_URL and TELEGRAM_BOT_API_BOT_IDS')
+    if TELEGRAM_BOT_API_URL:
+        try:
+            endpoint = urlsplit(TELEGRAM_BOT_API_URL)
+            valid = (
+                endpoint.scheme in ('http', 'https') and endpoint.hostname
+                and endpoint.port != 0 and endpoint.username is None
+                and not (endpoint.path or endpoint.query or endpoint.fragment)
+                and not any(char.isspace() for char in TELEGRAM_BOT_API_URL)
+                and not any(char in TELEGRAM_BOT_API_URL for char in ('?', '#', '\\'))
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError('TELEGRAM_BOT_API_URL must be an http(s) origin with no credentials or path')
+        if TELEGRAM_BOT_API_BOT_IDS != {'all'} and not all(
+            bot_id.isascii() and bot_id.isdecimal() and not bot_id.startswith('0')
+            for bot_id in TELEGRAM_BOT_API_BOT_IDS
+        ):
+            raise ValueError('TELEGRAM_BOT_API_BOT_IDS must contain numeric Telegram Bot IDs or all')
     if ROLE not in ('standalone', 'master', 'worker') or BOT_MODE not in ('polling', 'webhook'):
         raise ValueError('Invalid ROLE or BOT_MODE')
     if DB_TYPE not in ('sqlite', 'mysql'):

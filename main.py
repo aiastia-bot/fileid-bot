@@ -10,9 +10,10 @@ import signal
 import sys
 
 from services.rate_limit import get_limiter
+from services.telegram_api import application_builder
 from telegram import Update
 from telegram.ext import (
-    Application, ApplicationBuilder, CommandHandler, ContextTypes,
+    Application, CommandHandler, ContextTypes,
     ConversationHandler, MessageHandler, CallbackQueryHandler,
     PreCheckoutQueryHandler, TypeHandler, filters
 )
@@ -129,10 +130,9 @@ def run_standalone():
 
 
     application = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-            .rate_limiter(get_limiter(BOT_TOKEN))
-            .concurrent_updates(False)
+        application_builder(BOT_TOKEN)
+        .rate_limiter(get_limiter(BOT_TOKEN))
+        .concurrent_updates(False)
         .post_init(post_init)
         .post_stop(post_stop)
         .post_shutdown(post_shutdown)
@@ -176,10 +176,9 @@ def run_master():
     scheduler = MasterScheduler()
 
     application = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-            .rate_limiter(get_limiter(BOT_TOKEN))
-            .concurrent_updates(False)
+        application_builder(BOT_TOKEN)
+        .rate_limiter(get_limiter(BOT_TOKEN))
+        .concurrent_updates(False)
         .post_init(post_init)
         .post_stop(post_stop)
         .post_shutdown(post_shutdown)

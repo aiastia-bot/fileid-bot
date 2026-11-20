@@ -155,10 +155,10 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     status_msg = await _retry_send(update.message.reply_text, "⏳ 正在校验 Token 并启动 Bot...")
 
-    from telegram import Bot
+    from services.telegram_api import create_bot
     test_bot = None
     try:
-        test_bot = Bot(token=token)
+        test_bot = create_bot(token)
         bot_info = await _retry_send(test_bot.get_me)
     except Exception as e:
         await status_msg.edit_text(
@@ -318,10 +318,10 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     status_msg = await _retry_send(update.message.reply_text, "⏳ 正在校验 Token...")
 
-    from telegram import Bot
+    from services.telegram_api import create_bot
     test_bot = None
     try:
-        test_bot = Bot(token=token)
+        test_bot = create_bot(token)
         bot_info = await _retry_send(test_bot.get_me)
     except Exception as e:
         await status_msg.edit_text(f"❌ Token 校验失败：{escape(str(e)[:100])}\n\n请检查Token是否正确。")

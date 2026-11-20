@@ -8,9 +8,10 @@ import logging
 from typing import Dict, Optional
 
 from services.rate_limit import get_limiter
+from services.telegram_api import application_builder, create_bot
 from telegram import Update
 from telegram.ext import (
-    Application, ApplicationBuilder, CommandHandler, MessageHandler,
+    Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters
 )
 
@@ -110,8 +111,7 @@ class BotManager:
         from handlers.callbacks import button_callback
 
         application = (
-            ApplicationBuilder()
-            .token(token)
+            application_builder(token)
             .rate_limiter(get_limiter(token))
             .concurrent_updates(True)
             # PTB 默认连接池上限 256；webhook 模式下每 Bot 并发由
@@ -590,8 +590,7 @@ class BotManager:
             if not token:
                 return
 
-            from telegram import Bot
-            bot = Bot(token=token)
+            bot = create_bot(token)
             try:
                 await _retry_send(bot.delete_webhook, drop_pending_updates=False)
                 logger.info('Orphan webhook removed for bot %s', bot_db_id)

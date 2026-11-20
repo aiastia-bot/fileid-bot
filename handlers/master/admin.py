@@ -603,10 +603,12 @@ async def _stop_bot_for_admin(update, bot_record, user_id):
 
         # 主动删除 webhook（防止残留 webhook 导致 bot 仍能接收消息）
         try:
-            from telegram import Bot
-            temp_bot = Bot(token=bot_record['bot_token'])
-            await _retry_send(temp_bot.delete_webhook)
-            await temp_bot.shutdown()
+            from services.telegram_api import create_bot
+            temp_bot = create_bot(bot_record['bot_token'])
+            try:
+                await _retry_send(temp_bot.delete_webhook)
+            finally:
+                await temp_bot.shutdown()
             logger.info("已删除 Bot @%s 的 webhook", bot_record['bot_username'])
         except Exception as e:
             logger.warning("删除 Bot @%s webhook 失败: %s", bot_record['bot_username'], e)
