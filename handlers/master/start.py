@@ -83,22 +83,16 @@ async def master_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理 managed_bot 更新：自动获取 Token 并启动 Bot"""
-    managed_info = update.api_kwargs.get('managed_bot')
-    if not managed_info:
+    # PTB 22.8 将 managed_bot 解析为正式字段，不再放进 api_kwargs。
+    managed_info = update.managed_bot
+    if managed_info is None:
         return
 
-    logger.info("收到 managed_bot 更新: %s", managed_info)
-
-    owner = managed_info.get('user', {})
-    bot_info = managed_info.get('bot', {})
-    owner_id = owner.get('id')
-    bot_id = bot_info.get('id')
-    bot_username = bot_info.get('username', '')
-    bot_name = bot_info.get('first_name', '')
-
-    if not bot_id:
-        logger.error("managed_bot 更新缺少 bot id: %s", managed_info)
-        return
+    owner_id = managed_info.user.id
+    bot_id = managed_info.bot.id
+    bot_username = managed_info.bot.username or ''
+    bot_name = managed_info.bot.first_name
+    logger.info("收到 managed_bot 更新: bot_id=%s owner_id=%s", bot_id, owner_id)
 
     await run_background_operation(
         update, context, ('managed-bot', bot_id),

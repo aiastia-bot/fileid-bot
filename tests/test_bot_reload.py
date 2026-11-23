@@ -130,13 +130,13 @@ def offline_master(monkeypatch):
         _register_master_handlers(app)
         webhook = inbox.Inbox(lambda _: app)
 
-        async def send_command(update_id, text):
+        async def send_command(update_id, text, user_id=99):
             body = {
                 'update_id': update_id,
                 'message': {
                     'message_id': update_id, 'date': 1, 'text': text,
-                    'from': {'id': 99, 'first_name': 'Admin', 'is_bot': False},
-                    'chat': {'id': 99, 'type': 'private'},
+                    'from': {'id': user_id, 'first_name': 'User', 'is_bot': False},
+                    'chat': {'id': user_id, 'type': 'private'},
                 },
             }
             if text.startswith('/'):
@@ -295,6 +295,53 @@ async def test_newbot_pending_token_keeps_platform_responsive(database, offline_
     assert record['owner_id'] == 99
     manager.start_bot.assert_awaited_once()
     assert '创建成功并已启动' in status.edit_text.call_args.args[0]
+
+
+@pytest.mark.parametrize('delivery', ['polling', 'webhook'])
+async def test_managed_bot_update_registers_bot_for_my_bots(database, offline_master, monkeypatch, delivery):
+    from db import get_user_bot_by_telegram_id
+    from services import runtime
+
+    owner_id, bot_id = 101, 222222
+    get_token = AsyncMock(return_value='222222:test-child')
+    monkeypatch.setattr(ExtBot, 'get_managed_bot_token', get_token)
+    attempted_start = asyncio.Event()
+
+    async def start_bot(record):
+        attempted_start.set()
+        return False
+
+    manager = SimpleNamespace(get_all_apps=dict, start_bot=AsyncMock(side_effect=start_bot))
+    runtime.configure(bot_manager=manager)
+    app, webhook, _, send = offline_master(delivery)
+    body = {
+        'update_id': 1,
+        'managed_bot': {
+            'user': {'id': owner_id, 'first_name': 'Owner', 'is_bot': False},
+            'bot': {'id': bot_id, 'first_name': 'Child', 'is_bot': True, 'username': 'child_bot'},
+        },
+    }
+
+    async with app:
+        await app.start()
+        if delivery == 'webhook':
+            webhook.start()
+        try:
+            if delivery == 'webhook':
+                await webhook.accept('master', body)
+            else:
+                await app.update_queue.put(Update.de_json(body, app.bot))
+            await asyncio.wait_for(attempted_start.wait(), 3)
+            assert '@child_bot' in await send(2, '/mybots', user_id=owner_id)
+            assert '你还没有添加任何 Bot' in await send(3, '/mybots', user_id=102)
+        finally:
+            await webhook.stop()
+            await app.stop()
+
+    get_token.assert_awaited_once_with(user_id=bot_id)
+    record = await get_user_bot_by_telegram_id(bot_id)
+    assert record['owner_id'] == owner_id
+    manager.start_bot.assert_awaited_once()
 
 
 async def test_platform_replies_during_backup_and_plan_sync(database, offline_master, monkeypatch):
