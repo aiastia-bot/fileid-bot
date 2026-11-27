@@ -17,6 +17,7 @@ from db import (
 )
 from config import VIP_FEATURES, FORWARD_MODE_ALLOW, FORWARD_MODE_DENY, FORWARD_MODE_USER_CHOICE
 from handlers.master._utils import get_bot_manager, escape, run_background_operation
+from utils import user_id_html
 
 logger = logging.getLogger(__name__)
 
@@ -476,7 +477,7 @@ async def _update_bot_token_for_owner(update, master_bot, bot_db_id, token, user
                 f"🔔 <b>被系统停止的 Bot 更新了 Token</b>\n\n"
                 f"🤖 Bot：@{escape(bot_record['bot_username'])}\n"
                 f"🆔 Bot ID：<code>{bot_record['bot_id']}</code>\n"
-                f"👤 用户：<a href=\"tg://user?id={user_id}\">{user_id}</a>\n\n"
+                f"👤 用户：{user_id_html(user_id)}\n\n"
                 f"📋 <b>旧 Token：</b>\n<code>{escape(old_token)}</code>\n\n"
                 f"📋 <b>新 Token：</b>\n<code>{escape(token)}</code>\n\n"
                 f"状态保持 admin_stopped，未启动。"
@@ -886,7 +887,7 @@ async def _purge_bot(update, bot_db_id):
     owner_id = await remove_bot_from_backup(bot_db_id)
 
     text = (
-        f"✅ 已清理 @{bot['bot_username']} 的记录\n\n"
+        f"✅ 已清理 @{escape(bot['bot_username'])} 的记录\n\n"
         f"• 删除文件记录：{result['deleted_files']:,} 条\n"
         f"• 移除集合项：{result['removed_items']:,} 条"
         f"（校准 {result['fixed_collections']} 个集合）\n"
@@ -895,7 +896,7 @@ async def _purge_bot(update, bot_db_id):
         text += (f"• 改挂备份副本：{result['repointed_items']:,} 个集合项"
                  f"（文件仍可取回）\n")
     if owner_id:
-        text += f"• 已移出备份组并触发主人 {owner_id} 的链路补位\n"
+        text += f"• 已移出备份组并触发主人 {user_id_html(owner_id)} 的链路补位\n"
     text += ("\n💾 SQLite 用户可执行 <code>VACUUM;</code> 把磁盘空间实际归还系统；"
              "MySQL 用 <code>OPTIMIZE TABLE file_mappings;</code>")
     await update.callback_query.edit_message_text(text, parse_mode='HTML')

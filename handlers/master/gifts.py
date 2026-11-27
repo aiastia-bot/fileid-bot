@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 
 from config import ADMIN_IDS, PREMIUM_GIFT_PRICES
 from handlers.master._utils import escape
+from utils import user_id_html
 
 logger = logging.getLogger(__name__)
 
@@ -40,35 +41,48 @@ async def _get_bot_star_balance(bot):
 
 # ==================== 交易记录格式化 ====================
 
+def _transaction_user(partner):
+    """PTB 把交易对象的用户信息放在 user 字段，兼容旧的扁平字段。"""
+    user = partner.get('user') or {}
+    return (user.get('id') or partner.get('user_id'),
+            user.get('first_name') or partner.get('first_name'))
+
+
+def _transaction_user_html(partner):
+    uid, name = _transaction_user(partner)
+    if uid:
+        link = user_id_html(uid)
+        return f'{escape(name)} ({link})' if name else f'用户 {link}'
+    return escape(name) if name else '未知用户'
+
+
 def _format_transaction(i: int, tx: dict) -> str:
     """格式化单条交易记录"""
     amount = tx.get("amount", 0)
     date_str = tx.get("date", "")
 
-    source = tx.get("source", {})
+    source = tx.get("source") or {}
     source_type = source.get("type", "unknown")
 
     if amount > 0:
         if source_type == "user":
-            user_info = source.get("first_name", f"用户{source.get('user_id', '?')}")
-            line = f"{i}. <b>+{amount}⭐</b> ← {escape(user_info)}"
+            line = f"{i}. <b>+{amount}⭐</b> ← {_transaction_user_html(source)}"
         elif source_type == "telegram_ad":
             line = f"{i}. <b>+{amount}⭐</b> ← Telegram Ads"
         else:
-            line = f"{i}. <b>+{amount}⭐</b> ← {source_type}"
+            line = f"{i}. <b>+{amount}⭐</b> ← {escape(source_type)}"
     else:
-        receiver = tx.get("receiver", {})
+        receiver = tx.get("receiver") or {}
         recv_type = receiver.get("type", "unknown")
         if recv_type == "user":
-            recv_name = receiver.get("first_name", f"用户{receiver.get('user_id', '?')}")
-            line = f"{i}. <b>-{abs(amount)}⭐</b> → {escape(recv_name)}"
+            line = f"{i}. <b>-{abs(amount)}⭐</b> → {_transaction_user_html(receiver)}"
         elif recv_type == "telegram_ad":
             line = f"{i}. <b>-{abs(amount)}⭐</b> → Telegram Ads"
         else:
-            line = f"{i}. <b>-{abs(amount)}⭐</b> → {recv_type}"
+            line = f"{i}. <b>-{abs(amount)}⭐</b> → {escape(recv_type)}"
 
     if date_str:
-        line += f"  <i>({date_str})</i>"
+        line += f"  <i>({escape(date_str)})</i>"
     return line
 
 
@@ -237,14 +251,14 @@ async def _get_recent_paying_users(bot, limit=8):
         seen = set()
         for tx in transactions:
             if tx.get("amount", 0) > 0:
-                source = tx.get("source", {})
+                source = tx.get("source") or {}
                 if source.get("type") == "user":
-                    uid = source.get("user_id")
+                    uid, name = _transaction_user(source)
                     if uid and uid not in seen:
                         seen.add(uid)
                         recent.append({
                             "user_id": uid,
-                            "first_name": source.get("first_name", f"用户{uid}"),
+                            "first_name": name or f"用户{uid}",
                         })
                         if len(recent) >= limit:
                             break
@@ -446,8 +460,9 @@ async def _do_send_gift(update, context, target_user_id, query=None):
             await _retry_send(update.message.reply_text, msg)
         return
 
+    recipient = user_id_html(target_user_id)
     send_msg = await (query.message if query else update.message).reply_text(
-        f"⏳ 正在发送礼物 {escape(gift_name)} 给用户 {target_user_id}..."
+        f"⏳ 正在发送礼物 {escape(gift_name)} 给用户 {recipient}...", parse_mode="HTML"
     )
 
     # 仅当礼物支持升级为 unique 时才传 pay_for_upgrade=True，
@@ -463,14 +478,14 @@ async def _do_send_gift(update, context, target_user_id, query=None):
             f"🎁 <b>礼物：</b>{escape(gift_name)}\n"
             f"⭐ <b>花费：</b>{star_count} 星星"
             + ("（已含升级为 unique 的费用）" if upgradeable else "")
-            + f"\n👤 <b>接收者 ID：</b><a href=\"tg://user?id={target_user_id}\">{target_user_id}</a>"
+            + f"\n👤 <b>接收者 ID：</b>{recipient}"
         )
         logger.info("管理员发送礼物 %s (%d⭐, upgrade=%s) 给用户 %s",
                     gift_name, star_count, upgradeable, target_user_id)
     except TelegramError as e:
         text = (
             f"❌ <b>礼物发送失败</b>\n\n"
-            f"🎁 {escape(gift_name)} -> 用户 {target_user_id}\n"
+            f"🎁 {escape(gift_name)} -> 用户 {recipient}\n"
             f"错误：{escape(str(e)[:200])}"
         )
         logger.error("发送礼物失败: %s", e)
@@ -649,8 +664,9 @@ async def _do_send_premium(update, context, target_user_id, query=None):
             await _retry_send(update.message.reply_text, msg)
         return
 
+    recipient = user_id_html(target_user_id)
     send_msg = await (query.message if query else update.message).reply_text(
-        f"⏳ 正在赠送 Premium 会员（{months} 个月）给用户 {target_user_id}..."
+        f"⏳ 正在赠送 Premium 会员（{months} 个月）给用户 {recipient}...", parse_mode="HTML"
     )
 
     try:
@@ -663,13 +679,13 @@ async def _do_send_premium(update, context, target_user_id, query=None):
             f"✅ <b>Premium 会员赠送成功！</b>\n\n"
             f"💎 <b>时长：</b>{months} 个月\n"
             f"⭐ <b>花费：</b>{stars} 星星\n"
-            f"👤 <b>接收者 ID：</b><a href=\"tg://user?id={target_user_id}\">{target_user_id}</a>"
+            f"👤 <b>接收者 ID：</b>{recipient}"
         )
         logger.info("管理员赠送 Premium %d 个月 (%d⭐) 给用户 %s", months, stars, target_user_id)
     except TelegramError as e:
         text = (
             f"❌ <b>Premium 赠送失败</b>\n\n"
-            f"💎 {months} 个月 -> 用户 {target_user_id}\n"
+            f"💎 {months} 个月 -> 用户 {recipient}\n"
             f"错误：{escape(str(e)[:200])}"
         )
         logger.error("赠送 Premium 失败: %s", e)

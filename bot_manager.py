@@ -5,6 +5,7 @@ Bot 管理器
 """
 import asyncio
 import logging
+from html import escape
 from typing import Dict, Optional
 
 from services.rate_limit import get_limiter
@@ -21,6 +22,7 @@ from db import (
     update_user_bot_status
 )
 from senders import _retry_send
+from utils import user_id_html
 from config import (
     API_READ_TIMEOUT, API_WRITE_TIMEOUT, API_CONNECT_TIMEOUT,
     BOT_MODE, WEBHOOK_HOST, WEBHOOK_PATH, WEBHOOK_PORT, WEBHOOK_SECRET,
@@ -67,9 +69,9 @@ async def _auto_stop_revoked_bot(bot_username: str, bot_data: dict):
                     if AUTO_PURGE_DEAD_BOT_DAYS > 0 else '文件记录保留，可手动 /purge 清理')
         for admin_id in ADMIN_IDS:
             await enqueue(f'revoked:{bot_db_id}:{admin_id}', admin_id,
-                f'⚠️ Bot @{bot_username} Token 已失效，所有者 {owner_id}，系统已停止该 Bot。'
+                f'⚠️ Bot @{escape(bot_username)} Token 已失效，所有者 {user_id_html(owner_id)}，系统已停止该 Bot。'
                 f'{deadline}；期内 /updatetoken 恢复原 Bot 可取消（换新 Bot 无效，'
-                '文件记录无法迁移）。')
+                '文件记录无法迁移）。', parse_mode='HTML')
     except Exception:
         logger.exception('Failed recording revoked-bot notice')
 

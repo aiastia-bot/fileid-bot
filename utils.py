@@ -4,13 +4,25 @@ import string
 import random
 import logging
 from functools import wraps
+from html import escape
 from typing import List
 
 from config import CODE_PREFIX, CODE_LENGTH
 from telegram import Update
 from telegram.ext import ContextTypes
+from telegram.helpers import mention_html
 
 logger = logging.getLogger(__name__)
+
+
+def user_id_html(user_id: int | str | None) -> str:
+    """在 Telegram HTML 正文中显示可点击的用户 ID。"""
+    if user_id is None:
+        return '—'
+    label = str(user_id)
+    if re.fullmatch(r'[1-9][0-9]*', label):
+        return mention_html(label, label)
+    return escape(label)
 
 
 def get_code_prefix(bot_username: str) -> str:

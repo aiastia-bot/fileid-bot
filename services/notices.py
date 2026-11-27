@@ -8,10 +8,10 @@ from db.core import get_session
 from db.models import UserNotice
 
 
-async def enqueue(key, user_id, body, session=None):
+async def enqueue(key, user_id, body, session=None, *, parse_mode=None):
     if session is None:
         async with get_session() as own_session:
-            await enqueue(key, user_id, body, own_session)
+            await enqueue(key, user_id, body, own_session, parse_mode=parse_mode)
             try:
                 await own_session.commit()
             except IntegrityError:
@@ -23,6 +23,7 @@ async def enqueue(key, user_id, body, session=None):
                 key=key,
                 user_id=user_id,
                 body=body,
+                parse_mode=parse_mode,
                 state="pending",
                 available_at=0,
                 attempts=0,
@@ -47,8 +48,8 @@ async def deliver(bot):
             .scalars()
             .all()
         )
-        jobs = [(r.key, r.user_id, r.body, r.attempts) for r in rows]
-    for key, uid, body, attempts in jobs:
+        jobs = [(r.key, r.user_id, r.body, r.attempts, r.parse_mode) for r in rows]
+    for key, uid, body, attempts, parse_mode in jobs:
         async with get_session() as session:
             claim = await session.execute(
                 update(UserNotice)
@@ -67,7 +68,8 @@ async def deliver(bot):
             if not claim.rowcount:
                 continue
         try:
-            await bot.send_message(chat_id=uid, text=body)
+            kwargs = {"parse_mode": parse_mode} if parse_mode else {}
+            await bot.send_message(chat_id=uid, text=body, **kwargs)
             state, delay = "completed", 0
         except Forbidden:
             state, delay = "blocked", 0

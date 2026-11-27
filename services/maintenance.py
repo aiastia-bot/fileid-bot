@@ -2,10 +2,12 @@
 
 import logging
 import time
+from html import escape
 from sqlalchemy import delete
 from config import DATA_RETENTION_DAYS
 from db.core import get_session
 from db.models import UpdateInbox, SendJob
+from utils import user_id_html
 
 logger = logging.getLogger(__name__)
 
@@ -117,12 +119,12 @@ async def auto_purge_dead_bots() -> int:
             await enqueue(f'autopurge:{bot_db_id}:{result["deleted_files"]}',
                           owner_id, body)
         for admin_id in ADMIN_IDS:
-            admin_body = (f"🧹 自动清理：@{username} (主人 {owner_id}) "
+            admin_body = (f"🧹 自动清理：@{escape(username)} (主人 {user_id_html(owner_id)}) "
                           f"文件记录 {result['deleted_files']} 条")
             if result.get('repointed_items'):
                 admin_body += f"，改挂备份副本 {result['repointed_items']} 项"
             await enqueue(f'autopurge_admin:{bot_db_id}:{admin_id}',
-                          admin_id, admin_body)
+                          admin_id, admin_body, parse_mode='HTML')
         logger.info("自动清理死亡 Bot @%s (db_id=%s): %s", username, bot_db_id, result)
     return purged
 
