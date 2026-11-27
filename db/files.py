@@ -8,7 +8,7 @@ from typing import Optional, List, Dict
 from sqlalchemy import select, update, delete, func, or_, text, tuple_
 
 from db.core import get_session, _model_to_dict
-from db.models import FileMapping, Collection
+from db.models import FileMapping, Collection, UserBot
 
 logger = logging.getLogger(__name__)
 
@@ -413,9 +413,9 @@ async def purge_bot_files(bot_db_id: int, batch_size: int = 5000) -> Dict:
     """永久删除某个 Bot 的全部文件记录
 
     分批删除避免长事务/锁表；bot_file_counts 由数据库触发器自动归零。
-    集合项按「有无跨 Bot 备份副本」分流：引用的代码在其他 Bot 上仍有同
-    file_unique_id 的有效副本时，把集合项改挂到副本的代码（文件跨 Bot
-    仍可取回，集合不丢入口）；彻底无副本的才移除集合项并校准 file_count。
+    集合项按「有无同主人副本」分流：同一主人名下的其他 Bot 有同
+    file_unique_id 的有效副本时，把集合项改挂到副本的代码；没有可用副本时
+    移除集合项并校准 file_count。
     返回 {deleted_files, removed_items, repointed_items, fixed_collections}。
     """
     from db.models import CollectionItem
@@ -520,13 +520,19 @@ async def purge_bot_files(bot_db_id: int, batch_size: int = 5000) -> Dict:
 
 async def _backup_codes_by_unique(session, uniques: set,
                                   exclude_bot_db_id: int) -> Dict:
-    """file_unique_id → 其他 Bot 上有效副本的代码（多副本取 id 最小的，稳定）"""
+    """file_unique_id → 同主人其他 Bot 上有效副本的代码（多副本取 id 最小的）"""
     if not uniques:
         return {}
+    source_owner = (select(UserBot.owner_id)
+                    .where(UserBot.id == exclude_bot_db_id)
+                    .correlate(None)
+                    .scalar_subquery())
     rows = (await session.execute(
         select(FileMapping.file_unique_id, FileMapping.code)
+        .join(UserBot, FileMapping.bot_db_id == UserBot.id)
         .where(FileMapping.file_unique_id.in_(uniques),
                FileMapping.bot_db_id != exclude_bot_db_id,
+               UserBot.owner_id == source_owner,
                or_(FileMapping.is_valid.is_(None), FileMapping.is_valid == 1))
         .order_by(FileMapping.id)
     )).all()

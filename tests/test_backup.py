@@ -355,6 +355,45 @@ class TestPurgeDeadBot(unittest.IsolatedAsyncioTestCase):
         assert len(files_b) == 2 and missing_b == 0
         assert all(f['bot_db_id'] == self.b for f in files_b)
 
+    async def test_purge_does_not_repoint_to_another_owners_bot(self):
+        from db import purge_bot_files
+        from db.collections import get_collection_files
+
+        other_bot = await _add_bot(200, 333, 'otherbot')
+        source_code = await save_file(1, 'document', 'FID_SOURCE', 100, 'uniq-other',
+                                      'backupa', 'backupa', bot_db_id=self.a)
+        other_code = await save_file(2, 'document', 'FID_OTHER', 100, 'uniq-other',
+                                     'otherbot', 'otherbot', bot_db_id=other_bot)
+        await self._make_collection('col_purge_other_owner', [source_code])
+
+        result = await purge_bot_files(self.a)
+
+        assert result['deleted_files'] == 1
+        assert result['repointed_items'] == 0
+        assert result['removed_items'] == 1
+        assert not await get_collection_files('col_purge_other_owner')
+        assert await get_files_by_codes([other_code], other_bot)
+
+    async def test_purge_repoints_to_same_owner_even_with_older_cross_owner_copy(self):
+        from db import purge_bot_files
+        from db.collections import get_collection_files
+
+        other_bot = await _add_bot(200, 333, 'otherbot')
+        await save_file(2, 'document', 'FID_OTHER', 100, 'uniq-both',
+                        'otherbot', 'otherbot', bot_db_id=other_bot)
+        same_owner_code = await save_file(0, 'document', 'FID_BACKUP', 100, 'uniq-both',
+                                          'backupb', 'backupb', bot_db_id=self.b)
+        source_code = await save_file(1, 'document', 'FID_SOURCE', 100, 'uniq-both',
+                                      'backupa', 'backupa', bot_db_id=self.a)
+        await self._make_collection('col_purge_both_owners', [source_code])
+
+        result = await purge_bot_files(self.a)
+
+        assert result['repointed_items'] == 1
+        assert result['removed_items'] == 0
+        files = await get_collection_files('col_purge_both_owners')
+        assert [f['code'] for f in files] == [same_owner_code]
+
     async def test_purge_skips_repoint_when_backup_code_already_in_collection(self):
         """集合里已挂着同一副本的项：移除冗余项而非改挂出重复"""
         from db import purge_bot_files
