@@ -264,6 +264,7 @@ class UserNotice(Base):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger)
     body: Mapped[str] = mapped_column(Text)
+    parse_mode: Mapped[str | None] = mapped_column(String(16))
     state: Mapped[str] = mapped_column(String(16), default='pending', index=True)
     available_at: Mapped[int] = mapped_column(BigInteger, default=0)
     attempts: Mapped[int] = mapped_column(Integer, default=0)

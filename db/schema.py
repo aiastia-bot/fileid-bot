@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 from sqlalchemy import inspect, select, text
 from sqlalchemy.schema import CreateColumn
-from db.models import Base, SchemaVersion, UpdateInbox
+from db.models import Base, SchemaVersion, UpdateInbox, UserNotice
 
 
 async def upgrade(conn):
@@ -83,20 +83,27 @@ async def upgrade(conn):
             )
         )
     if 6 not in applied:
-        await conn.run_sync(_add_inbox_conversation_key)
+        await conn.run_sync(_add_column_if_missing, UpdateInbox.__table__.c.conversation_key)
         await _backfill_pending_inbox(conn)
         await conn.execute(
             SchemaVersion.__table__.insert().values(
                 version=6, applied_at=datetime.now().isoformat(timespec="seconds")
             )
         )
+    if 7 not in applied:
+        await conn.run_sync(_add_column_if_missing, UserNotice.__table__.c.parse_mode)
+        await conn.execute(
+            SchemaVersion.__table__.insert().values(
+                version=7, applied_at=datetime.now().isoformat(timespec="seconds")
+            )
+        )
 
 
-def _add_inbox_conversation_key(conn):
-    column = UpdateInbox.__table__.c.conversation_key
-    if column.name not in {c['name'] for c in inspect(conn).get_columns('update_inbox')}:
+def _add_column_if_missing(conn, column):
+    table_name = column.table.name
+    if column.name not in {c['name'] for c in inspect(conn).get_columns(table_name)}:
         ddl = CreateColumn(column).compile(dialect=conn.dialect)
-        conn.execute(text(f'ALTER TABLE update_inbox ADD COLUMN {ddl}'))
+        conn.execute(text(f'ALTER TABLE {table_name} ADD COLUMN {ddl}'))
 
 
 async def _backfill_pending_inbox(conn):

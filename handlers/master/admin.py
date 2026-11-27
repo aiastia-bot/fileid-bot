@@ -30,6 +30,7 @@ from db import (
     update_user_vip, get_user_vip_info,
 )
 from handlers.master._utils import get_bot_manager, escape, run_background_operation
+from utils import user_id_html
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,7 @@ async def _platform_bots_page(status: str, page: int = 1, *, sort: str = 'name')
             f"{index}. <b>{name or username}</b> · {state}\n"
             f"{username} · Bot ID <code>{bot['bot_id'] or '—'}</code>"
             f" · DB ID <code>{bot['id']}</code>\n"
-            f"所有者 <a href=\"tg://user?id={owner_id}\">{owner_id}</a>"
+            f"所有者 {user_id_html(owner_id)}"
             f" · 创建 {escape(bot['created_at'][:19]) or '—'}\n"
             f"文件 {bot['file_count']:,} · 今日 +{bot['today_file_count']:,}"
             f" · 集合 {bot['col_count']:,} · 用户 {bot['user_count']:,}"
@@ -516,7 +517,9 @@ async def start_bot_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     if bot_record['status'] == 'banned':
         await _retry_send(update.message.reply_text, 
             f"🚫 Bot @{escape(bot_record['bot_username'])} 已被封禁，无法启动。\n"
-            f"使用 /blacklist del {bot_record['owner_id']} 解除封禁。"
+            f"👤 所有者：{user_id_html(bot_record['owner_id'])}\n"
+            f"使用 <code>/blacklist del {bot_record['owner_id']}</code> 解除封禁。",
+            parse_mode="HTML"
         )
         return
 
@@ -550,7 +553,7 @@ async def _finish_admin_bot_start(update, bot_db_id):
             f"✅ <b>Bot {action_text}成功！</b>\n\n"
             f"🤖 @{escape(bot_record['bot_username'])}\n"
             f"🆔 Bot ID：<code>{bot_record['bot_id']}</code>\n"
-            f"👤 所有者：<a href=\"tg://user?id={bot_record['owner_id']}\">{bot_record['owner_id']}</a>"
+            f"👤 所有者：{user_id_html(bot_record['owner_id'])}"
         )
         logger.info("管理员 %s %s了 Bot @%s", user_id, action_text, bot_record['bot_username'])
     else:
@@ -644,7 +647,7 @@ async def _stop_bot_for_admin(update, bot_db_id, user_id):
             f"✅ <b>Bot 已停止</b>\n\n"
             f"🤖 @{escape(bot_record['bot_username'])}\n"
             f"🆔 Bot ID：<code>{bot_record['bot_id']}</code>\n"
-            f"👤 所有者：<a href=\"tg://user?id={bot_record['owner_id']}\">{bot_record['owner_id']}</a>\n\n"
+            f"👤 所有者：{user_id_html(bot_record['owner_id'])}\n\n"
             f"💡 使用 <code>/startbot @{escape(bot_record['bot_username'])}</code> 可重新启动。",
             parse_mode="HTML"
         )
@@ -766,10 +769,10 @@ async def _broadcast_via_user_bots(update: Update, context: ContextTypes.DEFAULT
                 parse_mode="HTML"
             )
             total_success += 1
-            bot_results.append(f"✅ @{escape(bot_username)} → 主人 <a href=\"tg://user?id={owner_id}\">{owner_id}</a>")
+            bot_results.append(f"✅ @{escape(bot_username)} → 主人 {user_id_html(owner_id)}")
         except Exception as e:
             total_fail += 1
-            bot_results.append(f"❌ @{escape(bot_username)} → 主人 <a href=\"tg://user?id={owner_id}\">{owner_id}</a>: {escape(str(e)[:60])}")
+            bot_results.append(f"❌ @{escape(bot_username)} → 主人 {user_id_html(owner_id)}: {escape(str(e)[:60])}")
 
     # 汇总结果发送给管理员
     result_lines = "\n".join(bot_results)

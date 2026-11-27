@@ -7,7 +7,8 @@ from config import ADMIN_IDS
 from db.core import get_session
 from db.models import MembershipAudit, PaymentOrder, UpdateInbox, SendJob
 from db.vip import get_user_vip_info, get_all_vip_users
-from handlers.master._utils import run_background_operation
+from handlers.master._utils import escape, run_background_operation
+from utils import user_id_html
 from senders import _retry_send, send_later
 from services.membership import get_plans, set_plan, adjust_member
 from services.entitlements import reconcile_user, reconcile_all
@@ -20,6 +21,30 @@ async def reply(update, text):
         await _retry_send(
             update.effective_message.reply_text, text[offset : offset + 3900]
         )
+
+
+async def reply_html_rows(update, rows, empty):
+    """按完整行打包；过长的纯文本详情在转义前切分，避免切断链接或实体。"""
+    limit = 3900
+    page = ''
+
+    async def append(part):
+        nonlocal page
+        if page and len(page) + len(part) + 1 > limit:
+            await _retry_send(update.effective_message.reply_text, page, parse_mode='HTML')
+            page = ''
+        page = f'{page}\n{part}' if page else part
+
+    for prefix, detail in rows:
+        line = prefix + escape(detail)
+        if len(line) <= limit:
+            await append(line)
+        else:
+            await append(prefix)
+            # escape(quote=False) 最多把一个字符展开成 5 个字符。
+            for offset in range(0, len(detail), limit // 5):
+                await append(escape(detail[offset : offset + limit // 5]))
+    await _retry_send(update.effective_message.reply_text, page or empty, parse_mode='HTML')
 
 
 def authorized(update):
@@ -94,22 +119,18 @@ async def setvip_command(update, context):
             )
             return
         if args[0] == "info":
-            await reply(
-                update,
-                json.dumps(
-                    await get_user_vip_info(int(args[1])), ensure_ascii=False, indent=2
-                ),
-            )
+            info = await get_user_vip_info(int(args[1]))
+            await _retry_send(update.effective_message.reply_text,
+                              f"👤 用户：{user_id_html(info['user_id'])}", parse_mode='HTML')
+            await reply(update, json.dumps(info, ensure_ascii=False, indent=2))
             return
         if args[0] == "list":
             users = await get_all_vip_users()
-            await reply(
+            await reply_html_rows(
                 update,
-                "\n".join(
-                    f"{u['user_id']} | 等级{u['vip_level']} | {u['vip_expire_at'] or '永久'}"
-                    for u in users
-                )
-                or "暂无会员",
+                ((user_id_html(u['user_id']), f" | 等级{u['vip_level']} | {u['vip_expire_at'] or '永久'}")
+                 for u in users),
+                "暂无会员",
             )
             return
         uid, level = int(args[0]), int(args[1])
@@ -136,13 +157,12 @@ async def vipadmin_command(update, context):
         action = args[0]
         if action == "orders":
             rows = await list_orders(int(args[1]) if len(args) > 1 else None)
-            await reply(
+            await reply_html_rows(
                 update,
-                "\n".join(
-                    f"{r['payload']} | {r['user_id']} | {r['product']} | {r['amount']}⭐ | {r['status']} | {r['error']}"
-                    for r in rows
-                )
-                or "暂无订单",
+                ((f"{escape(r['payload'])} | {user_id_html(r['user_id'])}",
+                  f" | {r['product']} | {r['amount']}⭐ | {r['status']} | {r['error']}")
+                 for r in rows),
+                "暂无订单",
             )
             return
         if action == "history":
@@ -160,14 +180,13 @@ async def vipadmin_command(update, context):
                     .scalars()
                     .all()
                 )
-                await reply(
-                    update,
-                    "\n".join(
-                        f"{r.created_at} | 操作者{r.actor_id} | {r.action}\n{r.before} → {r.after}\n原因：{r.reason}"
-                        for r in rows
-                    )
-                    or "暂无调整记录",
-                )
+            await reply_html_rows(
+                update,
+                ((f"{escape(r.created_at)} | 操作者 {user_id_html(r.actor_id)}",
+                  f" | {r.action}\n{r.before} → {r.after}\n原因：{r.reason}")
+                 for r in rows),
+                "暂无调整记录",
+            )
             return
         if action in ("retry", "resolve"):
             order = await get_order(args[1])
