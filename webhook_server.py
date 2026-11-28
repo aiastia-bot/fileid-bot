@@ -46,6 +46,10 @@ def _build_on_startup(application: Application, bot_manager: BotManager,
             url=f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}/master",
             secret_token=WEBHOOK_SECRET, allowed_updates=list(Update.ALL_TYPES)+['managed_bot'],
             drop_pending_updates=False)
+        from services.panel import panel_enabled, sync_admin_menu_buttons
+        if panel_enabled():
+            from config import ADMIN_IDS
+            await sync_admin_menu_buttons(application.bot, ADMIN_IDS)
         bot_manager._loading = True
         async def load():
             try:
@@ -157,6 +161,10 @@ def _run_webhook_server(application: Application, bot_manager: BotManager,
     # 健康检查
     from services.health import add_health_routes
     add_health_routes(web_app, bot_manager)
+    # 管理面板（Telegram Mini App，只读）
+    from config import ADMIN_IDS, BOT_TOKEN
+    from services.panel import add_panel_routes
+    add_panel_routes(web_app, BOT_TOKEN, ADMIN_IDS)
 
     web_app.on_startup.append(_build_on_startup(application, bot_manager, scheduler, role))
     web_app.on_shutdown.append(_build_on_shutdown(application, bot_manager))

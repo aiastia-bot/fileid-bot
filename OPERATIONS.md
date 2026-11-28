@@ -17,6 +17,15 @@ MySQL 跨机器部署必须共享同一个数据库。迁移账号需要建表�
 
 回滚程序前应停止所有新进程并恢复升级前的完整数据库备份，不能只把程序切回旧版；旧版不了解新版任务和订单状态。
 
+## 管理面板（Telegram Mini App，只读）
+
+面板挂在与 webhook 相同的 HTTPS 域名下（默认 `https://<WEBHOOK_HOST>/panel/`，`PANEL_PATH` 可改或置空禁用）。反代需把该路径转发到应用端口——现有反代按整域转发时无需改动。
+
+- **进入方式**：`/platform` Bot 列表和 `/setvip`/`/vipadmin` 帮助回复里的「🖥 管理面板」按钮；启动时还会给每位管理员私聊设置菜单按钮（同时完成 Telegram 的 Mini App 域名关联，不设全局默认菜单）。
+- **安全模型**：只读。API 用 Telegram `initData` HMAC 验签（Bot Token 参与），且要求发起人 ID 在 `ADMIN_IDS` 内；无凭据、过期（24 小时）或非管理员的请求一律 401。静态页不含任何数据。
+- **内容**：平台统计、Bot 列表（状态筛选 + 分页）、用户查询（会员信息 + 名下 Bot 分类统计）、兑换码列表。写操作后续版本再加。
+- Worker 角色不挂面板；standalone 轮询模式同样可用。
+
 ## 接入自建 Telegram Bot API
 
 先部署 [Telegram Bot API Server](https://github.com/tdlib/telegram-bot-api)，确认 FileID Bot 容器能访问它。用 Docker 部署时可以将两个服务接入同一个私有网络。跨主机部署时给 API 服务配置受控的 HTTPS 入口。

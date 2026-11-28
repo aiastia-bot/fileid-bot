@@ -19,12 +19,24 @@ from services.entitlements import reconcile_user, reconcile_all
 from services.payments import list_orders, get_order, now_text
 
 
-async def reply(update, text):
+async def reply(update, text, markup=None):
     # Keep per-message output below Telegram's limit; use plain text for JSON.
-    for offset in range(0, len(text), 3900):
-        await _retry_send(
-            update.effective_message.reply_text, text[offset : offset + 3900]
-        )
+    chunks = [text[offset : offset + 3900] for offset in range(0, len(text), 3900)]
+    for index, chunk in enumerate(chunks):
+        if markup and index == len(chunks) - 1:
+            await _retry_send(update.effective_message.reply_text, chunk,
+                              reply_markup=markup)
+        else:
+            await _retry_send(update.effective_message.reply_text, chunk)
+
+
+def panel_markup():
+    """管理员帮助回复末尾附面板入口按钮；未启用时返回 None"""
+    from services.panel import entry_button
+    from telegram import InlineKeyboardMarkup
+
+    button = entry_button()
+    return InlineKeyboardMarkup([[button]]) if button else None
 
 
 async def reply_html_rows(update, rows, empty):
@@ -124,6 +136,7 @@ async def setvip_command(update, context):
                 "/vipadmin revoke 码|批次 [原因]（作废待兑换码）\n"
                 "/vipadmin retry 订单号（仅重新核验，不会重发结果不明的Premium）\n"
                 "/vipadmin resolve 订单号 completed|refunded 原因（人工核对后登记结果）\n/setplan 查看和调整套餐",
+                panel_markup(),
             )
             return
         if args[0] == "info":

@@ -72,6 +72,10 @@ WEBHOOK_PORT = int(os.environ.get('WEBHOOK_PORT', '8080'))  # 本地监听端口
 WEBHOOK_PATH = os.environ.get('WEBHOOK_PATH', '/webhook')  # URL 基路径
 WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', '')  # 可选的 webhook secret token
 
+# ===== 管理面板（Telegram Mini App，只读） =====
+# 挂在 webhook 同一 HTTPS 域名下；置空（PANEL_PATH=）禁用
+PANEL_PATH = os.environ.get('PANEL_PATH', '/panel')
+
 # ===== 群组支持 =====
 ALLOW_GROUP = os.environ.get('ALLOW_GROUP', 'false').lower() in ('true', '1', 'yes')  # 是否允许群组使用（默认仅私聊）
 

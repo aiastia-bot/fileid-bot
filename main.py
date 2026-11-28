@@ -467,6 +467,10 @@ def _run_polling(application: Application):
         from services.health import add_health_routes
         health_app = web.Application()
         add_health_routes(health_app, app.bot_data['bot_manager'])
+        from config import ADMIN_IDS, BOT_TOKEN
+        from services.panel import add_panel_routes, sync_admin_menu_buttons
+        add_panel_routes(health_app, BOT_TOKEN, ADMIN_IDS)
+        await sync_admin_menu_buttons(app.bot, ADMIN_IDS)
         runner = web.AppRunner(health_app)
         await runner.setup()
         await web.TCPSite(runner, '0.0.0.0', WEBHOOK_PORT).start()

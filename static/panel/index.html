@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<title>管理面板</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, 'PingFang SC', 'Segoe UI', Roboto, sans-serif;
+    background: var(--tg-theme-bg-color, #fff);
+    color: var(--tg-theme-text-color, #000);
+    padding: 12px 12px calc(20px + env(safe-area-inset-bottom));
+    font-size: 14px;
+  }
+  h1 { font-size: 17px; margin-bottom: 10px; }
+  h2 { font-size: 15px; margin: 14px 0 8px; }
+  .card {
+    background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+    border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+  }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .stat .num { font-size: 17px; font-weight: 600; }
+  .stat .label { font-size: 11px; opacity: .65; margin-top: 2px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .chip {
+    border: 1px solid var(--tg-theme-hint-color, #999); border-radius: 14px;
+    padding: 4px 10px; font-size: 12px; cursor: pointer; user-select: none;
+  }
+  .chip.on {
+    background: var(--tg-theme-button-color, #2481cc);
+    color: var(--tg-theme-button-text-color, #fff);
+    border-color: transparent;
+  }
+  .row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; font-size: 13px; }
+  .row .k { opacity: .65; white-space: nowrap; }
+  .row .v { text-align: right; word-break: break-all; }
+  .botline { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+  .botline .name { font-weight: 600; word-break: break-all; }
+  .botline .sub { opacity: .6; font-size: 11px; }
+  .pill { font-size: 11px; opacity: .8; white-space: nowrap; }
+  .muted { opacity: .6; font-size: 12px; padding: 4px 0; }
+  .bar { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  button, input {
+    font: inherit; color: inherit;
+    background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+    border: 1px solid var(--tg-theme-hint-color, #999);
+    border-radius: 8px; padding: 6px 12px;
+  }
+  input { flex: 1; min-width: 0; }
+  button.primary {
+    background: var(--tg-theme-button-color, #2481cc);
+    color: var(--tg-theme-button-text-color, #fff); border: none;
+  }
+  button:disabled { opacity: .45; }
+  .error { color: var(--tg-theme-destructive-text-color, #d33); font-size: 12px; padding: 4px 0; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <h1>🖥 管理面板</h1>
+  <div id="gate" class="muted">正在连接…</div>
+  <div id="app" class="hidden">
+
+    <h2>📊 平台概览</h2>
+    <div class="grid" id="stats"></div>
+    <div class="bar"><button id="refresh" class="primary">刷新</button><span class="muted" id="updated"></span></div>
+
+    <h2>🤖 Bot 列表</h2>
+    <div class="chips" id="botFilters"></div>
+    <div id="botList"></div>
+    <div class="bar">
+      <button id="botPrev">‹ 上一页</button>
+      <span class="muted" id="botPage"></span>
+      <button id="botNext">下一页 ›</button>
+    </div>
+
+    <h2>👤 用户查询</h2>
+    <div class="bar">
+      <input id="uidInput" type="number" inputmode="numeric" placeholder="用户 ID">
+      <button id="uidGo" class="primary">查询</button>
+    </div>
+    <div id="userResult"></div>
+
+    <h2>🎟 兑换码</h2>
+    <div class="chips" id="codeFilters"></div>
+    <div id="codeList"></div>
+  </div>
+
+<script>
+'use strict';
+const tg = window.Telegram.WebApp || {};
+const API = (window.location.pathname.replace(/\/$/, '')) + '/api';
+const BOT_FILTERS = [['all', '全部'], ['active', '活跃'], ['revoked', 'Token 失效'], ['banned', '封禁']];
+const CODE_FILTERS = [['pending', '待兑换'], ['used', '已兑换'], ['cancelled', '已作废'], ['all', '全部']];
+
+const state = { botStatus: 'all', botPage: 1, lastPage: 1, codeStatus: 'pending' };
+
+function headers() { return { 'X-Telegram-Init-Data': tg.initData || '' }; }
+
+async function api(path) {
+  const response = await fetch(API + path, { headers: headers() });
+  const data = await response.json().catch(() => ({ error: 'bad response' }));
+  if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
+  return data;
+}
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function kv(container, key, value) {
+  const line = el('div', 'row');
+  line.append(el('span', 'k', key), el('span', 'v', value));
+  container.append(line);
+}
+
+function fmt(n) { return Number(n || 0).toLocaleString('en-US'); }
+
+function setStatus(container, message) {
+  container.replaceChildren(el('div', 'muted', message));
+}
+
+async function loadStats() {
+  const grid = document.getElementById('stats');
+  setStatus(grid, '加载中…');
+  try {
+    const stats = await api('/stats');
+    grid.replaceChildren();
+    for (const [label, value] of [
+      ['运行中', stats.running_bots], ['活跃 Bot', stats.bot_count], ['Bot 总数', stats.total_bots],
+      ['用户数', stats.owner_count], ['文件数', fmt(stats.file_count)],
+      ['集合数', fmt(stats.col_count)], ['黑名单', stats.blacklist_count],
+    ]) {
+      const card = el('div', 'card stat');
+      card.append(el('div', 'num', fmt(value)), el('div', 'label', label));
+      grid.append(card);
+    }
+    document.getElementById('updated').textContent =
+      '更新于 ' + new Date().toLocaleTimeString('zh-CN');
+  } catch (error) { setStatus(grid, '加载失败：' + error.message); }
+}
+
+async function loadBots() {
+  const list = document.getElementById('botList');
+  setStatus(list, '加载中…');
+  try {
+    const data = await api(`/bots?status=${state.botStatus}&page=${state.botPage}`);
+    state.lastPage = data.last_page;
+    list.replaceChildren();
+    if (!data.bots.length) { setStatus(list, '暂无符合条件的 Bot'); }
+    for (const bot of data.bots) {
+      const card = el('div', 'card');
+      const line = el('div', 'botline');
+      line.append(
+        el('span', 'name', (bot.firstname || '') + ' @' + (bot.username || '—')),
+        el('span', 'pill', bot.status_label));
+      card.append(line);
+      card.append(el('div', 'sub',
+        `主人 ${bot.owner_id} · 文件 ${fmt(bot.file_count)} · DB ${bot.id} · 创建 ${bot.created_at}`
+        + (bot.node_id ? ` · 节点 ${bot.node_id}` : '')));
+      list.append(card);
+    }
+    const pageText = document.getElementById('botPage');
+    pageText.textContent = `第 ${data.page}/${data.last_page} 页 · 共 ${fmt(data.total)}`;
+    document.getElementById('botPrev').disabled = data.page <= 1;
+    document.getElementById('botNext').disabled = data.page >= data.last_page;
+  } catch (error) { setStatus(list, '加载失败：' + error.message); }
+}
+
+async function loadUser(uid) {
+  const box = document.getElementById('userResult');
+  setStatus(box, '查询中…');
+  try {
+    const data = await api('/user/' + encodeURIComponent(uid));
+    const vip = data.vip;
+    box.replaceChildren();
+    const info = el('div', 'card');
+    kv(info, '用户 ID', uid);
+    kv(info, '会员', `${vip.vip_name}（等级 ${vip.vip_level}）`);
+    kv(info, '到期', vip.vip_expire_at ? vip.vip_expire_at + (vip.is_active ? '' : '（已过期）') : '永久');
+    kv(info, '配额', `${vip.max_bots} 个 Bot`);
+    box.append(info);
+    const botsCard = el('div', 'card');
+    const counts = data.counts || {};
+    botsCard.append(el('div', 'botline', el('span', 'name',
+      `名下 Bot 共 ${data.bots.length} 个`)));
+    botsCard.append(el('div', 'sub',
+      `活跃 ${counts.active || 0} · 暂停 ${counts.paused || 0} · 已删除 ${counts.deleted || 0}`));
+    box.append(botsCard);
+    for (const bot of data.bots) {
+      const card = el('div', 'card');
+      const line = el('div', 'botline');
+      line.append(el('span', 'name', '@' + (bot.username || '—')),
+                  el('span', 'pill', bot.status_label));
+      card.append(line);
+      card.append(el('div', 'sub', `DB ${bot.id} · 创建 ${bot.created_at}`));
+      box.append(card);
+    }
+  } catch (error) { setStatus(box, '查询失败：' + error.message); }
+}
+
+async function loadCodes() {
+  const list = document.getElementById('codeList');
+  setStatus(list, '加载中…');
+  try {
+    const data = await api('/codes?status=' + state.codeStatus);
+    list.replaceChildren();
+    if (!data.codes.length) { setStatus(list, '暂无兑换码'); return; }
+    for (const code of data.codes) {
+      const card = el('div', 'card');
+      card.append(el('div', 'botline',
+        el('span', 'name', code.code), el('span', 'pill', code.status)));
+      const months = code.months === 0 ? '永久' : code.months + '个月';
+      card.append(el('div', 'sub',
+        `等级 ${code.vip_level} · ${months} · 批次 ${code.batch}`
+        + (code.redeemed_by ? ` · 已兑 ${code.redeemed_by}` : '')
+        + (code.expires_at ? ` · 有效期至 ${code.expires_at}` : '')));
+      list.append(card);
+    }
+  } catch (error) { setStatus(list, '加载失败：' + error.message); }
+}
+
+function buildChips(containerId, options, current, onPick) {
+  const box = document.getElementById(containerId);
+  box.replaceChildren();
+  for (const [value, label] of options) {
+    const chip = el('span', 'chip' + (value === current ? ' on' : ''), label);
+    chip.onclick = () => { onPick(value); buildChips(containerId, options, value, onPick); };
+    box.append(chip);
+  }
+}
+
+function init() {
+  try { tg.ready(); tg.expand(); } catch (e) { /* 非 Telegram 环境 */ }
+  const gate = document.getElementById('gate');
+  if (!tg.initData) {
+    gate.textContent = '请从 Telegram 中打开本页面（管理员命令回复里的「🖥 管理面板」按钮）。';
+    return;
+  }
+  gate.classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+
+  buildChips('botFilters', BOT_FILTERS, state.botStatus,
+             value => { state.botStatus = value; state.botPage = 1; loadBots(); });
+  buildChips('codeFilters', CODE_FILTERS, state.codeStatus,
+             value => { state.codeStatus = value; loadCodes(); });
+  document.getElementById('botPrev').onclick = () => { state.botPage--; loadBots(); };
+  document.getElementById('botNext').onclick = () => { state.botPage++; loadBots(); };
+  document.getElementById('refresh').onclick = loadStats;
+  const runQuery = () => {
+    const uid = document.getElementById('uidInput').value.trim();
+    if (uid) loadUser(uid);
+  };
+  document.getElementById('uidGo').onclick = runQuery;
+  document.getElementById('uidInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') runQuery();
+  });
+
+  loadStats();
+  loadBots();
+  loadCodes();
+}
+
+init();
+</script>
+</body>
+</html>

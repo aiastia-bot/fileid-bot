@@ -159,6 +159,10 @@ async def _platform_bots_page(status: str, page: int = 1, *, sort: str = 'name')
             )
             for number in pages
         ])
+    from services.panel import entry_button
+    entry = entry_button()
+    if entry:
+        keyboard.append([entry])
     keyboard.append(filters)
     keyboard.append([
         InlineKeyboardButton(
