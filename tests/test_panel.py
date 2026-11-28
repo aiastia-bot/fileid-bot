@@ -50,6 +50,7 @@ async def client(monkeypatch, tmp_path):
     monkeypatch.setattr(panel, '_static_dir', lambda: tmp_path)
     (tmp_path / 'index.html').write_text('<html>panel</html>')
     (tmp_path / 'app.js').write_text('//app')
+    (tmp_path / 'styles.css').write_text('body{}')
     (tmp_path / 'vendor').mkdir()
     (tmp_path / 'vendor' / 'vue.global.prod.js').write_text('//vue')
     monkeypatch.setattr('services.runtime.manager', None, raising=False)
@@ -205,10 +206,14 @@ async def test_api_vips_and_orders(client, seeded_bot):
 
 
 async def test_static_assets_served(client):
-    app_js = await client.get('/panel/app.js')
-    assert app_js.status == 200 and 'app' in await app_js.text()
-    vue = await client.get('/panel/vendor/vue.global.prod.js')
-    assert vue.status == 200
+    for path in ('/panel', '/panel/', '/panel/app.js',
+                 '/panel/vendor/vue.global.prod.js', '/panel/styles.css'):
+        response = await client.get(path)
+        assert response.status == 200
+        assert response.headers['Cache-Control'] == 'no-cache'
+    assert 'panel' in await (await client.get('/panel')).text()
+    assert (await client.get('/panel/api/stats')).status == 401  # 静态通配不拦截 API
+    assert (await client.get('/panel/../../etc/passwd')).status in (404, 400)
 
 
 async def test_write_endpoints_auth_validation_and_success(client, seeded_bot):

@@ -340,3 +340,4 @@ Vue.createApp({
     this.loadOrders();
   },
 }).mount('#app');
+window.__panelBooted = true;

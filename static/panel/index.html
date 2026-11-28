@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=4">
 <title>管理面板</title>
 </head>
 <body>
@@ -316,7 +316,19 @@
     </div>
   </template>
 </div>
-<script src="vendor/vue.global.prod.js"></script>
-<script src="app.js"></script>
+<script src="vendor/vue.global.prod.js?v=4"></script>
+<script src="app.js?v=4"></script>
+<script>
+  // 自检：加载完成后 app.js 会置 __panelBooted；缺失说明资源被缓存/加载失败
+  window.addEventListener('load', () => {
+    setTimeout(() => {
+      if (!window.__panelBooted) {
+        const box = document.getElementById('fatal');
+        box.style.display = 'block';
+        box.textContent = '⚠️ 资源加载异常（可能缓存了旧文件）。请点小程序右上角 ⋮ 选择「重新加载」，或退出小程序后重新打开。';
+      }
+    }, 2500);
+  });
+</script>
 </body>
 </html>

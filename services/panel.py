@@ -32,6 +32,8 @@ GIFT_SEND_DELAY = 0.3  # 批量私信间隔（秒），防触发限流
 PANEL_CODE_STATUSES = ('pending', 'used', 'cancelled', 'all')
 PANEL_FILE_TYPES = ('photo', 'video', 'document', 'audio', 'voice', 'animation')
 PANEL_FILE_SORTS = ('new', 'old', 'size')
+# 前端资源版本号：发版时递增，配合 Cache-Control: no-cache 防 webview 缓存旧文件
+PANEL_ASSET_VERSION = '4'
 
 _STATUS_LABELS = {
     'active': '🟢 运行中', 'paused': '⏸ 暂停', 'revoked': '⚠️ Token 失效',
@@ -112,7 +114,8 @@ def add_panel_routes(app: web.Application, bot_token: str, admin_ids) -> None:
             return _json({'error': 'panel not built'}, 404)
         return web.Response(body=index_file.read_bytes(), content_type='text/html',
                             charset='utf-8',
-                            headers={'Content-Security-Policy': FRAME_ANCESTORS})
+                            headers={'Content-Security-Policy': FRAME_ANCESTORS,
+                                     'Cache-Control': 'no-cache'})
 
     async def stats_handler(request):
         if not _authorized(request):
@@ -488,8 +491,14 @@ def add_panel_routes(app: web.Application, bot_token: str, admin_ids) -> None:
     app.router.add_post(f'{base}/api/vip/set', vip_set_handler)
     app.router.add_get(f'{base}/api/gift/targets', gift_targets_handler)
     app.router.add_post(f'{base}/api/gift/send', gift_send_handler)
-    # 静态资源（app.js / styles.css / vendor），放最后避免盖过 API 路由
-    app.router.add_static(f'{base}/', str(_static_dir()))
+    # 静态资源（app.js / styles.css / vendor）：禁缓存，放最后避免盖过 API 路由
+    async def panel_static_handler(request):
+        resource = request.match_info['resource'].replace('\\', '/')
+        file_path = (_static_dir() / resource).resolve()
+        if not str(file_path).startswith(str(_static_dir().resolve())) or not file_path.is_file():
+            return _json({'error': 'not found'}, 404)
+        return web.FileResponse(file_path, headers={'Cache-Control': 'no-cache'})
+    app.router.add_get(f'{base}/{{resource:.+}}', panel_static_handler)
     logger.info("管理面板已挂载 %s（只读，%d 位管理员）", base, len(admin_ids))
 
 
