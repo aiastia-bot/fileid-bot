@@ -8,65 +8,107 @@
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #fff);
+    --green: #34c759; --amber: #ff9f0a; --red: #ff453a; --gray: #8e8e93;
+  }
   body {
     font-family: -apple-system, 'PingFang SC', 'Segoe UI', Roboto, sans-serif;
     background: var(--tg-theme-bg-color, #fff);
     color: var(--tg-theme-text-color, #000);
-    padding: 12px 12px calc(20px + env(safe-area-inset-bottom));
-    font-size: 14px;
+    padding: 14px 14px calc(24px + env(safe-area-inset-bottom));
+    font-size: 14px; -webkit-tap-highlight-color: transparent;
   }
-  h1 { font-size: 17px; margin-bottom: 10px; }
-  h2 { font-size: 15px; margin: 14px 0 8px; }
+  .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  h1 { font-size: 19px; letter-spacing: .3px; }
+  .head .badge {
+    font-size: 11px; padding: 3px 10px; border-radius: 12px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent); font-weight: 600;
+  }
+  h2 { font-size: 15px; margin: 18px 0 9px; display: flex; align-items: center; gap: 6px; }
+  h2::after { content: ''; flex: 1; height: 1px; background: var(--tg-theme-hint-color, #999); opacity: .25; }
   .card {
     background: var(--tg-theme-secondary-bg-color, #f0f0f0);
-    border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+    border-radius: 12px; padding: 11px 13px; margin-bottom: 8px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.05);
   }
   .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  .stat .num { font-size: 17px; font-weight: 600; }
-  .stat .label { font-size: 11px; opacity: .65; margin-top: 2px; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .stat { text-align: center; padding: 12px 6px; }
+  .stat .num { font-size: 18px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .stat .label { font-size: 11px; opacity: .6; margin-top: 3px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
   .chip {
-    border: 1px solid var(--tg-theme-hint-color, #999); border-radius: 14px;
-    padding: 4px 10px; font-size: 12px; cursor: pointer; user-select: none;
+    border: 1px solid var(--tg-theme-hint-color, #999); border-radius: 15px;
+    padding: 5px 13px; font-size: 12px; cursor: pointer; user-select: none;
+    transition: opacity .15s;
   }
+  .chip:active { opacity: .7; }
   .chip.on {
-    background: var(--tg-theme-button-color, #2481cc);
-    color: var(--tg-theme-button-text-color, #fff);
-    border-color: transparent;
+    background: var(--accent); color: var(--accent-text);
+    border-color: transparent; font-weight: 600;
   }
-  .row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; font-size: 13px; }
-  .row .k { opacity: .65; white-space: nowrap; }
-  .row .v { text-align: right; word-break: break-all; }
-  .botline { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
-  .botline .name { font-weight: 600; word-break: break-all; }
-  .botline .sub { opacity: .6; font-size: 11px; }
-  .pill { font-size: 11px; opacity: .8; white-space: nowrap; }
-  .muted { opacity: .6; font-size: 12px; padding: 4px 0; }
-  .bar { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .row { display: flex; justify-content: space-between; gap: 10px; padding: 2.5px 0; font-size: 13px; }
+  .row .k { opacity: .6; white-space: nowrap; }
+  .row .v { text-align: right; word-break: break-all; font-weight: 500; }
+  .botline { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .botline .name { font-weight: 600; font-size: 14px; word-break: break-all; }
+  .sub { opacity: .55; font-size: 11.5px; margin-top: 3px; line-height: 1.45; }
+  .pill {
+    font-size: 11px; font-weight: 600; padding: 2.5px 9px; border-radius: 10px;
+    white-space: nowrap; background: color-mix(in srgb, var(--gray) 16%, transparent);
+    color: var(--gray);
+  }
+  .pill.green { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
+  .pill.amber { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber); }
+  .pill.red   { background: color-mix(in srgb, var(--red) 16%, transparent);   color: var(--red); }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
+  .muted { opacity: .55; font-size: 12.5px; }
+  .bar { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 10px; }
   button, input {
     font: inherit; color: inherit;
     background: var(--tg-theme-secondary-bg-color, #f0f0f0);
-    border: 1px solid var(--tg-theme-hint-color, #999);
-    border-radius: 8px; padding: 6px 12px;
+    border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #999) 45%, transparent);
+    border-radius: 10px; padding: 8px 14px; outline: none;
   }
+  input:focus { border-color: var(--accent); }
   input { flex: 1; min-width: 0; }
+  button { cursor: pointer; font-size: 13px; }
+  button:active { opacity: .75; }
   button.primary {
-    background: var(--tg-theme-button-color, #2481cc);
-    color: var(--tg-theme-button-text-color, #fff); border: none;
+    background: var(--accent); color: var(--accent-text);
+    border: none; font-weight: 600; padding: 8px 18px;
   }
-  button:disabled { opacity: .45; }
-  .error { color: var(--tg-theme-destructive-text-color, #d33); font-size: 12px; padding: 4px 0; }
+  button:disabled { opacity: .4; }
+  .error {
+    color: var(--red); font-size: 12.5px; padding: 6px 2px; word-break: break-all;
+  }
   .hidden { display: none; }
+  .spin {
+    display: inline-block; width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    border-top-color: var(--accent); animation: spin .7s linear infinite;
+    vertical-align: -3px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px; word-break: break-all; font-weight: 600;
+  }
 </style>
 </head>
 <body>
-  <h1>🖥 管理面板</h1>
+  <div class="head">
+    <h1>🖥 管理面板</h1>
+    <span class="badge">只读</span>
+  </div>
   <div id="gate" class="muted">正在连接…</div>
   <div id="app" class="hidden">
 
     <h2>📊 平台概览</h2>
     <div class="grid" id="stats"></div>
-    <div class="bar"><button id="refresh" class="primary">刷新</button><span class="muted" id="updated"></span></div>
+    <div class="bar"><button id="refresh" class="primary">🔄 刷新</button><span class="muted" id="updated"></span></div>
 
     <h2>🤖 Bot 列表</h2>
     <div class="chips" id="botFilters"></div>
@@ -79,7 +121,7 @@
 
     <h2>👤 用户查询</h2>
     <div class="bar">
-      <input id="uidInput" type="number" inputmode="numeric" placeholder="用户 ID">
+      <input id="uidInput" type="number" inputmode="numeric" placeholder="输入用户 ID">
       <button id="uidGo" class="primary">查询</button>
     </div>
     <div id="userResult"></div>
@@ -95,23 +137,32 @@ const tg = window.Telegram.WebApp || {};
 const API = (window.location.pathname.replace(/\/$/, '')) + '/api';
 const BOT_FILTERS = [['all', '全部'], ['active', '活跃'], ['revoked', 'Token 失效'], ['banned', '封禁']];
 const CODE_FILTERS = [['pending', '待兑换'], ['used', '已兑换'], ['cancelled', '已作废'], ['all', '全部']];
+const STATE_COLORS = {
+  active: 'green', paused: 'amber', revoked: 'red', banned: 'red',
+  admin_stopped: 'red', frozen: 'red', deleted: 'gray',
+};
 
 const state = { botStatus: 'all', botPage: 1, lastPage: 1, codeStatus: 'pending' };
 
-function headers() { return { 'X-Telegram-Init-Data': tg.initData || '' }; }
-
 async function api(path) {
-  const response = await fetch(API + path, { headers: headers() });
-  const data = await response.json().catch(() => ({ error: 'bad response' }));
+  const response = await fetch(API + path, { headers: { 'X-Telegram-Init-Data': tg.initData || '' } });
+  let data = {};
+  try { data = await response.json(); } catch (e) { /* 非 JSON 响应体 */ }
   if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
   return data;
 }
 
-function el(tag, className, text) {
+function el(tag, className, html) {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
+  if (html !== undefined) node.innerHTML = html;
   return node;
+}
+
+function spinner() { return '<span class="spin"></span> 加载中…'; }
+
+function statusPill(status, label) {
+  return `<span class="pill ${STATE_COLORS[status] || 'gray'}">${label || status}</span>`;
 }
 
 function kv(container, key, value) {
@@ -122,19 +173,19 @@ function kv(container, key, value) {
 
 function fmt(n) { return Number(n || 0).toLocaleString('en-US'); }
 
-function setStatus(container, message) {
-  container.replaceChildren(el('div', 'muted', message));
+function setStatus(container, html) {
+  container.replaceChildren(el('div', 'muted', html));
 }
 
 async function loadStats() {
   const grid = document.getElementById('stats');
-  setStatus(grid, '加载中…');
+  setStatus(grid, spinner());
   try {
     const stats = await api('/stats');
     grid.replaceChildren();
     for (const [label, value] of [
-      ['运行中', stats.running_bots], ['活跃 Bot', stats.bot_count], ['Bot 总数', stats.total_bots],
-      ['用户数', stats.owner_count], ['文件数', fmt(stats.file_count)],
+      ['运行中 Bot', stats.running_bots], ['活跃 Bot', stats.bot_count], ['Bot 总数', stats.total_bots],
+      ['用户数', stats.owner_count], ['文件总数', fmt(stats.file_count)],
       ['集合数', fmt(stats.col_count)], ['黑名单', stats.blacklist_count],
     ]) {
       const card = el('div', 'card stat');
@@ -143,12 +194,12 @@ async function loadStats() {
     }
     document.getElementById('updated').textContent =
       '更新于 ' + new Date().toLocaleTimeString('zh-CN');
-  } catch (error) { setStatus(grid, '加载失败：' + error.message); }
+  } catch (error) { setStatus(grid, ''); grid.append(el('div', 'error', '加载失败：' + error.message)); }
 }
 
 async function loadBots() {
   const list = document.getElementById('botList');
-  setStatus(list, '加载中…');
+  setStatus(list, spinner());
   try {
     const data = await api(`/bots?status=${state.botStatus}&page=${state.botPage}`);
     state.lastPage = data.last_page;
@@ -159,7 +210,8 @@ async function loadBots() {
       const line = el('div', 'botline');
       line.append(
         el('span', 'name', (bot.firstname || '') + ' @' + (bot.username || '—')),
-        el('span', 'pill', bot.status_label));
+        el('span', 'pill ' + (STATE_COLORS[bot.status] || 'gray'),
+           `<span class="dot" style="background:currentColor"></span>${bot.status_label}`));
       card.append(line);
       card.append(el('div', 'sub',
         `主人 ${bot.owner_id} · 文件 ${fmt(bot.file_count)} · DB ${bot.id} · 创建 ${bot.created_at}`
@@ -170,12 +222,12 @@ async function loadBots() {
     pageText.textContent = `第 ${data.page}/${data.last_page} 页 · 共 ${fmt(data.total)}`;
     document.getElementById('botPrev').disabled = data.page <= 1;
     document.getElementById('botNext').disabled = data.page >= data.last_page;
-  } catch (error) { setStatus(list, '加载失败：' + error.message); }
+  } catch (error) { setStatus(list, ''); list.append(el('div', 'error', '加载失败：' + error.message)); }
 }
 
 async function loadUser(uid) {
   const box = document.getElementById('userResult');
-  setStatus(box, '查询中…');
+  setStatus(box, spinner());
   try {
     const data = await api('/user/' + encodeURIComponent(uid));
     const vip = data.vip;
@@ -186,36 +238,41 @@ async function loadUser(uid) {
     kv(info, '到期', vip.vip_expire_at ? vip.vip_expire_at + (vip.is_active ? '' : '（已过期）') : '永久');
     kv(info, '配额', `${vip.max_bots} 个 Bot`);
     box.append(info);
-    const botsCard = el('div', 'card');
     const counts = data.counts || {};
-    botsCard.append(el('div', 'botline', el('span', 'name',
-      `名下 Bot 共 ${data.bots.length} 个`)));
+    const botsCard = el('div', 'card');
+    botsCard.append(el('div', 'botline',
+      el('span', 'name', `名下 Bot 共 ${data.bots.length} 个`),
+      el('span', 'pill ' + (data.bots.length ? 'green' : 'gray'),
+        `活跃 ${counts.active || 0}`)));
     botsCard.append(el('div', 'sub',
-      `活跃 ${counts.active || 0} · 暂停 ${counts.paused || 0} · 已删除 ${counts.deleted || 0}`));
+      `暂停 ${counts.paused || 0} · 失效 ${(counts.revoked || 0) + (counts.banned || 0) + (counts.frozen || 0) + (counts.admin_stopped || 0)} · 已删除 ${counts.deleted || 0}`));
     box.append(botsCard);
     for (const bot of data.bots) {
       const card = el('div', 'card');
       const line = el('div', 'botline');
       line.append(el('span', 'name', '@' + (bot.username || '—')),
-                  el('span', 'pill', bot.status_label));
+                  el('span', 'pill ' + (STATE_COLORS[bot.status] || 'gray'), bot.status_label));
       card.append(line);
       card.append(el('div', 'sub', `DB ${bot.id} · 创建 ${bot.created_at}`));
       box.append(card);
     }
-  } catch (error) { setStatus(box, '查询失败：' + error.message); }
+  } catch (error) { setStatus(box, ''); box.append(el('div', 'error', '查询失败：' + error.message)); }
 }
 
 async function loadCodes() {
   const list = document.getElementById('codeList');
-  setStatus(list, '加载中…');
+  setStatus(list, spinner());
   try {
     const data = await api('/codes?status=' + state.codeStatus);
     list.replaceChildren();
     if (!data.codes.length) { setStatus(list, '暂无兑换码'); return; }
     for (const code of data.codes) {
       const card = el('div', 'card');
-      card.append(el('div', 'botline',
-        el('span', 'name', code.code), el('span', 'pill', code.status)));
+      const line = el('div', 'botline');
+      line.append(el('span', 'code', code.code),
+                  el('span', 'pill ' + (code.status === 'pending' ? 'green' : code.status === 'used' ? 'amber' : 'gray'),
+                     code.status === 'pending' ? '待兑换' : code.status === 'used' ? '已兑换' : '已作废'));
+      card.append(line);
       const months = code.months === 0 ? '永久' : code.months + '个月';
       card.append(el('div', 'sub',
         `等级 ${code.vip_level} · ${months} · 批次 ${code.batch}`
@@ -223,7 +280,7 @@ async function loadCodes() {
         + (code.expires_at ? ` · 有效期至 ${code.expires_at}` : '')));
       list.append(card);
     }
-  } catch (error) { setStatus(list, '加载失败：' + error.message); }
+  } catch (error) { setStatus(list, ''); list.append(el('div', 'error', '加载失败：' + error.message)); }
 }
 
 function buildChips(containerId, options, current, onPick) {

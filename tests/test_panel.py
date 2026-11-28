@@ -76,6 +76,16 @@ async def test_api_rejects_missing_or_non_admin(client, seeded_bot):
     assert (await client.get('/panel/api/stats', headers={'X-Telegram-Init-Data': 'garbage'})).status == 401
 
 
+async def test_stats_running_bots_from_manager(client, seeded_bot, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr('services.runtime.manager',
+                        SimpleNamespace(active_count=5), raising=False)
+    stats = await client.get('/panel/api/stats',
+                             headers={'X-Telegram-Init-Data': make_init_data()})
+    assert (await stats.json())['running_bots'] == 5
+
+
 async def test_api_serves_admin_data(client, seeded_bot):
     good = {'X-Telegram-Init-Data': make_init_data()}
     stats = await client.get('/panel/api/stats', headers=good)

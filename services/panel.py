@@ -113,7 +113,7 @@ def add_panel_routes(app: web.Application, bot_token: str, admin_ids) -> None:
 
         stats = await get_platform_stats()
         stats['blacklist_count'] = await get_blacklist_count()
-        stats['running_bots'] = manager.active_count() if manager else 0
+        stats['running_bots'] = manager.active_count if manager else 0
         return _json(stats)
 
     async def bots_handler(request):
