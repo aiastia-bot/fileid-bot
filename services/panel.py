@@ -272,6 +272,83 @@ def add_panel_routes(app: web.Application, bot_token: str, admin_ids) -> None:
         rows = await list_redeem_codes(status, limit=50)
         return _json({'codes': rows})
 
+    async def _write_guard(request):
+        """写操作的统一入口：校验身份并解析 JSON body，返回 (actor_id, body) 或抛 web 异常"""
+        actor = _authorized(request)
+        if not actor:
+            raise web.HTTPUnauthorized(text='unauthorized')
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            raise web.HTTPBadRequest(text='invalid json')
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(text='invalid json')
+        return actor['id'], body
+
+    def _int_field(body, key, *, lo=None, hi=None, required=True, default=None):
+        value = body.get(key, default)
+        if value is None or value == '':
+            if required:
+                raise web.HTTPBadRequest(text=f'missing {key}')
+            return None
+        try:
+            value = int(value)
+        except (ValueError, TypeError):
+            raise web.HTTPBadRequest(text=f'invalid {key}')
+        if (lo is not None and value < lo) or (hi is not None and value > hi):
+            raise web.HTTPBadRequest(text=f'{key} out of range')
+        return value
+
+    async def codes_generate_handler(request):
+        from services.membership import generate_redeem_codes
+
+        try:
+            actor, body = await _write_guard(request)
+            level = _int_field(body, 'level')
+            months = _int_field(body, 'months')
+            count = _int_field(body, 'count', lo=1, hi=50)
+            expires_days = _int_field(body, 'expires_days', required=False)
+            codes, batch = await generate_redeem_codes(
+                actor, level, months, count, expires_days)
+        except ValueError as e:
+            return _json({'error': str(e)}, 400)
+        return _json({'codes': codes, 'batch': batch})
+
+    async def codes_cancel_handler(request):
+        from services.membership import cancel_redeem_codes
+
+        try:
+            actor, body = await _write_guard(request)
+            code_or_batch = str(body.get('code_or_batch') or '').strip().lower()
+            reason = str(body.get('reason') or '')[:500]
+            if not code_or_batch:
+                return _json({'error': 'missing code_or_batch'}, 400)
+            cancelled = await cancel_redeem_codes(actor, code_or_batch, reason)
+        except ValueError as e:
+            return _json({'error': str(e)}, 400)
+        return _json({'cancelled': cancelled})
+
+    async def vip_set_handler(request):
+        from services.entitlements import reconcile_user
+        from services.membership import adjust_member
+
+        try:
+            actor, body = await _write_guard(request)
+            uid = _int_field(body, 'user_id', lo=1)
+            level = _int_field(body, 'level')
+            months = _int_field(body, 'months')
+            after = await adjust_member(actor, uid, level=level, months=months,
+                                        reason='管理面板设置')
+        except ValueError as e:
+            return _json({'error': str(e)}, 400)
+        from db.vip import get_user_vip_info
+
+        try:
+            await reconcile_user(uid)
+        except Exception:
+            logger.exception("面板设置会员后同步额度失败: user=%s", uid)
+        return _json({'after': after, 'info': await get_user_vip_info(uid)})
+
     app.router.add_get(base, index_handler)
     app.router.add_get(f'{base}/', index_handler)
     app.router.add_get(f'{base}/api/stats', stats_handler)
@@ -282,6 +359,11 @@ def add_panel_routes(app: web.Application, bot_token: str, admin_ids) -> None:
     app.router.add_get(f'{base}/api/codes', codes_handler)
     app.router.add_get(f'{base}/api/vips', vips_handler)
     app.router.add_get(f'{base}/api/orders', orders_handler)
+    app.router.add_post(f'{base}/api/codes/generate', codes_generate_handler)
+    app.router.add_post(f'{base}/api/codes/cancel', codes_cancel_handler)
+    app.router.add_post(f'{base}/api/vip/set', vip_set_handler)
+    # 静态资源（app.js / styles.css / vendor），放最后避免盖过 API 路由
+    app.router.add_static(f'{base}/', str(_static_dir()))
     logger.info("管理面板已挂载 %s（只读，%d 位管理员）", base, len(admin_ids))
 
 

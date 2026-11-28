@@ -46,6 +46,9 @@ async def client(monkeypatch, tmp_path):
 
     monkeypatch.setattr(panel, '_static_dir', lambda: tmp_path)
     (tmp_path / 'index.html').write_text('<html>panel</html>')
+    (tmp_path / 'app.js').write_text('//app')
+    (tmp_path / 'vendor').mkdir()
+    (tmp_path / 'vendor' / 'vue.global.prod.js').write_text('//vue')
     monkeypatch.setattr('services.runtime.manager', None, raising=False)
     app = web.Application()
     panel.add_panel_routes(app, TOKEN, [ADMIN])
@@ -196,3 +199,52 @@ async def test_api_vips_and_orders(client, seeded_bot):
     assert orders.status == 200 and (await orders.json())['orders'] == []
     bad = await client.get('/panel/api/orders?user_id=abc', headers=good)
     assert bad.status == 400
+
+
+async def test_static_assets_served(client):
+    app_js = await client.get('/panel/app.js')
+    assert app_js.status == 200 and 'app' in await app_js.text()
+    vue = await client.get('/panel/vendor/vue.global.prod.js')
+    assert vue.status == 200
+
+
+async def test_write_endpoints_auth_validation_and_success(client, seeded_bot):
+    body = {'level': 3, 'months': 6, 'count': 2}
+    assert (await client.post('/panel/api/codes/generate', json=body)).status == 401
+
+    good = {'X-Telegram-Init-Data': make_init_data()}
+    assert (await client.post('/panel/api/codes/generate', headers=good)).status == 400
+    assert (await client.post('/panel/api/codes/generate', headers=good,
+                              json={'level': 3, 'months': 6, 'count': 99})).status == 400
+
+    gen = await client.post('/panel/api/codes/generate', headers=good, json=body)
+    data = await gen.json()
+    assert len(data['codes']) == 2 and data['batch']
+
+    cancel = await client.post('/panel/api/codes/cancel', headers=good,
+                               json={'code_or_batch': data['codes'][0]})
+    assert (await cancel.json())['cancelled'] == 1
+    again = await client.post('/panel/api/codes/cancel', headers=good,
+                              json={'code_or_batch': data['codes'][0]})
+    assert (await again.json())['cancelled'] == 0
+
+    listed = await client.get('/panel/api/codes?status=pending', headers=good)
+    codes = (await listed.json())['codes']
+    assert len(codes) == 1 and codes[0]['status'] == 'pending'
+
+
+async def test_vip_set_endpoint(client, seeded_bot):
+    good = {'X-Telegram-Init-Data': make_init_data()}
+    set_vip = await client.post('/panel/api/vip/set', headers=good,
+                                json={'user_id': ADMIN, 'level': 3, 'months': 6})
+    data = await set_vip.json()
+    assert data['info']['vip_level'] == 3
+    assert data['after']['level'] == 3
+
+    bad_level = await client.post('/panel/api/vip/set', headers=good,
+                                  json={'user_id': ADMIN, 'level': 9, 'months': 6})
+    assert bad_level.status == 400
+    assert (await client.post('/panel/api/vip/set', headers=good,
+                              json={'user_id': 'abc', 'level': 3, 'months': 6})).status == 400
+    assert (await client.post('/panel/api/vip/set', headers=good,
+                              json={})).status == 400

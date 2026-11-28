@@ -22,8 +22,9 @@ MySQL 跨机器部署必须共享同一个数据库。迁移账号需要建表�
 面板挂在与 webhook 相同的 HTTPS 域名下（默认 `https://<WEBHOOK_HOST>/panel/`，`PANEL_PATH` 可改或置空禁用）。反代需把该路径转发到应用端口——现有反代按整域转发时无需改动。
 
 - **进入方式**：`/platform` Bot 列表和 `/setvip`/`/vipadmin` 帮助回复里的「🖥 管理面板」按钮；启动时还会给每位管理员私聊设置菜单按钮（同时完成 Telegram 的 Mini App 域名关联，不设全局默认菜单）。
-- **安全模型**：只读。API 用 Telegram `initData` HMAC 验签（Bot Token 参与），且要求发起人 ID 在 `ADMIN_IDS` 内；无凭据、过期（24 小时）或非管理员的请求一律 401。静态页不含任何数据。
-- **内容**：平台统计、Bot 列表（状态筛选 + 分页）、用户查询（会员信息 + 名下 Bot 分类统计）、兑换码列表。写操作后续版本再加。
+- **安全模型**：API 用 Telegram `initData` HMAC 验签（Bot Token 参与），且要求发起人 ID 在 `ADMIN_IDS` 内；无凭据、过期（24 小时）或非管理员的请求一律 401。静态资源不含数据。
+- **内容**：平台统计、Bot 列表（搜索 + 状态筛选 + 分页，点击 Bot 展开文件码与集合浏览，支持类型筛选和排序）、用户查询（会员信息 + 名下 Bot 分类统计）、兑换码管理与生成/作废、会员设置、付费会员与订单列表。
+- **前端结构**：`static/panel/` 下 `index.html` + `styles.css` + `app.js`（Vue 3 全局构建随仓库分发在 `vendor/`，无 CDN、无构建步骤）。
 - Worker 角色不挂面板；standalone 轮询模式同样可用。
 
 ## 接入自建 Telegram Bot API

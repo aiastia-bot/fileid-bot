@@ -4,543 +4,254 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="styles.css">
 <title>管理面板</title>
-<style>
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --accent: var(--tg-theme-button-color, #2481cc);
-    --accent-text: var(--tg-theme-button-text-color, #fff);
-    --green: #34c759; --amber: #ff9f0a; --red: #ff453a; --gray: #8e8e93;
-  }
-  body {
-    font-family: -apple-system, 'PingFang SC', 'Segoe UI', Roboto, sans-serif;
-    background: var(--tg-theme-bg-color, #fff);
-    color: var(--tg-theme-text-color, #000);
-    padding: 14px 14px calc(24px + env(safe-area-inset-bottom));
-    font-size: 14px; -webkit-tap-highlight-color: transparent;
-  }
-  .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-  h1 { font-size: 19px; letter-spacing: .3px; }
-  .head .badge {
-    font-size: 11px; padding: 3px 10px; border-radius: 12px;
-    background: color-mix(in srgb, var(--accent) 18%, transparent);
-    color: var(--accent); font-weight: 600;
-  }
-  h2 { font-size: 15px; margin: 18px 0 9px; display: flex; align-items: center; gap: 6px; }
-  h2::after { content: ''; flex: 1; height: 1px; background: var(--tg-theme-hint-color, #999); opacity: .25; }
-  .card {
-    background: var(--tg-theme-secondary-bg-color, #f0f0f0);
-    border-radius: 12px; padding: 11px 13px; margin-bottom: 8px;
-    box-shadow: 0 1px 2px rgba(0,0,0,.05);
-  }
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  .stat { text-align: center; padding: 12px 6px; }
-  .stat .num { font-size: 18px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
-  .stat .label { font-size: 11px; opacity: .6; margin-top: 3px; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
-  .chip {
-    border: 1px solid var(--tg-theme-hint-color, #999); border-radius: 15px;
-    padding: 5px 13px; font-size: 12px; cursor: pointer; user-select: none;
-    transition: opacity .15s;
-  }
-  .chip:active { opacity: .7; }
-  .chip.on {
-    background: var(--accent); color: var(--accent-text);
-    border-color: transparent; font-weight: 600;
-  }
-  .row { display: flex; justify-content: space-between; gap: 10px; padding: 2.5px 0; font-size: 13px; }
-  .row .k { opacity: .6; white-space: nowrap; }
-  .row .v { text-align: right; word-break: break-all; font-weight: 500; }
-  .botline { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-  .botline .name { font-weight: 600; font-size: 14px; word-break: break-all; }
-  .sub { opacity: .55; font-size: 11.5px; margin-top: 3px; line-height: 1.45; }
-  .pill {
-    font-size: 11px; font-weight: 600; padding: 2.5px 9px; border-radius: 10px;
-    white-space: nowrap; background: color-mix(in srgb, var(--gray) 16%, transparent);
-    color: var(--gray);
-  }
-  .pill.green { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
-  .pill.amber { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber); }
-  .pill.red   { background: color-mix(in srgb, var(--red) 16%, transparent);   color: var(--red); }
-  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
-  .muted { opacity: .55; font-size: 12.5px; }
-  .bar { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 10px; }
-  .bar.top { margin: 0 0 8px; }
-  button, input {
-    font: inherit; color: inherit;
-    background: var(--tg-theme-secondary-bg-color, #f0f0f0);
-    border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #999) 45%, transparent);
-    border-radius: 10px; padding: 8px 14px; outline: none;
-  }
-  input:focus { border-color: var(--accent); }
-  input { flex: 1; min-width: 0; }
-  button { cursor: pointer; font-size: 13px; }
-  button:active { opacity: .75; }
-  button.primary {
-    background: var(--accent); color: var(--accent-text);
-    border: none; font-weight: 600; padding: 8px 18px;
-  }
-  button:disabled { opacity: .4; }
-  .error {
-    color: var(--red); font-size: 12.5px; padding: 6px 2px; word-break: break-all;
-  }
-  .hidden { display: none; }
-  .spin {
-    display: inline-block; width: 14px; height: 14px; border-radius: 50%;
-    border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
-    border-top-color: var(--accent); animation: spin .7s linear infinite;
-    vertical-align: -3px;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .mono {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 12.5px; word-break: break-all; font-weight: 600;
-  }
-  .clickable { cursor: pointer; transition: transform .06s ease; }
-  .clickable:active { transform: scale(.985); }
-  .detail { margin: -4px 0 10px; padding: 10px 12px; }
-  .fileline { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 3px 0; }
-  .fileline .size { opacity: .55; font-size: 11.5px; white-space: nowrap; }
-</style>
 </head>
 <body>
+<div id="app" v-cloak>
   <div class="head">
     <h1>🖥 管理面板</h1>
-    <span class="badge">只读</span>
+    <span class="badge">管理员</span>
   </div>
-  <div id="gate" class="muted">正在连接…</div>
-  <div id="app" class="hidden">
+  <div v-if="!ready" class="muted">{{ gateText }}</div>
+  <template v-else>
 
     <h2>📊 平台概览</h2>
-    <div class="grid" id="stats"></div>
-    <div class="bar"><button id="refresh" class="primary">🔄 刷新</button><span class="muted" id="updated"></span></div>
+    <div class="grid" v-if="stats">
+      <div class="card stat" v-for="item in statCards" :key="item.label">
+        <div class="num">{{ item.value }}</div>
+        <div class="label">{{ item.label }}</div>
+      </div>
+    </div>
+    <p class="muted" v-else-if="errors.stats"><span class="error">加载失败：{{ errors.stats }}</span></p>
+    <p class="muted" v-else><span class="spin"></span> 加载中…</p>
+    <div class="bar">
+      <button class="primary" @click="loadStats">🔄 刷新</button>
+      <span class="muted" v-if="updated">更新于 {{ updated }}</span>
+    </div>
 
     <h2>🤖 Bot 列表</h2>
     <div class="bar top">
-      <input id="botSearch" placeholder="搜索用户名 / 显示名 / 主人 ID">
-      <button id="botSearchGo" class="primary">搜索</button>
+      <input v-model.trim="botSearch" placeholder="搜索用户名 / 显示名 / 主人 ID" @keydown.enter="runSearch">
+      <button class="primary" @click="runSearch">搜索</button>
     </div>
-    <div class="chips" id="botFilters"></div>
-    <div id="botList"></div>
+    <div class="chips">
+      <span class="chip" v-for="f in botFilters" :key="f[0]"
+            :class="{ on: botStatus === f[0] }" @click="setBotFilter(f[0])">{{ f[1] }}</span>
+    </div>
+    <p class="muted" v-if="errors.bots"><span class="error">加载失败：{{ errors.bots }}</span></p>
+    <p class="muted" v-else-if="!botsLoaded"><span class="spin"></span> 加载中…</p>
+    <p class="muted" v-else-if="!bots.length">暂无符合条件的 Bot</p>
+    <template v-for="bot in bots" :key="bot.id">
+      <div class="card clickable" @click="toggleDetail(bot)">
+        <div class="botline">
+          <span class="name">{{ bot.firstname }} @{{ bot.username || '—' }}</span>
+          <span class="pill" :class="stateColor(bot.status)">
+            <span class="dot" style="background: currentColor"></span>{{ bot.status_label }}
+          </span>
+        </div>
+        <div class="sub">主人 {{ bot.owner_id }} · 文件 {{ fmt(bot.file_count) }} · DB {{ bot.id }}
+          · 创建 {{ bot.created_at }}<template v-if="bot.node_id"> · 节点 {{ bot.node_id }}</template>
+          · {{ detail && detail.botId === bot.id ? '收起' : '点击展开' }}</div>
+      </div>
+      <div class="card detail" v-if="detail && detail.botId === bot.id">
+        <div class="botline">
+          <span class="name">📂 @{{ detail.username }}</span>
+          <span class="pill">{{ detail.tab === 'files' ? '文件' : '集合' }}</span>
+        </div>
+        <div class="chips">
+          <span class="chip" :class="{ on: detail.tab === 'files' }" @click="setDetailTab('files')">文件</span>
+          <span class="chip" :class="{ on: detail.tab === 'collections' }" @click="setDetailTab('collections')">集合</span>
+        </div>
+        <template v-if="detail.tab === 'files'">
+          <div class="chips">
+            <span class="chip" v-for="t in fileTypes" :key="t[0]"
+                  :class="{ on: detail.fileType === t[0] }" @click="setFileType(t[0])">{{ t[1] }}</span>
+          </div>
+          <div class="chips">
+            <span class="chip" v-for="s in fileSorts" :key="s[0]"
+                  :class="{ on: detail.sort === s[0] }" @click="setFileSort(s[0])">{{ s[1] }}</span>
+          </div>
+          <p class="muted" v-if="detail.error"><span class="error">加载失败：{{ detail.error }}</span></p>
+          <p class="muted" v-else-if="detail.loading"><span class="spin"></span> 加载中…</p>
+          <p class="muted" v-else-if="!detail.files.length">该 Bot 没有符合条件的文件</p>
+          <div v-else>
+            <div v-for="file in detail.files" :key="file.code">
+              <div class="fileline">
+                <span class="mono">{{ typeEmoji(file.file_type) }} {{ file.code }}</span>
+                <span class="size">{{ humanSize(file.file_size) }}</span>
+              </div>
+              <div class="sub">{{ file.created_at }} · 上传者 {{ file.user_id ?? '—' }}</div>
+            </div>
+          </div>
+          <pager :page="detail.page" :last="detail.lastPage" :total="detail.total"
+                 unit="个文件" @go="goDetailPage($event)"></pager>
+        </template>
+        <template v-else>
+          <p class="muted" v-if="detail.error"><span class="error">加载失败：{{ detail.error }}</span></p>
+          <p class="muted" v-else-if="detail.loading"><span class="spin"></span> 加载中…</p>
+          <p class="muted" v-else-if="!detail.collections.length">该 Bot 没有集合</p>
+          <div v-else>
+            <div class="card" v-for="col in detail.collections" :key="col.code">
+              <div class="botline">
+                <span class="name">{{ col.name || '（未命名）' }}</span>
+                <span class="pill" :class="col.status === 'completed' ? 'green' : 'amber'">
+                  {{ col.status === 'completed' ? '已完成' : col.status }}</span>
+              </div>
+              <div class="sub">{{ col.code }} · {{ fmt(col.file_count) }} 个文件 · 创建 {{ col.created_at }}</div>
+            </div>
+          </div>
+          <pager :page="detail.page" :last="detail.lastPage" :total="detail.total"
+                 unit="个集合" @go="goDetailPage($event)"></pager>
+        </template>
+      </div>
+    </template>
     <div class="bar">
-      <button id="botPrev">‹ 上一页</button>
-      <span class="muted" id="botPage"></span>
-      <button id="botNext">下一页 ›</button>
+      <button :disabled="botPage <= 1" @click="goBots(botPage - 1)">‹ 上一页</button>
+      <span class="muted">第 {{ botPage }}/{{ botLastPage }} 页 · 共 {{ fmt(botsTotal) }}</span>
+      <button :disabled="botPage >= botLastPage" @click="goBots(botPage + 1)">下一页 ›</button>
     </div>
 
     <h2>👤 用户查询</h2>
     <div class="bar">
-      <input id="uidInput" type="number" inputmode="numeric" placeholder="输入用户 ID">
-      <button id="uidGo" class="primary">查询</button>
+      <input v-model.trim="uidInput" type="number" inputmode="numeric" placeholder="输入用户 ID"
+             @keydown.enter="loadUser(uidInput)">
+      <button class="primary" @click="loadUser(uidInput)">查询</button>
     </div>
-    <div id="userResult"></div>
+    <template v-if="userResult">
+      <div class="card">
+        <row-line k="用户 ID" :v="String(userResult.vip.user_id)"></row-line>
+        <row-line k="会员" :v="`${userResult.vip.vip_name}（等级 ${userResult.vip.vip_level}）`"></row-line>
+        <row-line k="到期"
+                  :v="userResult.vip.vip_expire_at ? userResult.vip.vip_expire_at + (userResult.vip.is_active ? '' : '（已过期）') : '永久'"></row-line>
+        <row-line k="配额" :v="`${userResult.vip.max_bots} 个 Bot`"></row-line>
+      </div>
+      <div class="card">
+        <div class="botline">
+          <span class="name">名下 Bot 共 {{ userResult.bots.length }} 个</span>
+          <span class="pill" :class="userResult.bots.length ? 'green' : 'gray'">
+            活跃 {{ userResult.counts.active || 0 }}</span>
+        </div>
+        <div class="sub">暂停 {{ userResult.counts.paused || 0 }} ·
+          失效 {{ failedCount(userResult.counts) }} · 已删除 {{ userResult.counts.deleted || 0 }}</div>
+      </div>
+      <div class="card" v-for="bot in userResult.bots" :key="bot.id">
+        <div class="botline">
+          <span class="name">@{{ bot.username || '—' }}</span>
+          <span class="pill" :class="stateColor(bot.status)">{{ bot.status_label }}</span>
+        </div>
+        <div class="sub">DB {{ bot.id }} · 创建 {{ bot.created_at }}</div>
+      </div>
+    </template>
+    <p class="muted" v-else-if="errors.user"><span class="error">查询失败：{{ errors.user }}</span></p>
 
     <h2>🎟 兑换码</h2>
-    <div class="chips" id="codeFilters"></div>
-    <div id="codeList"></div>
+    <div class="bar top">
+      <button class="primary" @click="showGen = !showGen">{{ showGen ? '收起生成表单' : '➕ 生成兑换码' }}</button>
+    </div>
+    <div class="card" v-if="showGen">
+      <form class="inline" @submit.prevent="createCodes">
+        <div class="field"><label>等级</label>
+          <select v-model.number="genForm.level">
+            <option v-for="l in levels" :key="l.value" :value="l.value">{{ l.label }}</option>
+          </select>
+        </div>
+        <div class="field"><label>月份</label>
+          <input v-model.number="genForm.months" type="number" min="0" max="120" placeholder="0 = 永久">
+        </div>
+        <div class="field"><label>数量</label>
+          <input v-model.number="genForm.count" type="number" min="1" max="50">
+        </div>
+        <div class="field"><label>有效期天</label>
+          <input v-model="genForm.expiresDays" type="number" min="1" placeholder="空 = 长期有效">
+        </div>
+        <button class="primary" type="submit" :disabled="busy">生成</button>
+      </form>
+      <p class="error" v-if="genError">{{ genError }}</p>
+      <div class="codes-box" v-if="genResult">
+        <div class="muted">批次 {{ genResult.batch }} · 已生成 {{ genResult.codes.length }} 个（同等级叠加，跨等级新周期）</div>
+        <div class="code mono" v-for="code in genResult.codes" :key="code">{{ code }}</div>
+        <div class="bar"><button class="mini primary" @click="copyCodes">📋 复制全部</button></div>
+        <p class="ok" v-if="copied">{{ copied }}</p>
+      </div>
+    </div>
+    <div class="chips">
+      <span class="chip" v-for="f in codeFilters" :key="f[0]"
+            :class="{ on: codeStatus === f[0] }" @click="setCodeFilter(f[0])">{{ f[1] }}</span>
+    </div>
+    <p class="muted" v-if="errors.codes"><span class="error">加载失败：{{ errors.codes }}</span></p>
+    <p class="muted" v-else-if="!codesLoaded"><span class="spin"></span> 加载中…</p>
+    <p class="muted" v-else-if="!codes.length">暂无兑换码</p>
+    <div class="card" v-for="code in codes" :key="code.code">
+      <div class="botline">
+        <span class="code mono">{{ code.code }}</span>
+        <span class="pill" :class="codeStatusColor(code.status)">{{ codeStatusLabel(code.status) }}</span>
+      </div>
+      <div class="sub">等级 {{ code.vip_level }} · {{ code.months === 0 ? '永久' : code.months + '个月' }}
+        · 批次 {{ code.batch }}<template v-if="code.redeemed_by"> · 已兑 {{ code.redeemed_by }}</template>
+        <template v-if="code.expires_at"> · 有效期至 {{ code.expires_at }}</template></div>
+      <div class="bar" v-if="code.status === 'pending'">
+        <button class="danger" @click="cancelCode(code.code)">作废</button>
+      </div>
+    </div>
+    <div class="bar top">
+      <input v-model.trim="revokeBatch" placeholder="按批次号作废（如 11281530ab）">
+      <button class="danger" @click="cancelBatch">作废整批</button>
+    </div>
 
     <h2>💎 付费会员</h2>
-    <div id="vipList"></div>
+    <div class="bar top">
+      <button class="primary" @click="showVipForm = !showVipForm">{{ showVipForm ? '收起' : '⚙️ 设置会员' }}</button>
+    </div>
+    <div class="card" v-if="showVipForm">
+      <form class="inline" @submit.prevent="setVip">
+        <div class="field"><label>用户 ID</label>
+          <input v-model.trim="vipForm.userId" type="number" inputmode="numeric">
+        </div>
+        <div class="field"><label>等级</label>
+          <select v-model.number="vipForm.level">
+            <option :value="0">0 取消会员</option>
+            <option v-for="l in levels" :key="l.value" :value="l.value">{{ l.label }}</option>
+          </select>
+        </div>
+        <div class="field"><label>月份</label>
+          <input v-model.number="vipForm.months" type="number" min="0" max="120" placeholder="0 = 永久">
+        </div>
+        <button class="primary" type="submit" :disabled="busy">应用（替换有效期）</button>
+      </form>
+      <p class="ok" v-if="vipResult">{{ vipResult }}</p>
+      <p class="error" v-if="vipError">{{ vipError }}</p>
+    </div>
+    <p class="muted" v-if="errors.vips"><span class="error">加载失败：{{ errors.vips }}</span></p>
+    <p class="muted" v-else-if="!vipsLoaded"><span class="spin"></span> 加载中…</p>
+    <p class="muted" v-else-if="!vips.length">暂无付费会员</p>
+    <div class="card" v-if="vips.length">
+      <template v-for="member in vips" :key="member.user_id">
+        <div class="botline">
+          <span class="name">{{ member.user_id }}</span>
+          <span class="pill" :class="member.vip_expire_at ? 'amber' : 'green'">等级 {{ member.vip_level }}</span>
+        </div>
+        <div class="sub">{{ member.vip_expire_at ? '到期 ' + member.vip_expire_at : '永久' }}</div>
+      </template>
+    </div>
 
     <h2>🧾 订单</h2>
-    <div id="orderList"></div>
-  </div>
-
-<script>
-'use strict';
-const tg = window.Telegram.WebApp || {};
-const API = (window.location.pathname.replace(/\/$/, '')) + '/api';
-const BOT_FILTERS = [['all', '全部'], ['active', '活跃'], ['revoked', 'Token 失效'], ['banned', '封禁']];
-const CODE_FILTERS = [['pending', '待兑换'], ['used', '已兑换'], ['cancelled', '已作废'], ['all', '全部']];
-const FILE_TYPES = [['', '全部'], ['photo', '图片'], ['video', '视频'], ['document', '文档'],
-                    ['audio', '音频'], ['voice', '语音'], ['animation', '动图']];
-const FILE_SORTS = [['new', '最新'], ['old', '最早'], ['size', '最大']];
-const TYPE_EMOJI = { photo: '🖼', video: '🎬', document: '📄', audio: '🎵', voice: '🎤', animation: '✨' };
-const STATE_COLORS = {
-  active: 'green', paused: 'amber', revoked: 'red', banned: 'red',
-  admin_stopped: 'red', frozen: 'red', deleted: 'gray',
-};
-
-const state = {
-  botStatus: 'all', botPage: 1, lastPage: 1, codeStatus: 'pending',
-  botSearch: '', detail: null,  // detail: {botId, tab, fileType, sort, page}
-};
-
-async function api(path) {
-  const response = await fetch(API + path, { headers: { 'X-Telegram-Init-Data': tg.initData || '' } });
-  let data = {};
-  try { data = await response.json(); } catch (e) { /* 非 JSON 响应体 */ }
-  if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
-  return data;
-}
-
-function el(tag, className, html) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (html !== undefined) node.innerHTML = html;
-  return node;
-}
-
-function spinner() { return '<span class="spin"></span> 加载中…'; }
-
-function kv(container, key, value) {
-  const line = el('div', 'row');
-  line.append(el('span', 'k', key), el('span', 'v', value));
-  container.append(line);
-}
-
-function fmt(n) { return Number(n || 0).toLocaleString('en-US'); }
-
-function humanSize(n) {
-  if (!n && n !== 0) return '';
-  if (n < 1024) return n + ' B';
-  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
-  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
-  return (n / 1073741824).toFixed(2) + ' GB';
-}
-
-function setStatus(container, html) {
-  container.replaceChildren(el('div', 'muted', html));
-}
-
-function showError(container, prefix, error) {
-  container.replaceChildren();
-  container.append(el('div', 'error', prefix + error.message));
-}
-
-async function loadStats() {
-  const grid = document.getElementById('stats');
-  setStatus(grid, spinner());
-  try {
-    const stats = await api('/stats');
-    grid.replaceChildren();
-    for (const [label, value] of [
-      ['运行中 Bot', stats.running_bots], ['活跃 Bot', stats.bot_count], ['Bot 总数', stats.total_bots],
-      ['用户数', stats.owner_count], ['文件总数', fmt(stats.file_count)],
-      ['集合数', fmt(stats.col_count)], ['黑名单', stats.blacklist_count],
-    ]) {
-      const card = el('div', 'card stat');
-      card.append(el('div', 'num', fmt(value)), el('div', 'label', label));
-      grid.append(card);
-    }
-    document.getElementById('updated').textContent =
-      '更新于 ' + new Date().toLocaleTimeString('zh-CN');
-  } catch (error) { showError(grid, '加载失败：', error); }
-}
-
-async function loadBots() {
-  const list = document.getElementById('botList');
-  setStatus(list, spinner());
-  try {
-    const search = state.botSearch ? `&search=${encodeURIComponent(state.botSearch)}` : '';
-    const data = await api(`/bots?status=${state.botStatus}&page=${state.botPage}${search}`);
-    state.lastPage = data.last_page;
-    list.replaceChildren();
-    if (!data.bots.length) { setStatus(list, '暂无符合条件的 Bot'); }
-    for (const bot of data.bots) {
-      const card = el('div', 'card clickable');
-      const line = el('div', 'botline');
-      line.append(
-        el('span', 'name', (bot.firstname || '') + ' @' + (bot.username || '—')),
-        el('span', 'pill ' + (STATE_COLORS[bot.status] || 'gray'),
-           `<span class="dot" style="background:currentColor"></span>${bot.status_label}`));
-      card.append(line);
-      card.append(el('div', 'sub',
-        `主人 ${bot.owner_id} · 文件 ${fmt(bot.file_count)} · DB ${bot.id} · 创建 ${bot.created_at}`
-        + (bot.node_id ? ` · 节点 ${bot.node_id}` : '') + ' · 点击展开'));
-      card.onclick = () => toggleDetail(bot, card);
-      list.append(card);
-      if (state.detail && state.detail.botId === bot.id) {
-        const detail = el('div', 'card detail');
-        list.append(detail);
-        renderDetail(detail);
-      }
-    }
-    const pageText = document.getElementById('botPage');
-    pageText.textContent = `第 ${data.page}/${data.last_page} 页 · 共 ${fmt(data.total)}`;
-    document.getElementById('botPrev').disabled = data.page <= 1;
-    document.getElementById('botNext').disabled = data.page >= data.last_page;
-  } catch (error) { showError(list, '加载失败：', error); }
-}
-
-function toggleDetail(bot, card) {
-  if (state.detail && state.detail.botId === bot.id) {
-    state.detail = null;
-    const existing = card.nextElementSibling;
-    if (existing && existing.classList.contains('detail')) existing.remove();
-    return;
-  }
-  closeDetail();
-  state.detail = { botId: bot.id, username: bot.username, tab: 'files',
-                   fileType: '', sort: 'new', page: 1 };
-  const detail = el('div', 'card detail');
-  card.after(detail);
-  renderDetail(detail);
-}
-
-function closeDetail() {
-  document.querySelectorAll('.detail').forEach(node => node.remove());
-  if (state.detail) state.detail = null;
-}
-
-function renderDetail(box) {
-  const d = state.detail;
-  box.replaceChildren();
-  const title = el('div', 'botline');
-  title.append(el('span', 'name', '📂 @' + (d.username || d.botId)),
-               el('span', 'pill', d.tab === 'files' ? '文件' : '集合'));
-  box.append(title);
-
-  const tabs = el('div', 'chips');
-  for (const [tab, label] of [['files', '文件'], ['collections', '集合']]) {
-    const chip = el('span', 'chip' + (d.tab === tab ? ' on' : ''), label);
-    chip.onclick = () => { d.tab = tab; d.page = 1; renderDetail(box); };
-    tabs.append(chip);
-  }
-  box.append(tabs);
-
-  const body = el('div');
-  box.append(body);
-
-  if (d.tab === 'files') {
-    const typeChips = el('div', 'chips');
-    for (const [value, label] of FILE_TYPES) {
-      const chip = el('span', 'chip' + (d.fileType === value ? ' on' : ''), label);
-      chip.onclick = () => { d.fileType = value; d.page = 1; renderDetail(box); };
-      typeChips.append(chip);
-    }
-    body.append(typeChips);
-    const sortChips = el('div', 'chips');
-    for (const [value, label] of FILE_SORTS) {
-      const chip = el('span', 'chip' + (d.sort === value ? ' on' : ''), label);
-      chip.onclick = () => { d.sort = value; d.page = 1; renderDetail(box); };
-      sortChips.append(chip);
-    }
-    body.append(sortChips);
-    const listWrap = el('div');
-    body.append(listWrap);
-    const nav = el('div', 'bar');
-    body.append(nav);
-    loadBotFiles(box, listWrap, nav);
-  } else {
-    const listWrap = el('div');
-    body.append(listWrap);
-    const nav = el('div', 'bar');
-    body.append(nav);
-    loadBotCollections(box, listWrap, nav);
-  }
-}
-
-async function loadBotFiles(box, listWrap, nav) {
-  const d = state.detail;
-  setStatus(listWrap, spinner());
-  try {
-    const type = d.fileType ? `&file_type=${d.fileType}` : '';
-    const data = await api(`/bot/${d.botId}/files?sort=${d.sort}&page=${d.page}${type}`);
-    listWrap.replaceChildren();
-    if (!data.files.length) { setStatus(listWrap, '该 Bot 没有符合条件的文件'); }
-    for (const file of data.files) {
-      const line = el('div', 'fileline');
-      line.append(el('span', 'mono', `${TYPE_EMOJI[file.file_type] || '📄'} ${file.code}`),
-                  el('span', 'size', humanSize(file.file_size)));
-      listWrap.append(line);
-      listWrap.append(el('div', 'sub',
-        `${file.created_at} · 上传者 ${file.user_id ?? '—'}`));
-    }
-    renderNav(nav, data.page, data.last_page, data.total, '个文件',
-              page => { d.page = page; renderDetail(box); });
-  } catch (error) { showError(listWrap, '加载失败：', error); }
-}
-
-async function loadBotCollections(box, listWrap, nav) {
-  const d = state.detail;
-  setStatus(listWrap, spinner());
-  try {
-    const data = await api(`/bot/${d.botId}/collections?page=${d.page}`);
-    listWrap.replaceChildren();
-    if (!data.collections.length) { setStatus(listWrap, '该 Bot 没有集合'); }
-    for (const col of data.collections) {
-      const card = el('div', 'card');
-      const line = el('div', 'botline');
-      line.append(el('span', 'name', col.name || '（未命名）'),
-                  el('span', 'pill ' + (col.status === 'completed' ? 'green' : 'amber'),
-                     col.status === 'completed' ? '已完成' : col.status));
-      card.append(line);
-      card.append(el('div', 'sub',
-        `${col.code} · ${fmt(col.file_count)} 个文件 · 创建 ${col.created_at}`));
-      listWrap.append(card);
-    }
-    renderNav(nav, data.page, data.last_page, data.total, '个集合',
-              page => { d.page = page; renderDetail(box); });
-  } catch (error) { showError(listWrap, '加载失败：', error); }
-}
-
-function renderNav(nav, page, lastPage, total, unit, go) {
-  nav.replaceChildren();
-  const prev = el('button', '', '‹ 上一页');
-  const text = el('span', 'muted', `第 ${page}/${lastPage} 页 · 共 ${fmt(total)} ${unit}`);
-  const next = el('button', '', '下一页 ›');
-  prev.disabled = page <= 1;
-  next.disabled = page >= lastPage;
-  prev.onclick = () => go(page - 1);
-  next.onclick = () => go(page + 1);
-  nav.append(prev, text, next);
-}
-
-async function loadUser(uid) {
-  const box = document.getElementById('userResult');
-  setStatus(box, spinner());
-  try {
-    const data = await api('/user/' + encodeURIComponent(uid));
-    const vip = data.vip;
-    box.replaceChildren();
-    const info = el('div', 'card');
-    kv(info, '用户 ID', uid);
-    kv(info, '会员', `${vip.vip_name}（等级 ${vip.vip_level}）`);
-    kv(info, '到期', vip.vip_expire_at ? vip.vip_expire_at + (vip.is_active ? '' : '（已过期）') : '永久');
-    kv(info, '配额', `${vip.max_bots} 个 Bot`);
-    box.append(info);
-    const counts = data.counts || {};
-    const botsCard = el('div', 'card');
-    botsCard.append(el('div', 'botline',
-      el('span', 'name', `名下 Bot 共 ${data.bots.length} 个`),
-      el('span', 'pill ' + (data.bots.length ? 'green' : 'gray'),
-        `活跃 ${counts.active || 0}`)));
-    botsCard.append(el('div', 'sub',
-      `暂停 ${counts.paused || 0} · 失效 ${(counts.revoked || 0) + (counts.banned || 0) + (counts.frozen || 0) + (counts.admin_stopped || 0)} · 已删除 ${counts.deleted || 0}`));
-    box.append(botsCard);
-    for (const bot of data.bots) {
-      const card = el('div', 'card');
-      const line = el('div', 'botline');
-      line.append(el('span', 'name', '@' + (bot.username || '—')),
-                  el('span', 'pill ' + (STATE_COLORS[bot.status] || 'gray'), bot.status_label));
-      card.append(line);
-      card.append(el('div', 'sub', `DB ${bot.id} · 创建 ${bot.created_at}`));
-      box.append(card);
-    }
-  } catch (error) { showError(box, '查询失败：', error); }
-}
-
-async function loadCodes() {
-  const list = document.getElementById('codeList');
-  setStatus(list, spinner());
-  try {
-    const data = await api('/codes?status=' + state.codeStatus);
-    list.replaceChildren();
-    if (!data.codes.length) { setStatus(list, '暂无兑换码'); return; }
-    for (const code of data.codes) {
-      const card = el('div', 'card');
-      const line = el('div', 'botline');
-      line.append(el('span', 'code', code.code),
-                  el('span', 'pill ' + (code.status === 'pending' ? 'green' : code.status === 'used' ? 'amber' : 'gray'),
-                     code.status === 'pending' ? '待兑换' : code.status === 'used' ? '已兑换' : '已作废'));
-      card.append(line);
-      const months = code.months === 0 ? '永久' : code.months + '个月';
-      card.append(el('div', 'sub',
-        `等级 ${code.vip_level} · ${months} · 批次 ${code.batch}`
-        + (code.redeemed_by ? ` · 已兑 ${code.redeemed_by}` : '')
-        + (code.expires_at ? ` · 有效期至 ${code.expires_at}` : '')));
-      list.append(card);
-    }
-  } catch (error) { showError(list, '加载失败：', error); }
-}
-
-async function loadVips() {
-  const list = document.getElementById('vipList');
-  setStatus(list, spinner());
-  try {
-    const data = await api('/vips');
-    list.replaceChildren();
-    if (!data.members.length) { setStatus(list, '暂无付费会员'); return; }
-    const card = el('div', 'card');
-    for (const member of data.members) {
-      const line = el('div', 'botline');
-      line.append(el('span', 'name', `${member.user_id}`),
-                  el('span', 'pill ' + (member.vip_expire_at ? 'amber' : 'green'),
-                     `等级 ${member.vip_level}`));
-      card.append(line);
-      card.append(el('div', 'sub',
-        (member.vip_expire_at ? `到期 ${member.vip_expire_at}` : '永久')
-        + (member.created_at ? ` · 注册 ${member.created_at}` : '')));
-    }
-    list.append(card);
-  } catch (error) { showError(list, '加载失败：', error); }
-}
-
-async function loadOrders() {
-  const list = document.getElementById('orderList');
-  setStatus(list, spinner());
-  try {
-    const data = await api('/orders');
-    list.replaceChildren();
-    if (!data.orders.length) { setStatus(list, '暂无订单'); return; }
-    const card = el('div', 'card');
-    for (const order of data.orders) {
-      const line = el('div', 'botline');
-      line.append(el('span', 'name', `#${order.payload}`),
-                  el('span', 'pill ' + (order.status === 'completed' || order.status === 'received' ? 'green' : 'amber'),
-                     `${order.amount}⭐ ${order.status}`));
-      card.append(line);
-      card.append(el('div', 'sub',
-        `${order.product} · 用户 ${order.user_id} · ${order.created_at}`));
-    }
-    list.append(card);
-  } catch (error) { showError(list, '加载失败：', error); }
-}
-
-function buildChips(containerId, options, current, onPick) {
-  const box = document.getElementById(containerId);
-  box.replaceChildren();
-  for (const [value, label] of options) {
-    const chip = el('span', 'chip' + (value === current ? ' on' : ''), label);
-    chip.onclick = () => { onPick(value); buildChips(containerId, options, value, onPick); };
-    box.append(chip);
-  }
-}
-
-function init() {
-  try { tg.ready(); tg.expand(); } catch (e) { /* 非 Telegram 环境 */ }
-  const gate = document.getElementById('gate');
-  if (!tg.initData) {
-    gate.textContent = '请从 Telegram 中打开本页面（管理员命令回复里的「🖥 管理面板」按钮）。';
-    return;
-  }
-  gate.classList.add('hidden');
-  document.getElementById('app').classList.remove('hidden');
-
-  buildChips('botFilters', BOT_FILTERS, state.botStatus,
-             value => { state.botStatus = value; state.botPage = 1; closeDetail(); loadBots(); });
-  buildChips('codeFilters', CODE_FILTERS, state.codeStatus,
-             value => { state.codeStatus = value; loadCodes(); });
-  document.getElementById('botPrev').onclick = () => { state.botPage--; closeDetail(); loadBots(); };
-  document.getElementById('botNext').onclick = () => { state.botPage++; closeDetail(); loadBots(); };
-  document.getElementById('refresh').onclick = loadStats;
-  const runSearch = () => {
-    state.botSearch = document.getElementById('botSearch').value.trim();
-    state.botPage = 1; closeDetail(); loadBots();
-  };
-  document.getElementById('botSearchGo').onclick = runSearch;
-  document.getElementById('botSearch').addEventListener('keydown', e => {
-    if (e.key === 'Enter') runSearch();
-  });
-  const runQuery = () => {
-    const uid = document.getElementById('uidInput').value.trim();
-    if (uid) loadUser(uid);
-  };
-  document.getElementById('uidGo').onclick = runQuery;
-  document.getElementById('uidInput').addEventListener('keydown', e => {
-    if (e.key === 'Enter') runQuery();
-  });
-
-  loadStats();
-  loadBots();
-  loadCodes();
-  loadVips();
-  loadOrders();
-}
-
-init();
-</script>
+    <p class="muted" v-if="errors.orders"><span class="error">加载失败：{{ errors.orders }}</span></p>
+    <p class="muted" v-else-if="!ordersLoaded"><span class="spin"></span> 加载中…</p>
+    <p class="muted" v-else-if="!orders.length">暂无订单</p>
+    <div class="card" v-if="orders.length">
+      <template v-for="order in orders" :key="order.payload">
+        <div class="botline">
+          <span class="name">#{{ order.payload }}</span>
+          <span class="pill" :class="order.status === 'completed' || order.status === 'received' ? 'green' : 'amber'">
+            {{ order.amount }}⭐ {{ order.status }}</span>
+        </div>
+        <div class="sub">{{ order.product }} · 用户 {{ order.user_id }} · {{ order.created_at }}</div>
+      </template>
+    </div>
+  </template>
+</div>
+<script src="vendor/vue.global.prod.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
