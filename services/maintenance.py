@@ -72,8 +72,8 @@ async def auto_purge_dead_bots() -> int:
     if AUTO_PURGE_DEAD_BOT_DAYS <= 0:
         return 0
     from db import (get_dead_bots_past_grace, get_user_bot_by_id, purge_bot_files,
-                    remove_bot_from_backup, get_platform_setting,
-                    set_platform_setting)
+                    remove_bot_from_backup, mark_bot_purged,
+                    get_platform_setting, set_platform_setting)
     from services.notices import enqueue
     from services.runtime import operation_lock
 
@@ -102,6 +102,9 @@ async def auto_purge_dead_bots() -> int:
                     continue
                 result = await purge_bot_files(bot_db_id)
                 await remove_bot_from_backup(bot_db_id)
+                # 打上已清理标记，避免下一轮（30s 后）把同一批 Bot 重新捞出空跑；
+                # 主人复活 Bot（状态回 active）时标记被清空，可再次进入清理
+                await mark_bot_purged(bot_db_id)
         except Exception:
             logger.exception("自动清理 Bot %d (@%s) 失败", bot_db_id, username)
             continue

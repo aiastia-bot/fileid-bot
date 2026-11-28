@@ -24,7 +24,7 @@ from db.bots import (  # noqa: F401
     delete_user_bot, update_user_bot_status, update_user_bot_token,
     get_all_active_user_bots, update_user_bot_node, get_active_bots_by_node,
     get_user_bot_by_username, unban_user_bots,
-    get_dead_bots_past_grace,
+    get_dead_bots_past_grace, mark_bot_purged,
     add_to_blacklist, remove_from_blacklist, is_user_blacklisted,
     get_blacklist, get_blacklist_count,
     get_platform_setting, set_platform_setting,

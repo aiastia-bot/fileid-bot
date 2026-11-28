@@ -42,6 +42,7 @@ async def add_user_bot(owner_id: int, bot_token: str, bot_id: int,
                 deleted_bot.bot_firstname = bot_firstname
                 deleted_bot.status = 'active'
                 deleted_bot.updated_at = now
+                deleted_bot.purged_at = None
                 deleted_bot.node_id = 'local'
                 await session.commit()
                 logger.info("Reused deleted bot record (bot_db_id=%d, telegram_id=%d)", deleted_bot.id, bot_id)
@@ -151,14 +152,17 @@ async def is_bot_admin_stopped(bot_id: int) -> bool:
 
 
 async def update_user_bot_status(bot_db_id: int, status: str) -> bool:
-    """更新用户Bot状态"""
+    """更新用户Bot状态（回 active 视为复活，清空自动清理标记）"""
     async with get_session() as session:
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            values = {'status': status, 'updated_at': now}
+            if status == 'active':
+                values['purged_at'] = None
             await session.execute(
                 update(UserBot)
                 .where(UserBot.id == bot_db_id)
-                .values(status=status, updated_at=now)
+                .values(**values)
             )
             await session.commit()
             return True
@@ -169,7 +173,7 @@ async def update_user_bot_status(bot_db_id: int, status: str) -> bool:
 
 async def update_user_bot_token(bot_db_id: int, new_token: str, new_bot_id: int = None, keep_status: bool = False) -> bool:
     """更新用户Bot的Token
-    
+
     Args:
         keep_status: 如果为 True，保持当前状态不变（用于被系统停止的Bot更新Token）
     """
@@ -178,7 +182,9 @@ async def update_user_bot_token(bot_db_id: int, new_token: str, new_bot_id: int 
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             values: Dict = {'bot_token': new_token, 'updated_at': now}
             if not keep_status:
+                # 状态回 active 即复活：清空自动清理标记，再次死亡可重新清理
                 values['status'] = 'active'
+                values['purged_at'] = None
             if new_bot_id is not None:
                 values['bot_id'] = new_bot_id
             await session.execute(
@@ -237,7 +243,7 @@ async def unban_user_bots(owner_id: int) -> bool:
             await session.execute(
                 update(UserBot)
                 .where(UserBot.owner_id == owner_id, UserBot.status == 'banned')
-                .values(status='active', updated_at=now)
+                .values(status='active', updated_at=now, purged_at=None)
             )
             await session.commit()
             return True
@@ -387,6 +393,7 @@ async def get_dead_bots_past_grace(days: int, limit: int = 20,
     updated_at 是 "%Y-%m-%d %H:%M:%S" 字符串，字典序即时间序。
     not_before：只考虑该时刻之后死亡的 Bot（部署基线，保护存量数据）。
     admin_stopped / paused 属临时状态，不参与自动清理。
+    purged_at 非空 = 已被自动清理过，跳过（复活回 active 时清空标记）。
     """
     if days <= 0:
         return []
@@ -396,6 +403,7 @@ async def get_dead_bots_past_grace(days: int, limit: int = 20,
             UserBot.status.in_(['revoked', 'deleted', 'banned']),
             UserBot.updated_at.isnot(None),
             UserBot.updated_at < cutoff,
+            UserBot.purged_at.is_(None),
         )
         if not_before:
             query = query.where(UserBot.updated_at >= not_before)
@@ -403,3 +411,24 @@ async def get_dead_bots_past_grace(days: int, limit: int = 20,
             query.order_by(UserBot.updated_at).limit(limit)
         )).scalars().all()
     return [_model_to_dict(r) for r in rows]
+
+
+async def mark_bot_purged(bot_db_id: int) -> bool:
+    """标记 Bot 已被自动清理（purged_at），不改动 status / updated_at
+
+    updated_at 保留原死亡时间；status 保持死亡态。Bot 复活（状态回 active /
+    重设 Token）时由对应更新路径清空标记，再次死亡可重新进入清理候选。
+    """
+    async with get_session() as session:
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            await session.execute(
+                update(UserBot)
+                .where(UserBot.id == bot_db_id)
+                .values(purged_at=now)
+            )
+            await session.commit()
+            return True
+        except Exception as e:
+            logger.error("标记 Bot %d 已清理失败: %s", bot_db_id, e)
+            return False

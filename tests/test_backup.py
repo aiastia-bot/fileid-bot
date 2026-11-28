@@ -548,6 +548,45 @@ class TestAutoPurgeGrace(unittest.IsolatedAsyncioTestCase):
         assert {b['id'] for b in await get_dead_bots_past_grace(1, not_before=old)} == {revoked_old}
         assert {b['id'] for b in await get_dead_bots_past_grace(1, not_before='2000-01-01 00:00:00')} == {revoked_old}
 
+    async def test_purged_bot_not_reselected_until_revive(self):
+        """已自动清理的 Bot 不再重复进入候选；复活回 active 清空标记后重新入选"""
+        from datetime import datetime, timedelta
+        from db import get_dead_bots_past_grace, get_user_bot_by_id, mark_bot_purged
+        from db import update_user_bot_status
+        old = (datetime.now() - timedelta(days=2, seconds=30)
+               ).strftime("%Y-%m-%d %H:%M:%S")
+
+        bot_id = await _add_bot(310, 311, 'purgedonce')
+        await update_user_bot_status(bot_id, 'revoked')
+        async with get_session() as session:
+            from sqlalchemy import update as sa_update
+            from db.models import UserBot
+            await session.execute(sa_update(UserBot).where(
+                UserBot.id == bot_id).values(updated_at=old))
+            await session.commit()
+        assert bot_id in {b['id'] for b in await get_dead_bots_past_grace(1)}
+
+        # 清理完成打标记 → 下一轮不再选中
+        assert await mark_bot_purged(bot_id)
+        assert bot_id not in {b['id'] for b in await get_dead_bots_past_grace(1)}, \
+            '已清理的 Bot 不重复进入候选'
+        # 标记不改死亡时间，status 保持死亡态
+        bot = await get_user_bot_by_id(bot_id)
+        assert bot['status'] == 'revoked' and bot['updated_at'] == old
+
+        # 复活：状态回 active 清空标记；再次死亡重新进入清理候选
+        await update_user_bot_status(bot_id, 'active')
+        assert (await get_user_bot_by_id(bot_id))['purged_at'] is None
+        await update_user_bot_status(bot_id, 'revoked')
+        async with get_session() as session:
+            from sqlalchemy import update as sa_update
+            from db.models import UserBot
+            await session.execute(sa_update(UserBot).where(
+                UserBot.id == bot_id).values(updated_at=old))
+            await session.commit()
+        assert bot_id in {b['id'] for b in await get_dead_bots_past_grace(1)}, \
+            '复活后再次死亡应重新可被清理'
+
     async def test_warn_owner_before_auto_purge(self):
         """清理倒计时提醒：剩 3/2/1 天各提醒主人一次，不满窗口不提醒，满期走清理"""
         from datetime import datetime, timedelta
@@ -596,7 +635,9 @@ class TestAutoPurgeGrace(unittest.IsolatedAsyncioTestCase):
         assert all(str(fresh) not in k for k in by_key)
         assert f'autopurge:{ripe}:0' in by_key
 
-        # 第二轮：提醒与清理通知都按 key 去重，不重复发送
+        # 第二轮：已清理的 Bot 有 purged_at 标记，不再重复进入清理轮次
+        assert await auto_purge_dead_bots() == 0, '已清理的 Bot 不重复进入清理'
+        # 提醒与清理通知都按 key 去重，不重复发送
         await auto_purge_dead_bots()
         async with get_session() as session:
             notices2 = (await session.execute(

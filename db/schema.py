@@ -9,8 +9,8 @@ import json
 from datetime import datetime
 from sqlalchemy import inspect, select, text
 from sqlalchemy.schema import CreateColumn
-from db.models import (Base, PaymentOrder, SchemaVersion, UpdateInbox, UserNotice,
-                       VipRedeemCode)
+from db.models import (Base, PaymentOrder, SchemaVersion, UpdateInbox, UserBot,
+                       UserNotice, VipRedeemCode)
 
 
 async def upgrade(conn):
@@ -112,6 +112,14 @@ async def upgrade(conn):
         await conn.execute(
             SchemaVersion.__table__.insert().values(
                 version=9, applied_at=datetime.now().isoformat(timespec="seconds")
+            )
+        )
+    if 10 not in applied:
+        # 死亡 Bot 自动清理标记：已清理的 Bot 不再每轮被重新捞出空跑；复活时清空
+        await conn.run_sync(_add_column_if_missing, UserBot.__table__.c.purged_at)
+        await conn.execute(
+            SchemaVersion.__table__.insert().values(
+                version=10, applied_at=datetime.now().isoformat(timespec="seconds")
             )
         )
 
