@@ -199,6 +199,70 @@
       <button class="danger" @click="cancelBatch">作废整批</button>
     </div>
 
+    <h2>🎁 定向赠送</h2>
+    <div class="card" v-if="!gift.confirmed">
+      <div class="chips">
+        <span class="chip" :class="{ on: gift.group === 'paid' }" @click="gift.group = 'paid'">历史付费用户</span>
+        <span class="chip" :class="{ on: gift.group === 'vip' }" @click="gift.group = 'vip'">当前付费会员</span>
+      </div>
+      <form class="inline" @submit.prevent="loadGiftTargets">
+        <div class="field"><label>赠送等级</label>
+          <select v-model.number="gift.level">
+            <option v-for="l in levels" :key="l.value" :value="l.value">{{ l.label }}</option>
+          </select>
+        </div>
+        <div class="field"><label>时长（月）</label>
+          <input v-model.number="gift.months" type="number" min="0" max="120" placeholder="0 = 永久">
+        </div>
+        <div class="field"><label>码有效期</label>
+          <input v-model="gift.expiresDays" type="number" min="1" placeholder="天，空 = 长期">
+        </div>
+        <div class="field"><label>备注</label>
+          <input v-model.trim="gift.reason" placeholder="选填，写入审计">
+        </div>
+        <button class="primary" type="submit" :disabled="gift.loading">
+          {{ gift.loading ? '获取中…' : '获取名单' }}</button>
+      </form>
+      <p class="muted" style="margin-top:8px">每人一个一次性码，主 Bot 私信送达；已持有同等级待领码的用户自动跳过。</p>
+      <p class="error" v-if="gift.error">{{ gift.error }}</p>
+    </div>
+    <div class="card" v-else>
+      <div class="botline">
+        <span class="name">确认名单：{{ gift.selected.length }} 人</span>
+        <span class="pill amber">{{ gift.group === 'paid' ? '历史付费' : '当前会员' }}
+          · 等级 {{ gift.level }} · {{ gift.months === 0 ? '永久' : gift.months + '个月' }}</span>
+      </div>
+      <div class="sub">⚠️ 待领码 = 已持有同等级未兑换码（发送时自动跳过）。可移除或手动添加用户。</div>
+      <div class="bar top">
+        <input v-model.trim="gift.addId" type="number" inputmode="numeric"
+               placeholder="添加用户 ID" @keydown.enter="giftAddUser">
+        <button @click="giftAddUser">添加</button>
+        <button @click="gift.confirmed = false">返回修改</button>
+      </div>
+      <div class="fileline" v-for="(u, index) in gift.selected" :key="u.user_id">
+        <span class="mono">{{ u.user_id }}<template v-if="u.paid_total">
+          · 已付 {{ fmt(u.paid_total) }}⭐</template><template v-if="u.vip_level">
+          · 等级 {{ u.vip_level }}</template></span>
+        <span class="botline">
+          <span class="pill amber" v-if="u.pending_same_level">⚠️ 待领码</span>
+          <button class="mini danger" @click="gift.selected.splice(index, 1)">移除</button>
+        </span>
+      </div>
+      <p class="error" v-if="gift.error">{{ gift.error }}</p>
+      <div class="bar">
+        <button class="primary" :disabled="gift.sending || !gift.selected.length"
+                @click="sendGift">{{ gift.sending ? '发送中…' : '✅ 发送给 ' + gift.selected.length + ' 人' }}</button>
+      </div>
+      <template v-if="gift.result">
+        <div class="ok">✅ 已发送 {{ gift.result.sent.length }} 人 · 批次 {{ gift.result.batches.join('、') }}</div>
+        <div class="error" v-if="gift.result.failed.length">
+          失败 {{ gift.result.failed.length }}：<span
+            v-for="f in gift.result.failed" :key="f.user_id">{{ f.user_id }}（{{ f.error }}）　</span></div>
+        <div class="muted" v-if="gift.result.skipped.length">
+          跳过（已有同等级待领码）：{{ gift.result.skipped.join('、') }}</div>
+      </template>
+    </div>
+
     <h2>💎 付费会员</h2>
     <div class="bar top">
       <button class="primary" @click="showVipForm = !showVipForm">{{ showVipForm ? '收起' : '⚙️ 设置会员' }}</button>

@@ -5,7 +5,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timedelta
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from telegram.error import BadRequest, NetworkError, TelegramError
 from db.core import get_session, _model_to_dict
@@ -65,6 +65,16 @@ async def create_order(user_id, product, months, level=0, discount_stars=0):
         session.add(order)
         await session.commit()
         return _model_to_dict(order)
+
+
+async def paid_user_totals() -> dict[int, int]:
+    """历史付费用户 → 累计支付星星数（completed 订单台账口径，VIP/Premium 合计）"""
+    async with get_session() as session:
+        rows = (await session.execute(
+            select(PaymentOrder.user_id, func.sum(PaymentOrder.amount))
+            .where(PaymentOrder.status == 'completed')
+            .group_by(PaymentOrder.user_id))).all()
+    return {uid: int(total or 0) for uid, total in rows}
 
 
 async def upgrade_credit(user_id: int, info: dict, target_price: int) -> tuple[int, int]:

@@ -273,8 +273,13 @@ def _new_redeem_code() -> str:
     return f"vip_{body}"
 
 
-async def generate_redeem_codes(actor_id, level, months, count, expires_days=None):
-    """批量生成兑换码，返回 (codes, batch)。months=0 表示永久会员。"""
+async def generate_redeem_codes(actor_id, level, months, count, expires_days=None,
+                                recipients=None):
+    """批量生成兑换码，返回 (codes, batch)。months=0 表示永久会员。
+
+    recipients 为定向赠码的收件人列表（与 count 等长、去重、均为正整数），
+    写入 recipient_uid 供面板防重复发送与审计；普通生成传 None。
+    """
     if level not in VIP_PLANS or level <= 0:
         raise ValueError("等级无效（1-4）")
     if not 0 <= months <= 120:
@@ -283,6 +288,11 @@ async def generate_redeem_codes(actor_id, level, months, count, expires_days=Non
         raise ValueError(f"单次生成数量为 1-{REDEEM_MAX_BATCH}")
     if expires_days is not None and expires_days < 1:
         raise ValueError("码有效期必须为正整数天")
+    if recipients is not None:
+        if (not isinstance(recipients, list) or len(recipients) != count
+                or len(set(recipients)) != count
+                or any(not isinstance(r, int) or r <= 0 for r in recipients)):
+            raise ValueError("recipients 参数无效")
     batch = datetime.now().strftime("%m%d%H%M%S") + ''.join(
         secrets.choice(_REDEEM_ALPHABET) for _ in range(4))
     expires_at = (
@@ -292,7 +302,7 @@ async def generate_redeem_codes(actor_id, level, months, count, expires_days=Non
     )
     codes = []
     async with get_session() as session:
-        for _ in range(count):
+        for index in range(count):
             for _attempt in range(5):  # 防碰撞重试
                 code = _new_redeem_code()
                 exists = await session.execute(
@@ -306,6 +316,7 @@ async def generate_redeem_codes(actor_id, level, months, count, expires_days=Non
                 code=code, vip_level=level, months=months, batch=batch,
                 status='pending', created_by=actor_id, created_at=now_text(),
                 expires_at=expires_at,
+                recipient_uid=recipients[index] if recipients else None,
             ))
             codes.append(code)
         session.add(MembershipAudit(
@@ -466,5 +477,5 @@ async def list_redeem_codes(status=None, limit=20):
             'code': r.code, 'vip_level': r.vip_level, 'months': r.months,
             'batch': r.batch, 'status': r.status, 'created_at': r.created_at,
             'expires_at': r.expires_at, 'redeemed_by': r.redeemed_by,
-            'redeemed_at': r.redeemed_at,
+            'redeemed_at': r.redeemed_at, 'recipient_uid': r.recipient_uid,
         } for r in rows]

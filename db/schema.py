@@ -9,7 +9,8 @@ import json
 from datetime import datetime
 from sqlalchemy import inspect, select, text
 from sqlalchemy.schema import CreateColumn
-from db.models import Base, PaymentOrder, SchemaVersion, UpdateInbox, UserNotice
+from db.models import (Base, PaymentOrder, SchemaVersion, UpdateInbox, UserNotice,
+                       VipRedeemCode)
 
 
 async def upgrade(conn):
@@ -103,6 +104,14 @@ async def upgrade(conn):
         await conn.execute(
             SchemaVersion.__table__.insert().values(
                 version=8, applied_at=datetime.now().isoformat(timespec="seconds")
+            )
+        )
+    if 9 not in applied:
+        # 定向赠码：记录收件人，面板确认名单据此防重复发送
+        await conn.run_sync(_add_column_if_missing, VipRedeemCode.__table__.c.recipient_uid)
+        await conn.execute(
+            SchemaVersion.__table__.insert().values(
+                version=9, applied_at=datetime.now().isoformat(timespec="seconds")
             )
         )
 

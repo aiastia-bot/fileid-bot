@@ -1,18 +1,24 @@
-"""Telegram Mini App 管理面板（v1 只读）：静态页 + initData 校验的 JSON API
+"""Telegram Mini App 管理面板：静态页 + initData 校验的 JSON API（含定向赠码等管理操作）
 
 安全模型：Telegram 对 initData 做 HMAC 签名（secret = HMAC("WebAppData", BOT_TOKEN)），
 后端验签后要求 user.id ∈ ADMIN_IDS 才放行 /api/*；静态页本身不含数据。
 所有响应带 frame-ancestors CSP，允许 Telegram 客户端 iframe 渲染。
 """
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl
 
 from aiohttp import web
+from sqlalchemy import select
+from telegram.error import Forbidden
+
+from db.core import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +28,7 @@ INIT_DATA_MAX_AGE = 86400  # initData 一天有效，过期重新打开面板即
 PANEL_BOT_STATUSES = ('active', 'revoked', 'banned', 'all')
 PANEL_BOT_SORTS = ('name', 'today', 'created', 'files')
 PANEL_PAGE_SIZE = 20
+GIFT_SEND_DELAY = 0.3  # 批量私信间隔（秒），防触发限流
 PANEL_CODE_STATUSES = ('pending', 'used', 'cancelled', 'all')
 PANEL_FILE_TYPES = ('photo', 'video', 'document', 'audio', 'voice', 'animation')
 PANEL_FILE_SORTS = ('new', 'old', 'size')
@@ -234,6 +241,123 @@ def add_panel_routes(app: web.Application, bot_token: str, admin_ids) -> None:
             'status': o.get('status'), 'created_at': (o.get('created_at') or '')[:19],
         } for o in orders]})
 
+    async def gift_targets_handler(request):
+        """定向赠码名单：paid=历史付费用户 / vip=当前有效付费会员，标记已有同等级待领码的用户"""
+        if not _authorized(request):
+            return _json({'error': 'unauthorized'}, 401)
+        from config import BASIC_LEVEL
+        from db.models import VipRedeemCode
+        from services.payments import paid_user_totals
+
+        group = request.query.get('group', 'paid')
+        if group not in ('paid', 'vip'):
+            return _json({'error': 'invalid group'}, 400)
+        try:
+            level = int(request.query.get('level', str(BASIC_LEVEL)))
+        except ValueError:
+            return _json({'error': 'invalid level'}, 400)
+        if level not in (1, 2, 3, BASIC_LEVEL):
+            return _json({'error': 'invalid level'}, 400)
+
+        async with get_session() as session:
+            rows = (await session.execute(
+                select(VipRedeemCode.recipient_uid).where(
+                    VipRedeemCode.status == 'pending',
+                    VipRedeemCode.vip_level == level,
+                    VipRedeemCode.recipient_uid.isnot(None)))).all()
+        pending = {r[0] for r in rows}
+
+        users = []
+        if group == 'paid':
+            totals = await paid_user_totals()
+            for uid in sorted(totals):
+                users.append({'user_id': uid, 'paid_total': totals[uid],
+                              'pending_same_level': uid in pending})
+        else:
+            from db.vip import get_all_vip_users
+
+            now_text_value = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            for member in await get_all_vip_users():
+                expire = member['vip_expire_at']
+                if expire and expire <= now_text_value:
+                    continue  # 只列当前有效会员
+                users.append({'user_id': member['user_id'],
+                              'vip_level': member['vip_level'],
+                              'vip_expire_at': expire,
+                              'pending_same_level': member['user_id'] in pending})
+        return _json({'users': users})
+
+    async def gift_send_handler(request):
+        """批量赠码：每人一个一次性码，主 Bot 私信送达；同等级待领码用户服务端跳过"""
+        from services.runtime import master_app
+        from senders import _retry_send
+
+        actor, body = await _write_guard(request)
+        level = _int_field(body, 'level')
+        months = _int_field(body, 'months')
+        expires_days = _int_field(body, 'expires_days', required=False)
+        reason = str(body.get('reason') or '')[:500]
+        uids = body.get('users')
+        if not isinstance(uids, list) or not uids or len(uids) > 500:
+            return _json({'error': 'invalid users'}, 400)
+        try:
+            uids = sorted({int(u) for u in uids})
+        except (ValueError, TypeError):
+            return _json({'error': 'invalid users'}, 400)
+        if not uids or any(u <= 0 for u in uids):
+            return _json({'error': 'invalid users'}, 400)
+        if not master_app:
+            return _json({'error': '主 Bot 未就绪'}, 400)
+
+        from db.models import VipRedeemCode
+
+        async with get_session() as session:
+            rows = (await session.execute(
+                select(VipRedeemCode.recipient_uid).where(
+                    VipRedeemCode.status == 'pending',
+                    VipRedeemCode.vip_level == level,
+                    VipRedeemCode.recipient_uid.in_(uids)))).all()
+        skipped = sorted({r[0] for r in rows})
+        targets = [u for u in uids if u not in skipped]
+        if not targets:
+            return _json({'error': '所选用户都已有待领的同等级码'}, 400)
+
+        from services.membership import generate_redeem_codes, get_plan, REDEEM_MAX_BATCH
+
+        try:
+            plan = await get_plan(level)
+            codes, batches = [], []
+            # REDEEM_MAX_BATCH 为单批上限：人数多时自动分批，便于按批作废
+            for offset in range(0, len(targets), REDEEM_MAX_BATCH):
+                chunk_targets = targets[offset : offset + REDEEM_MAX_BATCH]
+                chunk, batch = await generate_redeem_codes(
+                    actor, level, months, len(chunk_targets), expires_days,
+                    recipients=chunk_targets)
+                codes.extend(chunk)
+                batches.append(batch)
+        except ValueError as e:
+            return _json({'error': str(e)}, 400)
+
+        months_text = '永久' if months == 0 else f'{months} 个月'
+        bot = master_app.bot
+        sent, failed = [], []
+        for uid, code in zip(targets, codes):
+            text = (f"🎁 感谢您的支持！\n"
+                    f"送您 {plan['name']} {months_text} 兑换码：\n"
+                    f"<code>{code}</code>\n"
+                    f"在主 Bot 发送 /redeem <code>{code}</code> 即可兑换")
+            try:
+                await _retry_send(bot.send_message, chat_id=uid, text=text,
+                                  parse_mode='HTML')
+                sent.append({'user_id': uid, 'code': code})
+            except Forbidden:
+                failed.append({'user_id': uid, 'error': '用户已停用 Bot，无法私信（码保留可补发）'})
+            except Exception as e:
+                failed.append({'user_id': uid, 'error': str(e)[:120]})
+            await asyncio.sleep(GIFT_SEND_DELAY)
+        return _json({'batches': batches, 'reason': reason, 'sent': sent,
+                      'failed': failed, 'skipped': skipped})
+
     async def user_handler(request):
         if not _authorized(request):
             return _json({'error': 'unauthorized'}, 401)
@@ -362,6 +486,8 @@ def add_panel_routes(app: web.Application, bot_token: str, admin_ids) -> None:
     app.router.add_post(f'{base}/api/codes/generate', codes_generate_handler)
     app.router.add_post(f'{base}/api/codes/cancel', codes_cancel_handler)
     app.router.add_post(f'{base}/api/vip/set', vip_set_handler)
+    app.router.add_get(f'{base}/api/gift/targets', gift_targets_handler)
+    app.router.add_post(f'{base}/api/gift/send', gift_send_handler)
     # 静态资源（app.js / styles.css / vendor），放最后避免盖过 API 路由
     app.router.add_static(f'{base}/', str(_static_dir()))
     logger.info("管理面板已挂载 %s（只读，%d 位管理员）", base, len(admin_ids))

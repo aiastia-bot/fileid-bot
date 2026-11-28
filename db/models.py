@@ -287,6 +287,8 @@ class VipRedeemCode(Base):
     expires_at: Mapped[str] = mapped_column(String(32), nullable=True)  # 码有效期，空=永久有效
     redeemed_by: Mapped[int] = mapped_column(BigInteger, nullable=True)
     redeemed_at: Mapped[str] = mapped_column(String(32), nullable=True)
+    # 定向赠码的收件人（面板 /vipadmin gift 发放时记录），用于防重复发送
+    recipient_uid: Mapped[int] = mapped_column(BigInteger, nullable=True)
 
 
 class BackupConfig(Base):

@@ -89,6 +89,10 @@ Vue.createApp({
       // 会员
       vips: [], vipsLoaded: false, showVipForm: false,
       vipForm: { userId: '', level: 1, months: 12 }, vipResult: '', vipError: '',
+      // 定向赠送
+      gift: { group: 'paid', level: 3, months: 1, expiresDays: '', reason: '',
+              confirmed: false, selected: [], loading: false, sending: false,
+              error: '', result: null, addId: '' },
       // 订单
       orders: [], ordersLoaded: false,
       errors: {},
@@ -270,6 +274,41 @@ Vue.createApp({
         const data = await api('/orders');
         this.orders = data.orders; this.ordersLoaded = true; this.errors.orders = '';
       } catch (e) { this.errors.orders = e.message; }
+    },
+    async loadGiftTargets() {
+      this.gift.loading = true; this.gift.error = '';
+      try {
+        const data = await api(`/gift/targets?group=${this.gift.group}&level=${this.gift.level}`);
+        this.gift.selected = data.users.map(u => ({ ...u }));
+        this.gift.confirmed = true;
+        this.gift.result = null;
+      } catch (e) { this.gift.error = e.message; }
+      this.gift.loading = false;
+    },
+    giftAddUser() {
+      const uid = Number(this.gift.addId);
+      if (!uid || uid <= 0) { this.gift.error = '请输入有效的用户 ID'; return; }
+      if (this.gift.selected.some(u => u.user_id === uid)) {
+        this.gift.error = `${uid} 已在名单里`; return;
+      }
+      this.gift.selected.push({ user_id: uid, added: true, pending_same_level: false });
+      this.gift.addId = ''; this.gift.error = '';
+    },
+    async sendGift() {
+      await this.run(async () => {
+        this.gift.sending = true; this.gift.error = '';
+        try {
+          const data = await api('/gift/send', { method: 'POST', body: {
+            level: this.gift.level, months: this.gift.months,
+            expires_days: this.gift.expiresDays === '' ? null : Number(this.gift.expiresDays),
+            reason: this.gift.reason,
+            users: this.gift.selected.map(u => u.user_id),
+          } });
+          this.gift.result = data;
+          this.loadCodes();
+        } catch (e) { this.gift.error = e.message; }
+        this.gift.sending = false;
+      });
     },
   },
   mounted() {
