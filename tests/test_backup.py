@@ -394,6 +394,30 @@ class TestPurgeDeadBot(unittest.IsolatedAsyncioTestCase):
         files = await get_collection_files('col_purge_both_owners')
         assert [f['code'] for f in files] == [same_owner_code]
 
+    async def test_purge_repoints_only_to_active_same_owner_bot(self):
+        """同主人的失效 Bot（deleted/paused）不能当改挂目标：file_id 无在线 Bot 可发"""
+        from db import purge_bot_files
+        from db.collections import get_collection_files
+
+        # 失效副本的 id 更小：若无状态过滤会按 id 顺序被选中
+        dead_bot = await _add_bot(100, 334, 'deadbot', status='deleted')
+        paused_bot = await _add_bot(100, 335, 'pausedbot', status='paused')
+        await save_file(1, 'document', 'FID_DEAD', 100, 'uniq-offline',
+                        'deadbot', 'deadbot', bot_db_id=dead_bot)
+        await save_file(1, 'document', 'FID_PAUSED', 100, 'uniq-offline',
+                        'pausedbot', 'pausedbot', bot_db_id=paused_bot)
+        live_code = await save_file(0, 'document', 'FID_LIVE', 100, 'uniq-offline',
+                                    'backupb', 'backupb', bot_db_id=self.b)
+        source_code = await save_file(1, 'document', 'FID_SOURCE', 100, 'uniq-offline',
+                                      'backupa', 'backupa', bot_db_id=self.a)
+        await self._make_collection('col_purge_inactive', [source_code])
+
+        result = await purge_bot_files(self.a)
+
+        assert result['repointed_items'] == 1
+        files = await get_collection_files('col_purge_inactive')
+        assert [f['code'] for f in files] == [live_code]
+
     async def test_purge_skips_repoint_when_backup_code_already_in_collection(self):
         """集合里已挂着同一副本的项：移除冗余项而非改挂出重复"""
         from db import purge_bot_files

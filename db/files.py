@@ -520,7 +520,11 @@ async def purge_bot_files(bot_db_id: int, batch_size: int = 5000) -> Dict:
 
 async def _backup_codes_by_unique(session, uniques: set,
                                   exclude_bot_db_id: int) -> Dict:
-    """file_unique_id → 同主人其他 Bot 上有效副本的代码（多副本取 id 最小的）"""
+    """file_unique_id → 同主人其他在线 Bot 上有效副本的代码（多副本取 id 最小的）
+
+    只取 status=active 的目标：paused/deleted 等 Bot 已停止，file_id 无法由
+    任何在线 Bot 发送，改挂过去用户照样取不回文件，不如让条目正常移除。
+    """
     if not uniques:
         return {}
     source_owner = (select(UserBot.owner_id)
@@ -533,6 +537,7 @@ async def _backup_codes_by_unique(session, uniques: set,
         .where(FileMapping.file_unique_id.in_(uniques),
                FileMapping.bot_db_id != exclude_bot_db_id,
                UserBot.owner_id == source_owner,
+               UserBot.status == 'active',
                or_(FileMapping.is_valid.is_(None), FileMapping.is_valid == 1))
         .order_by(FileMapping.id)
     )).all()
