@@ -394,15 +394,31 @@ async def test_upgrade_order_audited_on_fulfill(database):
 
 
 async def test_payment_discount_migration(database):
+    """旧库升级：表里有历史行时也能安全补列（SQLite 拒绝给非空表加无默认 NOT NULL 列）"""
     from db.core import init_db, get_engine
     from sqlalchemy import text
 
     async with get_engine().begin() as conn:
-        await conn.execute(text('ALTER TABLE payment_orders DROP COLUMN discount'))
+        # 模拟旧版生产库：按旧表结构重建并保留历史行
+        await conn.execute(text('DROP TABLE payment_orders'))
+        await conn.execute(text(
+            'CREATE TABLE payment_orders ('
+            'payload TEXT PRIMARY KEY, user_id BIGINT, product VARCHAR(16), '
+            'level INTEGER, months INTEGER, amount INTEGER, charge_id VARCHAR(255), '
+            'status VARCHAR(32), attempts INTEGER, next_retry BIGINT, error TEXT, '
+            'created_at VARCHAR(32), updated_at VARCHAR(32))'))
+        await conn.execute(text(
+            "INSERT INTO payment_orders (payload, user_id, product, level, months, amount, "
+            "status, attempts, next_retry, error, created_at, updated_at) "
+            "VALUES ('legacy', 1, 'vip', 1, 1, 100, 'completed', 0, 0, '', "
+            "'2026-01-01 00:00:00', '2026-01-01 00:00:00')"))
         await conn.execute(text('DELETE FROM schema_versions WHERE version=8'))
     await init_db()
     await init_db()  # 幂等
     async with get_engine().begin() as conn:
         cols = [row[1] for row in
                 (await conn.execute(text('PRAGMA table_info(payment_orders)'))).fetchall()]
+        rows = (await conn.execute(
+            text('SELECT payload, discount FROM payment_orders'))).fetchall()
     assert 'discount' in cols
+    assert rows == [('legacy', 0)]  # 历史行回填默认值，订单数据完好

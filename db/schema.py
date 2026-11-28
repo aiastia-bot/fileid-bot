@@ -110,8 +110,16 @@ async def upgrade(conn):
 def _add_column_if_missing(conn, column):
     table_name = column.table.name
     if column.name not in {c['name'] for c in inspect(conn).get_columns(table_name)}:
-        ddl = CreateColumn(column).compile(dialect=conn.dialect)
+        ddl = str(CreateColumn(column).compile(dialect=conn.dialect))
+        # SQLite 拒绝给非空表加「无默认值的 NOT NULL 列」：先加可空列，再回填模型默认值
+        ddl = ddl.replace(' NOT NULL', '')
         conn.execute(text(f'ALTER TABLE {table_name} ADD COLUMN {ddl}'))
+        if column.default is not None and column.default.is_scalar:
+            conn.execute(
+                text(f'UPDATE {table_name} SET {column.name} = :value '
+                     f'WHERE {column.name} IS NULL'),
+                {'value': column.default.arg},
+            )
 
 
 async def _backfill_pending_inbox(conn):
