@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 from sqlalchemy import inspect, select, text
 from sqlalchemy.schema import CreateColumn
-from db.models import Base, SchemaVersion, UpdateInbox, UserNotice
+from db.models import Base, PaymentOrder, SchemaVersion, UpdateInbox, UserNotice
 
 
 async def upgrade(conn):
@@ -95,6 +95,14 @@ async def upgrade(conn):
         await conn.execute(
             SchemaVersion.__table__.insert().values(
                 version=7, applied_at=datetime.now().isoformat(timespec="seconds")
+            )
+        )
+    if 8 not in applied:
+        # 升级补差价：订单记录抵扣的剩余价值
+        await conn.run_sync(_add_column_if_missing, PaymentOrder.__table__.c.discount)
+        await conn.execute(
+            SchemaVersion.__table__.insert().values(
+                version=8, applied_at=datetime.now().isoformat(timespec="seconds")
             )
         )
 

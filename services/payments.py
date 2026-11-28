@@ -1,5 +1,6 @@
 """Unique order ledger, atomic VIP fulfilment and recoverable payment checks."""
 
+import json
 import logging
 import time
 import uuid
@@ -8,14 +9,14 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from telegram.error import BadRequest, NetworkError, TelegramError
 from db.core import get_session, _model_to_dict
-from db.models import PaymentOrder, StarPayment, User
+from db.models import MembershipAudit, PaymentOrder, StarPayment, User
 from services.membership import get_plan, grant, invalidate_user, now_text
 from config import BASIC_LEVEL, PREMIUM_GIFT_PRICES, PREMIUM_USER_MARKUP, VIP_PLANS
 
 logger = logging.getLogger(__name__)
 
 
-async def create_order(user_id, product, months, level=0):
+async def create_order(user_id, product, months, level=0, discount_stars=0):
     if product == "vip":
         if level not in (1, 2, 3, BASIC_LEVEL) or months not in (1, 12):
             raise ValueError("无效的会员方案")
@@ -38,6 +39,12 @@ async def create_order(user_id, product, months, level=0):
         amount = PREMIUM_GIFT_PRICES[months] + PREMIUM_USER_MARKUP
     else:
         raise ValueError("无效的商品")
+    if discount_stars:
+        if product != "vip":
+            raise ValueError("该商品不支持抵扣")
+        if not 0 < discount_stars < amount:
+            raise ValueError("抵扣金额无效")
+        amount -= discount_stars
     payload = "order_" + uuid.uuid4().hex
     async with get_session() as session:
         order = PaymentOrder(
@@ -47,6 +54,7 @@ async def create_order(user_id, product, months, level=0):
             level=level,
             months=months,
             amount=amount,
+            discount=discount_stars,
             status="created",
             attempts=0,
             next_retry=0,
@@ -57,6 +65,34 @@ async def create_order(user_id, product, months, level=0):
         session.add(order)
         await session.commit()
         return _model_to_dict(order)
+
+
+async def upgrade_credit(user_id: int, info: dict, target_price: int) -> tuple[int, int]:
+    """升级抵扣：当前有效会员的剩余价值（⭐）与剩余天数。
+
+    日均价按最近一笔同等级 StarPayment 的实付折算（年付折扣不漏算），
+    无支付记录（兑换码/管理员开通）则按月付价兜底。剩余天数向下取整，
+    略让利给用户。剩余价值 ≥ 目标价时由调用方禁止购买。
+    """
+    expire = info.get('vip_expire_at')
+    if not info.get('is_active') or not expire:
+        return 0, 0
+    remaining_days = (datetime.strptime(expire, "%Y-%m-%d %H:%M:%S") - datetime.now()).days
+    if remaining_days <= 0:
+        return 0, 0
+    daily = None
+    async with get_session() as session:
+        payment = (await session.execute(
+            select(StarPayment).where(
+                StarPayment.user_id == user_id,
+                StarPayment.vip_level == info['vip_level'])
+            .order_by(StarPayment.id.desc()).limit(1))).scalars().first()
+    if payment and payment.months:
+        daily = payment.amount / (payment.months * 30)
+    else:
+        plan = await get_plan(info['vip_level'])
+        daily = plan['monthly_price'] / 30
+    return int(remaining_days * daily), remaining_days
 
 
 async def get_order(payload):
@@ -269,7 +305,20 @@ async def fulfill_order(bot, payload):
                         created_at=now_text(),
                     )
                     session.add(user)
+                upgrade_before = {
+                    "level": user.vip_level, "expires": user.vip_expire_at,
+                }
                 grant(user, order["level"], order["months"])
+                if order.get("discount"):
+                    session.add(MembershipAudit(
+                        actor_id=order["user_id"], user_id=order["user_id"],
+                        action="member:upgrade",
+                        before=json.dumps(upgrade_before),
+                        after=json.dumps(
+                            {"level": user.vip_level, "expires": user.vip_expire_at}),
+                        reason=f"升级补差价，抵扣 {order['discount']}⭐",
+                        created_at=now_text(),
+                    ))
                 session.add(
                     StarPayment(
                         user_id=order["user_id"],

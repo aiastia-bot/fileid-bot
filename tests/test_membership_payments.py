@@ -287,3 +287,122 @@ async def test_buy_denied_callback_routes_to_alert(database, monkeypatch):
         SimpleNamespace(callback_query=query2, effective_user=SimpleNamespace(id=99)),
         SimpleNamespace())
     assert '重新发送 /vip' in query2.answer.await_args.args[0]
+
+
+async def test_upgrade_credit_calculation(database):
+    from datetime import timedelta
+    from services.payments import upgrade_credit
+
+    uid = 5566001
+    info = {'vip_level': 1, 'is_active': True,
+            'vip_expire_at': (datetime.now() + timedelta(days=20, minutes=5)).strftime(
+                '%Y-%m-%d %H:%M:%S')}
+    # 无支付记录：按月付价兜底 int(20 天 × 100⭐/30 天) = 66
+    credit, days = await upgrade_credit(uid, info, 500)
+    assert (days, credit) == (20, 66)
+
+    # 最近一笔实付是年付 → 日均价按实付折算，折扣不漏算
+    async with get_session() as session:
+        session.add(StarPayment(user_id=uid, amount=1000, vip_level=1, months=12,
+                                payload='upg-p1', telegram_charge_id='c-upg-1',
+                                created_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        await session.commit()
+    credit2, _ = await upgrade_credit(uid, info, 500)
+    assert credit2 == int(20 * 1000 / 360)  # 55
+
+    expired = {'vip_level': 1, 'is_active': False, 'vip_expire_at': info['vip_expire_at']}
+    assert await upgrade_credit(uid, expired, 500) == (0, 0)
+    assert await upgrade_credit(uid, {'vip_level': 0, 'is_active': True,
+                                      'vip_expire_at': None}, 500) == (0, 0)
+
+
+async def test_create_order_upgrade_discount(database):
+    order = await create_order(5566002, 'vip', 1, 3, discount_stars=66)
+    assert (order['amount'], order['discount']) == (434, 66)
+    with pytest.raises(ValueError):
+        await create_order(5566002, 'vip', 1, 3, discount_stars=500)  # 倒挂：抵扣≥标价
+    with pytest.raises(ValueError):
+        await create_order(5566002, 'vip', 1, 3, discount_stars=-5)
+    with pytest.raises(ValueError):
+        await create_order(5566002, 'premium', 3, 0, discount_stars=10)  # 仅会员支持抵扣
+
+
+async def test_buy_vip_upgrade_discount_flow(database, monkeypatch):
+    from datetime import timedelta
+    from handlers.master import stars
+    from services.payments import get_order
+
+    async def fake_info(user_id):
+        return {'user_id': user_id, 'vip_level': 1, 'vip_name': 'VIP 1',
+                'is_active': True,
+                'vip_expire_at': (datetime.now() + timedelta(days=20, minutes=5)).strftime(
+                    '%Y-%m-%d %H:%M:%S')}
+
+    monkeypatch.setattr('db.vip.get_user_vip_info', fake_info)
+    send_invoice = AsyncMock()
+    context = SimpleNamespace(bot=SimpleNamespace(send_invoice=send_invoice))
+    query = SimpleNamespace(answer=AsyncMock(), data='buy_vip|3|1',
+                            message=SimpleNamespace(reply_text=AsyncMock()))
+    await stars.buy_vip_callback(
+        SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=99)), context)
+    send_invoice.assert_awaited_once()
+    kwargs = send_invoice.await_args.kwargs
+    assert kwargs['prices'][0].amount == 434  # 500 − int(20×100/30)
+    assert '已抵扣当前会员剩余价值 66⭐（剩余 20 天）' in kwargs['description']
+    stored = await get_order(kwargs['payload'])
+    assert (stored['amount'], stored['discount']) == (434, 66)
+
+
+async def test_buy_vip_upgrade_inverted_blocked(database, monkeypatch):
+    from datetime import timedelta
+    from handlers.master import stars
+
+    async def fake_info(user_id):
+        return {'user_id': user_id, 'vip_level': 2, 'vip_name': 'VIP 2',
+                'is_active': True,
+                'vip_expire_at': (datetime.now() + timedelta(days=200, minutes=5)).strftime(
+                    '%Y-%m-%d %H:%M:%S')}
+
+    monkeypatch.setattr('db.vip.get_user_vip_info', fake_info)
+    create_order_mock = AsyncMock()
+    monkeypatch.setattr('services.payments.create_order', create_order_mock)
+    query = SimpleNamespace(answer=AsyncMock(), data='buy_vip|3|1',
+                            message=SimpleNamespace(reply_text=AsyncMock()))
+    await stars.buy_vip_callback(
+        SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=99)),
+        SimpleNamespace(bot=SimpleNamespace(send_invoice=AsyncMock())))
+    last = query.answer.await_args_list[-1]
+    assert last.kwargs.get('show_alert') is True
+    assert '剩余价值已超过目标价格' in last.args[0]
+    create_order_mock.assert_not_awaited()
+
+
+async def test_upgrade_order_audited_on_fulfill(database):
+    order = await create_order(5566003, 'vip', 1, 3, discount_stars=66)
+    await receive_payment(order['payload'], order['user_id'], order['amount'],
+                          'XTR', 'charge-upg-2')
+    bot = payment_bot(order, charge='charge-upg-2')
+    assert await fulfill_order(bot, order['payload']) == 'completed'
+    async with get_session() as session:
+        audits = (await session.execute(
+            select(MembershipAudit).where(
+                MembershipAudit.user_id == order['user_id'],
+                MembershipAudit.action == 'member:upgrade'))).scalars().all()
+    assert len(audits) == 1 and '抵扣 66⭐' in audits[0].reason
+    info = await get_user_vip_info(order['user_id'])
+    assert info['vip_level'] == 3 and info['is_active']
+
+
+async def test_payment_discount_migration(database):
+    from db.core import init_db, get_engine
+    from sqlalchemy import text
+
+    async with get_engine().begin() as conn:
+        await conn.execute(text('ALTER TABLE payment_orders DROP COLUMN discount'))
+        await conn.execute(text('DELETE FROM schema_versions WHERE version=8'))
+    await init_db()
+    await init_db()  # 幂等
+    async with get_engine().begin() as conn:
+        cols = [row[1] for row in
+                (await conn.execute(text('PRAGMA table_info(payment_orders)'))).fetchall()]
+    assert 'discount' in cols

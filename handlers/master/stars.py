@@ -29,7 +29,8 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """/vip 查看 VIP 状态和购买选项"""
     user_id = update.effective_user.id
     vip_info = await get_user_vip_info(user_id)
-    from services.membership import get_plans, downgrade_blocked
+    from services.membership import get_plans, downgrade_blocked, PLAN_RANK
+    from services.payments import upgrade_credit
     plans = await get_plans()
     free_closed = await is_free_registration_closed()
 
@@ -86,8 +87,8 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     text += (
         f"\n💡 年付享优惠（约 10 个月价格）\n"
-        f"同等级续费叠加；更换等级从购买日起重新计算有效期。\n"
-        f"会员有效期内不能购买更低等级（按钮置灰）。\n\n"
+        f"同等级续费叠加；升级自动按剩余价值抵扣差价。\n"
+        f"会员有效期内不能购买更低等级。\n\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🔒 <b>转发保护</b>（VIP 1+ 独有）\n"
         f"控制你 Bot 发送的图片/视频是否允许被接收者转发或保存。\n\n"
@@ -122,15 +123,33 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )])
             continue
         icon = "💎" if level == BASIC_LEVEL else "⭐" * level
-        row_monthly = InlineKeyboardButton(
-            f"{icon} {escape(plan['name'])} 月付 {plan['monthly_price']}⭐",
-            callback_data=f"buy_vip|{level}|1"
-        )
-        row_yearly = InlineKeyboardButton(
-            f"{icon} {escape(plan['name'])} 年付 {plan['yearly_price']}⭐",
-            callback_data=f"buy_vip|{level}|12"
-        )
-        keyboard.append([row_monthly, row_yearly])
+        # 升级补差价：显示抵扣后的实付价；剩余价值高于此档价时禁用该周期按钮
+        credit = 0
+        if vip_info['is_active'] and PLAN_RANK.get(level, 0) > PLAN_RANK.get(vip_info['vip_level'], 0):
+            credit, _ = await upgrade_credit(user_id, vip_info, plan['monthly_price'])
+        note = f"（已抵扣 {credit}⭐）" if credit else ""
+        monthly_due = plan['monthly_price'] - credit
+        yearly_due = plan['yearly_price'] - credit
+        if monthly_due >= 1:
+            keyboard.append([InlineKeyboardButton(
+                f"{icon} {escape(plan['name'])} 月付 {monthly_due}⭐{note}",
+                callback_data=f"buy_vip|{level}|1",
+            )])
+        else:
+            keyboard.append([InlineKeyboardButton(
+                f"🚫 {escape(plan['name'])} 月付（剩余价值超过此档）",
+                callback_data=f"upgrade_block|{level}",
+            )])
+        if yearly_due >= 1:
+            keyboard.append([InlineKeyboardButton(
+                f"{icon} {escape(plan['name'])} 年付 {yearly_due}⭐{note}",
+                callback_data=f"buy_vip|{level}|12",
+            )])
+        else:
+            keyboard.append([InlineKeyboardButton(
+                f"🚫 {escape(plan['name'])} 年付（剩余价值超过此档）",
+                callback_data=f"upgrade_block|{level}",
+            )])
 
     # 底部按钮
     bottom_row = []
@@ -199,10 +218,24 @@ async def buy_vip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         f"有效期 {30 * months} 天"
     )
 
+    # 升级补差价：当前有效会员的剩余价值抵扣目标价款
+    from services.membership import PLAN_RANK
+    from services.payments import create_order, upgrade_credit
+    discount = remaining_days = 0
+    if info['is_active'] and PLAN_RANK.get(level, 0) > PLAN_RANK.get(info['vip_level'], 0):
+        credit, remaining_days = await upgrade_credit(user_id, info, price)
+        if credit >= price:
+            await query.answer(
+                "你当前会员的剩余价值已超过目标价格，无法直接购买。\n"
+                "可购买更长周期，或联系管理员处理。", show_alert=True)
+            return
+        discount = credit
+    if discount:
+        description += f"\n已抵扣当前会员剩余价值 {discount}⭐（剩余 {remaining_days} 天）"
+
     # 生成 payload
-    from services.payments import create_order
     try:
-        order = await create_order(user_id, 'vip', months, level)
+        order = await create_order(user_id, 'vip', months, level, discount_stars=discount)
     except ValueError as exc:
         await _retry_send(query.message.reply_text, str(exc))
         return
@@ -460,6 +493,10 @@ async def vip_callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.answer(_downgrade_alert(info), show_alert=True)
         else:
             await query.answer("现在可以购买该等级了，请重新发送 /vip 选择。", show_alert=True)
+    elif data.startswith("upgrade_block|"):
+        await query.answer(
+            "此档位价格低于你当前会员的剩余价值，无法直接购买。\n"
+            "可购买更长周期的更高档位，或联系管理员处理。", show_alert=True)
     elif data == "vip_history":
         await vip_history_callback(update, context)
     elif data == "vip_migrate":

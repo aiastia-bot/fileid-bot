@@ -192,6 +192,7 @@ class PaymentOrder(Base):
     level: Mapped[int] = mapped_column(Integer, default=0)
     months: Mapped[int] = mapped_column(Integer)
     amount: Mapped[int] = mapped_column(Integer)
+    discount: Mapped[int] = mapped_column(Integer, default=0)  # 升级抵扣的剩余价值（⭐）
     charge_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default='created', index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)

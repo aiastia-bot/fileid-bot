@@ -396,7 +396,7 @@ def _register_master_handlers(application: Application):
         successful_payment_handler,
     )
     application.add_handler(CommandHandler("vip", vip_command))
-    application.add_handler(CallbackQueryHandler(vip_callback_router, pattern=r'^(buy_vip|buy_denied|vip_history|vip_migrate)'))
+    application.add_handler(CallbackQueryHandler(vip_callback_router, pattern=r'^(buy_vip|buy_denied|upgrade_block|vip_history|vip_migrate)'))
     application.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
     # 支付成功消息：用专用 filter，避免 TypeHandler(Update) 吞掉普通文本 handler。
     # 内部按 payload 前缀分流 vip_ / premium_。
