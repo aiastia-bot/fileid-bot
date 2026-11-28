@@ -97,6 +97,7 @@ class BotManager:
         # 防雪崩：每个 Bot 独立的并发信号量
         self._bot_semaphores: Dict[int, asyncio.Semaphore] = {}
         self._loading = False  # Bot 正在加载中，期间对未知 Bot 返回 503 让 Telegram 重试
+        self._retry_fail_streak: Dict[int, int] = {}  # bot_db_id -> 连续重试失败次数（日志退避用）
 
 
     def _create_user_bot_app(self, token: str) -> Application:
@@ -516,14 +517,22 @@ class BotManager:
         「应用未加载」状态（其积压 update 被静默跳过）直到下次重启。
         由定时任务周期调用，为这批 Bot 提供自愈；Token 已失效/冻结的
         Bot 会被自动标记停止并移出活跃列表，不会无限重试。
+        持续失败的 Bot 日志退避：首轮 WARNING，之后降为 DEBUG，恢复后重新告警。
         """
         if self._loading:
             return 0
         bots = await get_all_active_user_bots()
         missing = [b for b in bots if b.get('id') not in self._apps]
+        # 已恢复 / 移出活跃列表的 Bot 不再保留失败计数（放早退前，保证回收）
+        for gone in set(self._retry_fail_streak) - {b['id'] for b in missing}:
+            del self._retry_fail_streak[gone]
         if not missing:
             return 0
-        logger.info("重试加载 %d 个未就绪的活跃 Bot", len(missing))
+        # 汇总行退避：全部都是上轮已失败过的 → 静默重试（DEBUG），有新面孔才 INFO
+        if all(b['id'] in self._retry_fail_streak for b in missing):
+            logger.debug("重试加载 %d 个未就绪的活跃 Bot（持续失败，静默重试）", len(missing))
+        else:
+            logger.info("重试加载 %d 个未就绪的活跃 Bot", len(missing))
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_STARTS)
 
         async def _start_one(bot):
@@ -531,13 +540,22 @@ class BotManager:
                 return bot, await self._start_active_bot(bot['id'])
 
         results = await asyncio.gather(*[_start_one(b) for b in missing])
-        recovered = sum(1 for _, ok in results if ok)
+        recovered = 0
         for bot, ok in results:
             name = bot.get('bot_username', 'unknown')
+            bot_id = bot['id']
             if ok:
+                self._retry_fail_streak.pop(bot_id, None)
+                recovered += 1
                 logger.info("  ✅ @%s 重试加载成功", name)
             else:
-                logger.warning("  ⏳ @%s 仍未加载成功，下个周期再试", name)
+                streak = self._retry_fail_streak.get(bot_id, 0) + 1
+                self._retry_fail_streak[bot_id] = streak
+                if streak == 1:
+                    logger.warning("  ⏳ @%s 加载失败，下个周期再试", name)
+                else:
+                    logger.debug("  ⏳ @%s 仍未加载成功（连续 %d 次），下个周期再试",
+                                 name, streak)
         return recovered
 
     async def _start_active_bot(self, bot_db_id):

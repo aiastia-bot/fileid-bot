@@ -74,6 +74,42 @@ async def test_retry_skipped_while_initial_load(database, monkeypatch):
     called.assert_not_awaited()
 
 
+async def test_retry_persistent_failure_backoff(database, monkeypatch, caplog):
+    """持续失败的 Bot 日志退避：首轮 WARNING，之后 DEBUG，恢复后重新告警"""
+    import logging
+
+    manager = BotManager()
+    monkeypatch.setattr(
+        bm_module, "get_all_active_user_bots",
+        AsyncMock(return_value=[{"id": 2, "bot_username": "flaky"}]),
+    )
+    monkeypatch.setattr(bm_module, 'get_user_bot_by_id', AsyncMock(return_value={
+        'id': 2, 'bot_username': 'flaky', 'status': 'active',
+    }))
+
+    async def fake_start(record):
+        return record['id'] in manager._apps   # 初始都失败，恢复后成功
+
+    monkeypatch.setattr(manager, "start_bot", fake_start)
+
+    with caplog.at_level(logging.INFO):
+        await manager.retry_failed_bots()
+    assert '重试加载 1 个未就绪的活跃 Bot' in caplog.text       # 有新面孔 → INFO
+    assert '⏳ @flaky 加载失败' in caplog.text                  # 首轮失败 → WARNING
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        await manager.retry_failed_bots()
+    assert '重试加载' not in caplog.text                        # 汇总降为 DEBUG
+    assert 'flaky' not in caplog.text                          # 失败详情降为 DEBUG
+
+    manager._apps[2] = SimpleNamespace()                        # 恢复加载
+    with caplog.at_level(logging.INFO):
+        recovered = await manager.retry_failed_bots()
+    assert recovered == 0   # 已在 _apps 里，不再算 missing
+    assert manager._retry_fail_streak == {}                  # 计数已清（本就不在 missing 里）
+
+
 async def test_startup_reports_quota_rejection(monkeypatch, caplog):
     from db import bots, vip
 

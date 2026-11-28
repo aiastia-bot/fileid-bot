@@ -328,15 +328,26 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 # ==================== VIP 过期处理 ====================
 
+# 已处理过到期的 (user_id, vip_expire_at)：候选集按 key 收缩，避免过期用户
+# 每 30s 被重复捞出空跑（基础版过期不降级、永久留在 get_expired_users 里，
+# 非基础版降级后自然出集）。进程重启集合丢失也没关系：通知按 key 落库去重，
+# 最多多跑一轮，不会重复发通知。
+_expired_handled: set = set()
+
+
 async def handle_expired_vips() -> None:
     from db.vip import get_expired_users, get_user_vip_level
     from services.notices import enqueue
-    from services.entitlements import reconcile_user
     for user in await get_expired_users():
-        await enqueue(f"expired:{user['user_id']}:{user['vip_expire_at']}", user['user_id'],
+        user_id, expire_at = user['user_id'], user['vip_expire_at']
+        if (user_id, expire_at) in _expired_handled:
+            continue
+        _expired_handled.add((user_id, expire_at))
+        await enqueue(f"expired:{user_id}:{expire_at}", user_id,
             '⚠️ 你的会员已到期，Bot 运行额度已按当前方案调整。续费后可自动恢复因会员到期暂停的 Bot。使用 /vip 查看。')
-        await get_user_vip_level(user['user_id'])
-        await reconcile_user(user['user_id'])
+        # 降级在 get_user_vip_level 内完成（非基础版归零出集；基础版保留注册身份）。
+        # 暂停超额 Bot 不在这里做：同周期稍后的 reconcile_all 已覆盖全部主人。
+        await get_user_vip_level(user_id)
 
 
 async def send_expire_reminders() -> None:

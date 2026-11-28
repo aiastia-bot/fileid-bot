@@ -165,6 +165,38 @@ class TestBasicPlanLifecycle(unittest.IsolatedAsyncioTestCase):
         user = await get_or_create_user(uid)
         self.assertIsNone(user['vip_expire_at'])
 
+    async def test_expired_vips_job_shrinks_candidate_set(self):
+        """到期处理任务：通知与降级只做一次，不随 30s 周期反复空跑"""
+        from sqlalchemy import delete, select
+        from db.models import UserNotice
+        from handlers.master.stars import handle_expired_vips, _expired_handled
+
+        basic, vip1 = 1005, 1006
+        past = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        await _set_user(basic, BASIC_LEVEL, past)   # 基础版过期：不降级，永久留候选集
+        await _set_user(vip1, 1, past)              # VIP1 过期：降级出集
+
+        async with get_session() as session:
+            await session.execute(delete(UserNotice))
+            await session.commit()
+
+        _expired_handled.clear()
+        await handle_expired_vips()
+        async with get_session() as session:
+            notices = (await session.execute(
+                select(UserNotice).where(UserNotice.key.like('expired:%')))).scalars().all()
+        self.assertEqual({n.user_id for n in notices}, {basic, vip1})
+        # VIP1 已降级出集；基础版保留注册身份
+        self.assertEqual((await get_or_create_user(vip1))['vip_level'], 0)
+        self.assertEqual((await get_or_create_user(basic))['vip_level'], BASIC_LEVEL)
+
+        # 第二轮：候选集已收缩（内存标记），不产生新通知、不再触碰用户
+        await handle_expired_vips()
+        async with get_session() as session:
+            notices2 = (await session.execute(
+                select(UserNotice).where(UserNotice.key.like('expired:%')))).scalars().all()
+        self.assertEqual(len(notices2), len(notices), '已处理的过期用户不再重复入队')
+
 
 class TestCapacityGate(unittest.IsolatedAsyncioTestCase):
 
