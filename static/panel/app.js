@@ -2,6 +2,21 @@
 /* 管理面板前端（Vue 3 全局构建，随仓库分发，无 CDN 依赖） */
 const tg = window.Telegram.WebApp || {};
 const API = window.location.pathname.replace(/\/$/, '') + '/api';
+// ?debug=1：跳过 initData 门禁渲染完整界面（API 会 401，用于排查渲染问题）
+const DEBUG_RENDER = new URLSearchParams(window.location.search).has('debug');
+
+// 页面内显示 JS 错误：Mini App 里看不到控制台，截图即可定位
+window.__panelErrors = [];
+function showFatal(message) {
+  window.__panelErrors.push(String(message));
+  const box = document.getElementById('fatal');
+  if (box) {
+    box.style.display = 'block';
+    box.textContent = '⚠️ 脚本错误：' + window.__panelErrors.slice(-3).join('\n');
+  }
+}
+window.addEventListener('error', e => showFatal(e.message || e.type));
+window.addEventListener('unhandledrejection', e => showFatal(e.reason?.message || String(e.reason)));
 
 const BOT_FILTERS = [['all', '全部'], ['active', '活跃'], ['revoked', 'Token 失效'], ['banned', '封禁']];
 const CODE_FILTERS = [['pending', '待兑换'], ['used', '已兑换'], ['cancelled', '已作废'], ['all', '全部']];
@@ -37,7 +52,7 @@ const RowLine = {
 };
 
 async function api(path, opts = {}) {
-  const headers = { 'X-Telegram-Init-Data': tg.initData || '' };
+  const headers = { 'X-Telegram-Init-Data': tg.initData || (DEBUG_RENDER ? 'debug' : '') };
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
   const response = await fetch(API + path, {
     method: opts.method || 'GET', headers,
@@ -313,7 +328,7 @@ Vue.createApp({
   },
   mounted() {
     try { tg.ready(); tg.expand(); } catch (e) { /* 非 Telegram 环境 */ }
-    if (!tg.initData) {
+    if (!tg.initData && !DEBUG_RENDER) {
       this.gateText = '请从 Telegram 中打开本页面（管理员命令回复里的「🖥 管理面板」按钮）。';
       return;
     }

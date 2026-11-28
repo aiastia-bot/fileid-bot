@@ -6,6 +6,12 @@
   --green: #34c759; --amber: #ff9f0a; --red: #ff453a; --gray: #8e8e93;
 }
 [v-cloak] { display: none; }
+.fatal {
+  display: none;
+  background: var(--red, #ff453a); color: #fff;
+  padding: 10px 12px; border-radius: 10px; margin-bottom: 10px;
+  font-size: 12px; word-break: break-all; white-space: pre-wrap;
+}
 body {
   font-family: -apple-system, 'PingFang SC', 'Segoe UI', Roboto, sans-serif;
   background: var(--tg-theme-bg-color, #fff);
