@@ -23,6 +23,8 @@ PANEL_BOT_STATUSES = ('active', 'revoked', 'banned', 'all')
 PANEL_BOT_SORTS = ('name', 'today', 'created', 'files')
 PANEL_PAGE_SIZE = 20
 PANEL_CODE_STATUSES = ('pending', 'used', 'cancelled', 'all')
+PANEL_FILE_TYPES = ('photo', 'video', 'document', 'audio', 'voice', 'animation')
+PANEL_FILE_SORTS = ('new', 'old', 'size')
 
 _STATUS_LABELS = {
     'active': '🟢 运行中', 'paused': '⏸ 暂停', 'revoked': '⚠️ Token 失效',
@@ -123,6 +125,7 @@ def add_panel_routes(app: web.Application, bot_token: str, admin_ids) -> None:
 
         status = request.query.get('status', 'all')
         sort = request.query.get('sort', 'name')
+        search = request.query.get('search', '').strip()[:64]
         if status not in PANEL_BOT_STATUSES or sort not in PANEL_BOT_SORTS:
             return _json({'error': 'invalid filter'}, 400)
         try:
@@ -130,7 +133,7 @@ def add_panel_routes(app: web.Application, bot_token: str, admin_ids) -> None:
         except ValueError:
             return _json({'error': 'invalid page'}, 400)
         bots, total, page = await get_platform_bot_page(
-            status, page=page, page_size=PANEL_PAGE_SIZE, sort=sort)
+            status, page=page, page_size=PANEL_PAGE_SIZE, sort=sort, search=search)
         return _json({
             'bots': [{
                 'id': b['id'], 'username': b['bot_username'],
@@ -143,6 +146,93 @@ def add_panel_routes(app: web.Application, bot_token: str, admin_ids) -> None:
             'total': total, 'page': page,
             'last_page': max(1, (total + PANEL_PAGE_SIZE - 1) // PANEL_PAGE_SIZE),
         })
+
+    async def bot_files_handler(request):
+        if not _authorized(request):
+            return _json({'error': 'unauthorized'}, 401)
+        from db import get_bot_files_page, get_user_bot_by_id
+
+        try:
+            bot_db_id = int(request.match_info['bid'])
+        except ValueError:
+            return _json({'error': 'invalid bot id'}, 400)
+        bot = await get_user_bot_by_id(bot_db_id)
+        if not bot:
+            return _json({'error': 'bot not found'}, 404)
+        file_type = request.query.get('file_type') or None
+        if file_type and file_type not in PANEL_FILE_TYPES:
+            return _json({'error': 'invalid file type'}, 400)
+        sort = request.query.get('sort', 'new')
+        if sort not in PANEL_FILE_SORTS:
+            return _json({'error': 'invalid sort'}, 400)
+        try:
+            page = int(request.query.get('page', '1'))
+        except ValueError:
+            return _json({'error': 'invalid page'}, 400)
+        files, total, page = await get_bot_files_page(
+            bot_db_id, file_type=file_type, sort=sort, page=page,
+            page_size=PANEL_PAGE_SIZE)
+        return _json({
+            'bot': {'id': bot['id'], 'username': bot['bot_username'],
+                    'status_label': _STATUS_LABELS.get(bot['status'], bot['status'])},
+            'files': files, 'total': total, 'page': page,
+            'last_page': max(1, (total + PANEL_PAGE_SIZE - 1) // PANEL_PAGE_SIZE),
+        })
+
+    async def bot_collections_handler(request):
+        if not _authorized(request):
+            return _json({'error': 'unauthorized'}, 401)
+        from db import get_user_bot_by_id
+        from db.collections import get_bot_collections_page
+
+        try:
+            bot_db_id = int(request.match_info['bid'])
+        except ValueError:
+            return _json({'error': 'invalid bot id'}, 400)
+        bot = await get_user_bot_by_id(bot_db_id)
+        if not bot:
+            return _json({'error': 'bot not found'}, 404)
+        try:
+            page = int(request.query.get('page', '1'))
+        except ValueError:
+            return _json({'error': 'invalid page'}, 400)
+        rows, total, page = await get_bot_collections_page(
+            bot_db_id, page=page, page_size=PANEL_PAGE_SIZE)
+        return _json({
+            'collections': rows, 'total': total, 'page': page,
+            'last_page': max(1, (total + PANEL_PAGE_SIZE - 1) // PANEL_PAGE_SIZE),
+        })
+
+    async def vips_handler(request):
+        if not _authorized(request):
+            return _json({'error': 'unauthorized'}, 401)
+        from db.vip import get_all_vip_users
+
+        members = await get_all_vip_users()
+        return _json({'members': [{
+            'user_id': m['user_id'], 'vip_level': m['vip_level'],
+            'vip_expire_at': m['vip_expire_at'], 'created_at': m['created_at'],
+        } for m in members]})
+
+    async def orders_handler(request):
+        if not _authorized(request):
+            return _json({'error': 'unauthorized'}, 401)
+        from services.payments import list_orders
+
+        uid = request.query.get('user_id')
+        if uid:
+            try:
+                uid = int(uid)
+            except ValueError:
+                return _json({'error': 'invalid user id'}, 400)
+        else:
+            uid = None
+        orders = await list_orders(uid, limit=50)
+        return _json({'orders': [{
+            'payload': o.get('payload'), 'user_id': o.get('user_id'),
+            'product': o.get('product'), 'amount': o.get('amount'),
+            'status': o.get('status'), 'created_at': (o.get('created_at') or '')[:19],
+        } for o in orders]})
 
     async def user_handler(request):
         if not _authorized(request):
@@ -186,8 +276,12 @@ def add_panel_routes(app: web.Application, bot_token: str, admin_ids) -> None:
     app.router.add_get(f'{base}/', index_handler)
     app.router.add_get(f'{base}/api/stats', stats_handler)
     app.router.add_get(f'{base}/api/bots', bots_handler)
+    app.router.add_get(f'{base}/api/bot/{{bid}}/files', bot_files_handler)
+    app.router.add_get(f'{base}/api/bot/{{bid}}/collections', bot_collections_handler)
     app.router.add_get(f'{base}/api/user/{{uid}}', user_handler)
     app.router.add_get(f'{base}/api/codes', codes_handler)
+    app.router.add_get(f'{base}/api/vips', vips_handler)
+    app.router.add_get(f'{base}/api/orders', orders_handler)
     logger.info("管理面板已挂载 %s（只读，%d 位管理员）", base, len(admin_ids))
 
 

@@ -312,6 +312,36 @@ async def get_files_by_bot_db_id(bot_db_id: int) -> List[Dict]:
         ]
 
 
+async def get_bot_files_page(bot_db_id: int, *, file_type: str = None,
+                             sort: str = 'new', page: int = 1, page_size: int = 20):
+    """按 Bot 分页浏览文件码（面板用）：类型筛选 + 排序 new/old/size
+
+    只返回有效记录（is_valid=1/NULL），与取回口径一致；返回 (rows, total, page)。
+    """
+    filters = [FileMapping.bot_db_id == bot_db_id,
+               or_(FileMapping.is_valid.is_(None), FileMapping.is_valid == 1)]
+    if file_type:
+        filters.append(FileMapping.file_type == file_type)
+    async with get_session() as session:
+        total = await session.scalar(
+            select(func.count()).select_from(FileMapping).where(*filters)) or 0
+        last_page = max(1, (total + page_size - 1) // page_size)
+        page = max(1, min(page, last_page))
+        if not total:
+            return [], 0, page
+        order = {'old': FileMapping.created_at.asc(),
+                 'size': FileMapping.file_size.desc()}.get(
+            sort, FileMapping.created_at.desc())
+        rows = (await session.execute(
+            select(FileMapping.code, FileMapping.file_type, FileMapping.file_size,
+                   FileMapping.user_id, FileMapping.created_at)
+            .where(*filters).order_by(order, FileMapping.id.desc())
+            .offset((page - 1) * page_size).limit(page_size))).all()
+        return ([{'code': r[0], 'file_type': r[1], 'file_size': r[2],
+                  'user_id': r[3], 'created_at': r[4]} for r in rows],
+                total, page)
+
+
 async def stream_files_by_bot_db_id(bot_db_id: int):
     """流式导出指定 Bot 的文件记录（每次取 500 行，避免全量载入内存）
 

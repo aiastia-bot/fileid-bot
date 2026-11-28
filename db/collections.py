@@ -349,3 +349,24 @@ async def get_collection_files_page_for_bot(
             )).scalars().all()
             files = [_model_to_dict(row) for row in rows]
     return {'files': files, 'total': total, 'page': page, 'total_pages': total_pages}
+
+
+async def get_bot_collections_page(bot_db_id: int, *, page: int = 1, page_size: int = 20):
+    """按 Bot 分页列出集合（面板用）；返回 (rows, total, page)"""
+    async with get_session() as session:
+        total = await session.scalar(
+            select(func.count()).select_from(Collection)
+            .where(Collection.bot_db_id == bot_db_id)) or 0
+        last_page = max(1, (total + page_size - 1) // page_size)
+        page = max(1, min(page, last_page))
+        if not total:
+            return [], 0, page
+        rows = (await session.execute(
+            select(Collection.code, Collection.name, Collection.file_count,
+                   Collection.status, Collection.created_at)
+            .where(Collection.bot_db_id == bot_db_id)
+            .order_by(Collection.created_at.desc(), Collection.id.desc())
+            .offset((page - 1) * page_size).limit(page_size))).all()
+        return ([{'code': r[0], 'name': r[1], 'file_count': r[2],
+                  'status': r[3], 'created_at': r[4]} for r in rows],
+                total, page)

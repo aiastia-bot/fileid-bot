@@ -5,6 +5,7 @@ from db.files import (  # noqa: F401
     save_file, get_file, get_files_by_codes, mark_file_invalid,
     get_active_bot_files, get_all_files_for_export,
     get_files_by_bot_username, get_files_by_bot_db_id,
+    get_bot_files_page,
     stream_files_by_bot_db_id, bot_purge_preview, purge_bot_files,
 )
 from db.collections import (  # noqa: F401
@@ -13,6 +14,7 @@ from db.collections import (  # noqa: F401
     get_user_collections, batch_add_codes_to_collection,
     get_collection_items_codes, get_collection_files_for_bot,
     get_collection_files_page_for_bot, get_collection_summary_for_bot,
+    get_bot_collections_page,
 )
 from db.bots import (  # noqa: F401
     add_user_bot, get_user_bots_by_owner, get_user_bot_by_id,

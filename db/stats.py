@@ -2,7 +2,7 @@
 import logging
 from typing import Dict, List
 
-from sqlalchemy import select, func, text, or_
+from sqlalchemy import select, func, text, or_, cast, String
 
 from db.core import get_session
 from db.models import BotFileCount, FileMapping, Collection, UserBot
@@ -114,9 +114,9 @@ async def get_platform_stats() -> Dict:
 
 
 async def get_platform_bot_page(
-    status: str, *, page: int, page_size: int, sort: str = 'name'
+    status: str, *, page: int, page_size: int, sort: str = 'name', search: str = ''
 ) -> tuple[List[Dict], int, int]:
-    """先给匹配的 Bot 排序，再取一页并计算详情。"""
+    """先给匹配的 Bot 排序，再取一页并计算详情。search 模糊匹配用户名/主人 ID。"""
     from datetime import datetime
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -131,6 +131,14 @@ async def get_platform_bot_page(
             .outerjoin(BotFileCount, BotFileCount.bot_db_id == UserBot.id)
             .where(UserBot.status != 'deleted' if status == 'all' else UserBot.status == status)
         )
+        search = (search or '').strip()
+        if search:
+            like = f"%{search}%"
+            query = query.where(or_(
+                UserBot.bot_username.ilike(like),
+                UserBot.bot_firstname.ilike(like),
+                cast(UserBot.owner_id, String).like(like),
+            ))
         if status == 'active':
             query = query.where(BotFileCount.count > 0)
 

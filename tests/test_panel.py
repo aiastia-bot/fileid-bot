@@ -9,7 +9,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from db.core import get_session
-from db.models import UserBot
+from db.models import FileMapping, UserBot
 from services import panel
 
 TOKEN = '12345:paneltest'
@@ -126,3 +126,73 @@ def test_panel_url(monkeypatch):
     monkeypatch.setattr('config.PANEL_PATH', '/panel')
     monkeypatch.setattr('config.WEBHOOK_HOST', 'bots.example.com')
     assert panel.panel_url() == 'https://bots.example.com/panel/'
+
+
+async def _seed_files_and_collections():
+    async with get_session() as session:
+        session.add_all([
+            FileMapping(bot_db_id=1, code='p1', file_type='photo', telegram_file_id='f1',
+                        file_size=300, user_id=7, created_at='2026-03-01 00:00:00', is_valid=1),
+            FileMapping(bot_db_id=1, code='v1', file_type='video', telegram_file_id='f2',
+                        file_size=900, user_id=7, created_at='2026-03-02 00:00:00', is_valid=1),
+            FileMapping(bot_db_id=1, code='d1', file_type='document', telegram_file_id='f3',
+                        file_size=500, user_id=8, created_at='2026-03-03 00:00:00', is_valid=1),
+            FileMapping(bot_db_id=1, code='x1', file_type='photo', telegram_file_id='f4',
+                        file_size=999, user_id=7, created_at='2026-03-04 00:00:00', is_valid=0),
+        ])
+        from db.models import Collection
+        session.add_all([
+            Collection(code='col1', bot_db_id=1, name='合集', file_count=2,
+                       status='completed', created_at='2026-03-05 00:00:00'),
+        ])
+        await session.commit()
+
+
+async def test_api_bot_files_filters_and_sorts(client, seeded_bot):
+    await _seed_files_and_collections()
+    good = {'X-Telegram-Init-Data': make_init_data()}
+
+    files = await client.get('/panel/api/bot/1/files', headers=good)
+    data = await files.json()
+    assert data['total'] == 3  # is_valid=0 的记录不计入
+    assert [f['code'] for f in data['files']] == ['d1', 'v1', 'p1']  # 默认最新在前
+
+    typed = await client.get('/panel/api/bot/1/files?file_type=video', headers=good)
+    data = await typed.json()
+    assert [f['code'] for f in data['files']] == ['v1']
+    assert (await client.get('/panel/api/bot/1/files?file_type=sticker', headers=good)).status == 400
+
+    biggest = await client.get('/panel/api/bot/1/files?sort=size', headers=good)
+    assert [f['code'] for f in (await biggest.json())['files']] == ['v1', 'd1', 'p1']
+
+    assert (await client.get('/panel/api/bot/999/files', headers=good)).status == 404
+    assert (await client.get('/panel/api/bot/abc/files', headers=good)).status == 400
+
+    cols = await client.get('/panel/api/bot/1/collections', headers=good)
+    data = await cols.json()
+    assert data['total'] == 1 and data['collections'][0]['code'] == 'col1'
+
+
+async def test_api_bots_search(client, seeded_bot):
+    good = {'X-Telegram-Init-Data': make_init_data()}
+    hit = await client.get('/panel/api/bots?status=all&search=pb', headers=good)
+    assert (await hit.json())['total'] == 1
+    miss = await client.get('/panel/api/bots?status=all&search=zzz', headers=good)
+    assert (await miss.json())['total'] == 0
+    owner = await client.get(f'/panel/api/bots?status=all&search={ADMIN}', headers=good)
+    assert (await owner.json())['total'] == 1
+
+
+async def test_api_vips_and_orders(client, seeded_bot):
+    from services import membership
+
+    await membership.adjust_member(ADMIN, ADMIN, level=3, months=6)
+    good = {'X-Telegram-Init-Data': make_init_data()}
+    vips = await client.get('/panel/api/vips', headers=good)
+    members = (await vips.json())['members']
+    assert any(m['user_id'] == ADMIN and m['vip_level'] == 3 for m in members)
+
+    orders = await client.get('/panel/api/orders', headers=good)
+    assert orders.status == 200 and (await orders.json())['orders'] == []
+    bad = await client.get('/panel/api/orders?user_id=abc', headers=good)
+    assert bad.status == 400
