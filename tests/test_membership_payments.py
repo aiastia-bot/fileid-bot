@@ -207,3 +207,83 @@ async def test_expiry_removes_features_and_deduplicates_notice(database):
 
     async with get_session() as session:
         assert await session.scalar(select(func.count()).select_from(UserNotice)) == 1
+
+
+def test_downgrade_blocked_matrix():
+    from services.membership import downgrade_blocked
+
+    active_vip3 = {'vip_level': 3, 'is_active': True, 'vip_expire_at': '2027-01-01 00:00:00'}
+    assert downgrade_blocked(active_vip3, 1)  # VIP3 有效期内买 VIP1 → 禁止
+    assert downgrade_blocked(active_vip3, 2)
+    assert downgrade_blocked(active_vip3, 4)  # 基础版低于 VIP1，同样禁止
+    assert not downgrade_blocked(active_vip3, 3)  # 续费同等级允许
+    permanent_vip3 = {'vip_level': 3, 'is_active': True, 'vip_expire_at': None}
+    assert downgrade_blocked(permanent_vip3, 1)
+    expired = {'vip_level': 3, 'is_active': False, 'vip_expire_at': '2026-01-01 00:00:00'}
+    assert not downgrade_blocked(expired, 1)  # 已过期可买任意等级
+    free = {'vip_level': 0, 'is_active': True, 'vip_expire_at': None}
+    assert not downgrade_blocked(free, 1)
+    assert not downgrade_blocked(None, 1)
+
+
+async def test_buy_vip_downgrade_blocked(database, monkeypatch):
+    from handlers.master import stars
+
+    async def fake_info(user_id):
+        return {'user_id': user_id, 'vip_level': 3, 'vip_name': 'VIP 3',
+                'is_active': True, 'vip_expire_at': '2027-01-01 00:00:00'}
+
+    monkeypatch.setattr('db.vip.get_user_vip_info', fake_info)
+    create_order = AsyncMock(return_value={'payload': 'p', 'amount': 100})
+    monkeypatch.setattr('services.payments.create_order', create_order)
+    send_invoice = AsyncMock()
+    context = SimpleNamespace(bot=SimpleNamespace(send_invoice=send_invoice))
+
+    query = SimpleNamespace(answer=AsyncMock(), data='buy_vip|1|1',
+                            message=SimpleNamespace(reply_text=AsyncMock()))
+    await stars.buy_vip_callback(
+        SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=99)), context)
+    assert query.answer.await_count == 2  # 开场应答一次 + 降级警告一次
+    blocked_call = query.answer.await_args_list[-1]
+    assert blocked_call.kwargs.get('show_alert') is True
+    assert '不能购买更低等级' in blocked_call.args[0]
+    create_order.assert_not_awaited()
+    send_invoice.assert_not_awaited()
+
+    # 同等级续费不受限
+    query2 = SimpleNamespace(answer=AsyncMock(), data='buy_vip|3|1',
+                             message=SimpleNamespace(reply_text=AsyncMock()))
+    await stars.buy_vip_callback(
+        SimpleNamespace(callback_query=query2, effective_user=SimpleNamespace(id=99)), context)
+    create_order.assert_awaited_once()
+    send_invoice.assert_awaited_once()
+
+
+async def test_buy_denied_callback_routes_to_alert(database, monkeypatch):
+    from handlers.master import stars
+
+    async def fake_info(user_id):
+        return {'user_id': user_id, 'vip_level': 3, 'vip_name': 'VIP 3',
+                'is_active': True, 'vip_expire_at': None}
+
+    monkeypatch.setattr('db.vip.get_user_vip_info', fake_info)
+    query = SimpleNamespace(answer=AsyncMock(), data='buy_denied|1',
+                            message=SimpleNamespace(reply_text=AsyncMock()))
+    await stars.vip_callback_router(
+        SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=99)),
+        SimpleNamespace())
+    assert query.answer.await_args.kwargs.get('show_alert') is True
+    assert '永久' in query.answer.await_args.args[0]
+
+    # 会员过期后再点旧按钮：提示可以买了而不是报错
+    async def expired_info(user_id):
+        return {'user_id': user_id, 'vip_level': 3, 'vip_name': 'VIP 3',
+                'is_active': False, 'vip_expire_at': '2026-01-01 00:00:00'}
+
+    monkeypatch.setattr('db.vip.get_user_vip_info', expired_info)
+    query2 = SimpleNamespace(answer=AsyncMock(), data='buy_denied|1',
+                             message=SimpleNamespace(reply_text=AsyncMock()))
+    await stars.vip_callback_router(
+        SimpleNamespace(callback_query=query2, effective_user=SimpleNamespace(id=99)),
+        SimpleNamespace())
+    assert '重新发送 /vip' in query2.answer.await_args.args[0]

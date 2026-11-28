@@ -139,6 +139,16 @@ async def invalidate_user(user_id):
         await r.cache_delete(key)
 
 
+def downgrade_blocked(vip_info: dict, target_level: int) -> bool:
+    """会员有效期内禁止购买更低等级（同等级续费与升级不受限）。
+
+    等级高低按 PLAN_RANK 比较：基础版(4) < VIP1 < VIP2 < VIP3。
+    """
+    if not vip_info or not vip_info.get('is_active'):
+        return False
+    return PLAN_RANK.get(target_level, 0) < PLAN_RANK.get(vip_info.get('vip_level'), 0)
+
+
 def grant(user, level, months):
     """Same-tier renewal stacks. Cross-tier changes start a new term.
 

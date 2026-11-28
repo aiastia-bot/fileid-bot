@@ -29,7 +29,7 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """/vip 查看 VIP 状态和购买选项"""
     user_id = update.effective_user.id
     vip_info = await get_user_vip_info(user_id)
-    from services.membership import get_plans
+    from services.membership import get_plans, downgrade_blocked
     plans = await get_plans()
     free_closed = await is_free_registration_closed()
 
@@ -86,7 +86,8 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     text += (
         f"\n💡 年付享优惠（约 10 个月价格）\n"
-        f"同等级续费叠加；更换等级从购买日起重新计算有效期。\n\n"
+        f"同等级续费叠加；更换等级从购买日起重新计算有效期。\n"
+        f"会员有效期内不能购买更低等级（按钮置灰）。\n\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🔒 <b>转发保护</b>（VIP 1+ 独有）\n"
         f"控制你 Bot 发送的图片/视频是否允许被接收者转发或保存。\n\n"
@@ -113,6 +114,12 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     for level in buy_levels:
         plan = plans[level]
         if not plan['enabled']:
+            continue
+        if downgrade_blocked(vip_info, level):
+            keyboard.append([InlineKeyboardButton(
+                f"🚫 {escape(plan['name'])}（当前等级更高）",
+                callback_data=f"buy_denied|{level}",
+            )])
             continue
         icon = "💎" if level == BASIC_LEVEL else "⭐" * level
         row_monthly = InlineKeyboardButton(
@@ -162,6 +169,14 @@ async def buy_vip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     plan = await get_plan(level)
     if level not in (1, 2, 3, BASIC_LEVEL):
         await query.answer("❌ 无效的VIP等级", show_alert=True)
+        return
+
+    # 会员有效期内不能购买更低等级（双保险，/vip 列表按钮同样已禁用）
+    from db.vip import get_user_vip_info
+    from services.membership import downgrade_blocked
+    info = await get_user_vip_info(update.effective_user.id)
+    if downgrade_blocked(info, level):
+        await query.answer(_downgrade_alert(info), show_alert=True)
         return
 
     # 确定价格
@@ -419,6 +434,12 @@ async def handle_vip_migration_claim(update: Update, context: ContextTypes.DEFAU
 
 # ==================== 回调路由器 ====================
 
+def _downgrade_alert(info: dict) -> str:
+    expiry = '永久' if not info.get('vip_expire_at') else f"到期 {info['vip_expire_at']}"
+    return (f"你当前是 {info.get('vip_name')}（{expiry}），"
+            "会员有效期内不能购买更低等级。\n可续费当前等级或购买更高等级。")
+
+
 async def vip_callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """VIP 相关回调路由"""
     query = update.callback_query
@@ -426,6 +447,19 @@ async def vip_callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if data.startswith("buy_vip|"):
         await buy_vip_callback(update, context)
+    elif data.startswith("buy_denied|"):
+        from db.vip import get_user_vip_info
+        from services.membership import downgrade_blocked
+
+        try:
+            level = int(data.split("|")[1])
+        except (ValueError, IndexError):
+            level = 0
+        info = await get_user_vip_info(update.effective_user.id)
+        if downgrade_blocked(info, level):
+            await query.answer(_downgrade_alert(info), show_alert=True)
+        else:
+            await query.answer("现在可以购买该等级了，请重新发送 /vip 选择。", show_alert=True)
     elif data == "vip_history":
         await vip_history_callback(update, context)
     elif data == "vip_migrate":
