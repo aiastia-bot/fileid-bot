@@ -663,7 +663,8 @@ async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _retry_send(update.message.reply_text,
             "用法：/redeem <兑换码>\n"
             "兑换码由管理员发放，每个码只能使用一次。\n"
-            "同等级续费时长叠加，跨等级从新周期开始。")
+            "同等级续费时长叠加；升级码的剩余时长自动并入新等级；\n"
+            "会员有效期内不能兑换更低等级的码。")
         return
 
     status, detail = await redeem_code(update.effective_user.id, args[0])
@@ -682,6 +683,7 @@ async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         'cancelled': "❌ 该兑换码已作废。",
         'expired': "❌ 该兑换码已过期。",
         'permanent': "💎 你已是永久会员，无需兑换。",
+        'downgrade': "❌ 你当前的会员等级更高，不能使用低等级兑换码。",
     }
     await _retry_send(update.message.reply_text,
                       messages.get(status, "❌ 兑换失败，请稍后重试。"))

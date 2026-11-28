@@ -155,3 +155,67 @@ async def test_vipadmin_gen_and_revoke_flow(database, monkeypatch):
     assert status == 'cancelled'
     status, _ = await membership.redeem_code(777, codes[1])
     assert status == 'ok'
+
+
+async def test_redeem_upgrade_merges_remaining_time(database):
+    """升级码：剩余时长并入新等级（VIP1 剩 20 天 + VIP3 6 个月 → 到期日 = 旧到期日 + 180 天）"""
+    from datetime import datetime, timedelta
+    from db.vip import get_user_vip_info
+    from services import membership
+
+    user = 5566100
+    await membership.adjust_member(99, user, level=1, months=1)
+    old_expire = (await get_user_vip_info(user))['vip_expire_at']
+
+    codes, _ = await membership.generate_redeem_codes(99, 3, 6, 1)
+    status, detail = await membership.redeem_code(user, codes[0])
+    assert status == 'ok'
+    assert detail['info']['vip_level'] == 3
+    new_expire = datetime.strptime(detail['info']['vip_expire_at'], '%Y-%m-%d %H:%M:%S')
+    assert new_expire - datetime.strptime(old_expire, '%Y-%m-%d %H:%M:%S') == timedelta(days=180)
+
+
+async def test_redeem_downgrade_rejected_and_code_kept(database):
+    """有效期内高等级会员兑低等级码：拒兑、码退回 pending、会员不变；过期后可用"""
+    from datetime import datetime, timedelta
+    from sqlalchemy import select
+    from db.vip import get_user_vip_info
+    from services import membership
+
+    user = 5566200
+    await membership.adjust_member(99, user, level=3, months=12)
+    codes, _ = await membership.generate_redeem_codes(99, 1, 1, 1)
+
+    status, _ = await membership.redeem_code(user, codes[0])
+    assert status == 'downgrade'
+    async with get_session() as session:
+        row = (await session.execute(
+            select(VipRedeemCode).where(VipRedeemCode.code == codes[0]))).scalar_one()
+    assert row.status == 'pending'  # 码退回，可再发给别人
+    info = await get_user_vip_info(user)
+    assert info['vip_level'] == 3 and info['is_active']  # 会员未受影响
+
+    # 过期后同一码即可正常兑换
+    await membership.adjust_member(99, user, level=3, months=1)
+    await membership.adjust_member(99, user, days=-40)
+    status, _ = await membership.redeem_code(user, codes[0])
+    assert status == 'ok'
+    info = await get_user_vip_info(user)
+    assert info['vip_level'] == 1
+    assert abs((datetime.strptime(info['vip_expire_at'], '%Y-%m-%d %H:%M:%S')
+                - datetime.now()).days - 30) <= 1
+
+
+async def test_redeem_upgrade_after_expiry_starts_now(database):
+    """已过期会员兑升级码：从当天起算（无剩余时长可并入）"""
+    from datetime import datetime, timedelta
+    from services import membership
+
+    user = 5566300
+    await membership.adjust_member(99, user, level=1, months=1)
+    await membership.adjust_member(99, user, days=-40)  # 已过期
+    codes, _ = await membership.generate_redeem_codes(99, 3, 6, 1)
+    status, detail = await membership.redeem_code(user, codes[0])
+    assert status == 'ok'
+    expire = datetime.strptime(detail['info']['vip_expire_at'], '%Y-%m-%d %H:%M:%S')
+    assert abs((expire - datetime.now()).days - 180) <= 1

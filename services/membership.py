@@ -264,6 +264,10 @@ class _PermanentMemberError(Exception):
     """永久会员尝试兑换，码位不消耗"""
 
 
+class _DowngradeRedeemError(Exception):
+    """高等级会员尝试兑换低等级码，码位不消耗"""
+
+
 def _new_redeem_code() -> str:
     body = "".join(secrets.choice(_REDEEM_ALPHABET) for _ in range(_REDEEM_CODE_LEN))
     return f"vip_{body}"
@@ -324,9 +328,10 @@ async def redeem_code(user_id, code):
       cancelled   已作废
       expired     超过码有效期
       permanent   永久会员无需兑换（不烧码）
+      downgrade   当前等级更高，低等级码不可用（不烧码）
     条件 UPDATE 原子占位：并发兑换同一码时只有一个用户成功。
-    发放采用 grant() 语义（与购买一致）：同等级续费时长叠加，
-    跨等级从新周期开始；months=0 直接开通永久。
+    发放语义：同等级时长叠加；升级码从当前到期日起算（剩余时长并入新等级，
+    一分钟不浪费）；低等级码对有效期内的高等级会员拒兑；months=0 直接开通永久。
     """
     code = str(code).strip().lower()
     if not code:
@@ -369,11 +374,24 @@ async def redeem_code(user_id, code):
                 session.add(user)
             if user.vip_level > 0 and user.vip_expire_at is None:
                 raise _PermanentMemberError()  # 永久会员无需兑换
+            now = datetime.now()
+            active = user.vip_level > 0 and (
+                user.vip_expire_at is None or
+                datetime.strptime(user.vip_expire_at, '%Y-%m-%d %H:%M:%S') > now)
+            if active and PLAN_RANK.get(record.vip_level, 0) < PLAN_RANK.get(user.vip_level, 0):
+                raise _DowngradeRedeemError()  # 降级码拒兑，码位不消耗
             before = {"level": user.vip_level, "expires": user.vip_expire_at}
             if record.months == 0:
                 user.vip_level = record.vip_level
                 user.vip_expire_at = None
                 user.vip_migrated = 0
+            elif active and PLAN_RANK.get(record.vip_level, 0) > PLAN_RANK.get(user.vip_level, 0):
+                # 升级码：剩余时长自动并入新等级（从当前到期日起算，一分钟不浪费）
+                base = max(now, datetime.strptime(user.vip_expire_at, '%Y-%m-%d %H:%M:%S'))
+                user.vip_level = record.vip_level
+                user.vip_migrated = 0
+                user.vip_expire_at = (base + timedelta(
+                    days=30 * record.months)).strftime('%Y-%m-%d %H:%M:%S')
             else:
                 grant(user, record.vip_level, record.months)
             after = {"level": user.vip_level, "expires": user.vip_expire_at}
@@ -386,6 +404,9 @@ async def redeem_code(user_id, code):
     except _PermanentMemberError:
         await _unclaim_redeem(code, user_id)
         return 'permanent', None
+    except _DowngradeRedeemError:
+        await _unclaim_redeem(code, user_id)
+        return 'downgrade', None
     except Exception:
         await _unclaim_redeem(code, user_id)
         raise
