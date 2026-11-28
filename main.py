@@ -402,6 +402,10 @@ def _register_master_handlers(application: Application):
     # 内部按 payload 前缀分流 vip_ / premium_。
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
+    # 会员兑换码（用户兑换管理员发放的码）
+    from handlers.commands import redeem_command
+    application.add_handler(CommandHandler("redeem", redeem_command))
+
     # 管理员星星资产管理 / 礼物发送
     from handlers.master.gifts import (
         mystars_command, stars_callback_router, handle_gift_user_id_input,

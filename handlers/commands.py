@@ -652,3 +652,36 @@ async def queue_status_command(update: Update, context: ContextTypes.DEFAULT_TYP
         f"⏳ 等待发送：{info['pending_files']} 个文件（{info['user_pending']} 批）\n"
         f"🤖 此 Bot 总等待批次：{info['total_pending']}\n"
         "使用 /stop 取消你的发送任务。")
+
+
+async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/redeem <兑换码> — 用户兑换管理员发放的会员兑换码"""
+    from services.membership import redeem_code
+
+    args = context.args or []
+    if not args:
+        await _retry_send(update.message.reply_text,
+            "用法：/redeem <兑换码>\n"
+            "兑换码由管理员发放，每个码只能使用一次。\n"
+            "同等级续费时长叠加，跨等级从新周期开始。")
+        return
+
+    status, detail = await redeem_code(update.effective_user.id, args[0])
+    if status == 'ok':
+        info = detail['info']
+        months_text = '永久' if detail['months'] == 0 else f"{detail['months']} 个月"
+        await _retry_send(update.message.reply_text,
+            f"✅ 兑换成功！\n"
+            f"💎 会员：{info['vip_name']}（{months_text}）\n"
+            f"📅 到期时间：{info['vip_expire_at'] or '永久'}\n"
+            "Bot 额度已同步，使用 /mybots 查看。")
+        return
+    messages = {
+        'invalid': "❌ 兑换码不存在，请核对后重试。",
+        'used': "❌ 该兑换码已被使用。",
+        'cancelled': "❌ 该兑换码已作废。",
+        'expired': "❌ 该兑换码已过期。",
+        'permanent': "💎 你已是永久会员，无需兑换。",
+    }
+    await _retry_send(update.message.reply_text,
+                      messages.get(status, "❌ 兑换失败，请稍后重试。"))

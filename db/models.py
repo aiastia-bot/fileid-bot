@@ -270,6 +270,24 @@ class UserNotice(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class VipRedeemCode(Base):
+    """会员兑换码（一次性；管理员批量生成，用户 /redeem 兑换）"""
+    __tablename__ = 'vip_redeem_codes'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    vip_level: Mapped[int] = mapped_column(Integer)
+    months: Mapped[int] = mapped_column(Integer)  # 0 = 永久
+    batch: Mapped[str] = mapped_column(String(64), default='', index=True)
+    # 状态：pending=可兑换, used=已兑换, cancelled=已作废
+    status: Mapped[str] = mapped_column(String(16), default='pending', index=True)
+    created_by: Mapped[int] = mapped_column(BigInteger)
+    created_at: Mapped[str] = mapped_column(String(32))
+    expires_at: Mapped[str] = mapped_column(String(32), nullable=True)  # 码有效期，空=永久有效
+    redeemed_by: Mapped[int] = mapped_column(BigInteger, nullable=True)
+    redeemed_at: Mapped[str] = mapped_column(String(32), nullable=True)
+
+
 class BackupConfig(Base):
     """用户的级联备份配置（每主人一条，enabled=1 时生效）"""
     __tablename__ = 'backup_configs'

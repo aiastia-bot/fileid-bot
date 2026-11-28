@@ -6,11 +6,15 @@ from sqlalchemy import select, update as sa_update
 from config import ADMIN_IDS
 from db.core import get_session
 from db.models import MembershipAudit, PaymentOrder, UpdateInbox, SendJob
+from db import get_user_bots_by_owner
 from db.vip import get_user_vip_info, get_all_vip_users
 from handlers.master._utils import escape, run_background_operation
 from utils import user_id_html
 from senders import _retry_send, send_later
-from services.membership import get_plans, set_plan, adjust_member
+from services.membership import (
+    get_plans, set_plan, adjust_member,
+    generate_redeem_codes, cancel_redeem_codes, list_redeem_codes,
+)
 from services.entitlements import reconcile_user, reconcile_all
 from services.payments import list_orders, get_order, now_text
 
@@ -114,6 +118,10 @@ async def setvip_command(update, context):
                 "/vipadmin days 用户ID 天数 原因（正数延长、负数扣减）\n"
                 "/vipadmin expires 用户ID YYYY-MM-DD 原因（当天23:59:59到期）\n"
                 "/vipadmin history 用户ID\n/vipadmin orders [用户ID]\n"
+                "/vipadmin bots 用户ID（名下 Bot 统计与列表，含已删除）\n"
+                "/vipadmin gen 等级 月份 数量 [有效期天]（生成会员兑换码；月份0=永久）\n"
+                "/vipadmin codes [pending|used|cancelled|all]（最近 20 个兑换码）\n"
+                "/vipadmin revoke 码|批次 [原因]（作废待兑换码）\n"
                 "/vipadmin retry 订单号（仅重新核验，不会重发结果不明的Premium）\n"
                 "/vipadmin resolve 订单号 completed|refunded 原因（人工核对后登记结果）\n/setplan 查看和调整套餐",
             )
@@ -155,6 +163,75 @@ async def vipadmin_command(update, context):
         return
     try:
         action = args[0]
+        if action == "bots":
+            if len(args) < 2:
+                raise ValueError("用法：/vipadmin bots 用户ID")
+            uid = int(args[1])
+            info = await get_user_vip_info(uid)
+            bots = await get_user_bots_by_owner(uid, include_deleted=True)
+            counts = {}
+            for bot in bots:
+                counts[bot['status']] = counts.get(bot['status'], 0) + 1
+            failed = sum(counts.get(s, 0)
+                         for s in ('revoked', 'banned', 'frozen', 'admin_stopped'))
+            rows = [(
+                f"👤 用户 {user_id_html(uid)}",
+                f"（{info['vip_name']}·配额 {info['max_bots']}）名下 Bot 共 {len(bots)} 个："
+                f"活跃 {counts.get('active', 0)} · 暂停 {counts.get('paused', 0)}"
+                f" · 失效 {failed} · 已删除 {counts.get('deleted', 0)}",
+            )]
+            labels = {
+                'active': '🟢 运行中', 'paused': '⏸ 暂停', 'revoked': '⚠️ Token 失效',
+                'banned': '⚠️ 封禁', 'admin_stopped': '⚠️ 管理员已停止',
+                'frozen': '⚠️ 已冻结', 'deleted': '🗑 已删除',
+            }
+            rows += [
+                (f"• @{escape(bot['bot_username'])} · {labels.get(bot['status'], bot['status'])}",
+                 f" · DB {bot['id']} · 创建 {bot['created_at'][:19]}")
+                for bot in bots
+            ]
+            await reply_html_rows(update, rows, "该用户名下没有 Bot。")
+            return
+        if action == "gen":
+            if len(args) < 4:
+                raise ValueError("用法：/vipadmin gen 等级 月份 数量 [有效期天]")
+            level, months, count = int(args[1]), int(args[2]), int(args[3])
+            expires_days = int(args[4]) if len(args) > 4 else None
+            codes, batch = await generate_redeem_codes(
+                update.effective_user.id, level, months, count, expires_days)
+            months_text = '永久' if months == 0 else f'{months} 个月'
+            expiry_text = f'{expires_days} 天内有效' if expires_days else '长期有效'
+            header = (
+                f"✅ 已生成 {len(codes)} 个兑换码（批次 {batch} · 等级 {level} · "
+                f"{months_text} · {expiry_text}）\n"
+                "同等级续费时长叠加，跨等级从新周期开始。逐行复制发放：\n"
+            )
+            await reply(update, header + "\n".join(codes))
+            return
+        if action == "codes":
+            status = args[1].lower() if len(args) > 1 else 'pending'
+            if status not in ('pending', 'used', 'cancelled', 'all'):
+                raise ValueError("状态为 pending|used|cancelled|all")
+            code_rows = await list_redeem_codes(status, limit=20)
+            lines = []
+            for r in code_rows:
+                months_text = '永久' if r['months'] == 0 else f"{r['months']}个月"
+                line = (f"{r['code']} | {r['status']} | 等级{r['vip_level']}"
+                        f" · {months_text} | 批次 {r['batch']}")
+                if r['redeemed_by']:
+                    line += f" | 已兑 {r['redeemed_by']} {r['redeemed_at'][:19]}"
+                if r['expires_at']:
+                    line += f" | 有效期至 {r['expires_at']}"
+                lines.append(line)
+            await reply(update, "\n".join(lines) or "暂无兑换码")
+            return
+        if action == "revoke":
+            if len(args) < 2:
+                raise ValueError("用法：/vipadmin revoke 码|批次 [原因]")
+            cancelled = await cancel_redeem_codes(
+                update.effective_user.id, args[1], " ".join(args[2:]))
+            await reply(update, f"✅ 已作废 {cancelled} 个待兑换码。")
+            return
         if action == "orders":
             rows = await list_orders(int(args[1]) if len(args) > 1 else None)
             await reply_html_rows(

@@ -91,15 +91,13 @@ async def get_all_owner_ids(status: str = None) -> List[int]:
         return [r[0] for r in result.fetchall()]
 
 
-async def get_user_bots_by_owner(owner_id: int) -> List[Dict]:
-    """获取用户的所有Bot"""
+async def get_user_bots_by_owner(owner_id: int, include_deleted: bool = False) -> List[Dict]:
+    """获取用户的所有Bot（include_deleted 用于管理端统计，默认不含已删除）"""
     async with get_session() as session:
-        result = await session.execute(
-            select(UserBot).where(
-                UserBot.owner_id == owner_id,
-                UserBot.status != 'deleted'
-            ).order_by(UserBot.created_at)
-        )
+        query = select(UserBot).where(UserBot.owner_id == owner_id)
+        if not include_deleted:
+            query = query.where(UserBot.status != 'deleted')
+        result = await session.execute(query.order_by(UserBot.created_at))
         bots = result.scalars().all()
         return [_model_to_dict(b) for b in bots]
 
